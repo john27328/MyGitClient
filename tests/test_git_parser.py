@@ -25,6 +25,39 @@ def test_parse_unified_diff_classifies_lines() -> None:
         "addition",
     ]
     assert diff.text.endswith("-before\n+after")
+    assert len(diff.hunks) == 1
+    assert diff.hunks[0].old_start == 1
+    assert diff.hunks[0].new_start == 1
+    assert diff.lines[4].old_line == 1
+    assert diff.lines[4].new_line is None
+    assert diff.lines[5].old_line is None
+    assert diff.lines[5].new_line == 1
+    assert diff.display_text.endswith("1   │ -before\n  1 │ +after")
+
+
+def test_parse_unified_diff_tracks_context_and_multiple_hunks() -> None:
+    output = (
+        b"@@ -3,2 +3,2 @@\n"
+        b" unchanged\n"
+        b"-old\n"
+        b"+new\n"
+        b"@@ -10,0 +11,2 @@\n"
+        b"+first\n"
+        b"+second\n"
+    )
+
+    diff = parse_unified_diff(output, "example.txt", staged=True)
+
+    assert len(diff.hunks) == 2
+    assert [(line.old_line, line.new_line) for line in diff.hunks[0].lines] == [
+        (3, 3),
+        (4, None),
+        (None, 4),
+    ]
+    assert [(line.old_line, line.new_line) for line in diff.hunks[1].lines] == [
+        (None, 11),
+        (None, 12),
+    ]
 
 
 def test_parse_branch_and_file_records() -> None:

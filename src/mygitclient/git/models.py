@@ -69,6 +69,18 @@ DiffLineKind = Literal["header", "hunk", "addition", "deletion", "context", "met
 class DiffLine:
     text: str
     kind: DiffLineKind
+    old_line: int | None = None
+    new_line: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiffHunk:
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    header: str
+    lines: tuple[DiffLine, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +88,25 @@ class UnifiedDiff:
     path: str
     staged: bool
     lines: tuple[DiffLine, ...] = ()
+    hunks: tuple[DiffHunk, ...] = ()
 
     @property
     def text(self) -> str:
         return "\n".join(line.text for line in self.lines)
+
+    @property
+    def display_text(self) -> str:
+        old_width = max(
+            (len(str(line.old_line)) for line in self.lines if line.old_line), default=1
+        )
+        new_width = max(
+            (len(str(line.new_line)) for line in self.lines if line.new_line), default=1
+        )
+        rendered: list[str] = []
+        for line in self.lines:
+            old_number = str(line.old_line) if line.old_line is not None else ""
+            new_number = str(line.new_line) if line.new_line is not None else ""
+            rendered.append(
+                f"{old_number:>{old_width}} {new_number:>{new_width}} │ {line.text}"
+            )
+        return "\n".join(rendered)

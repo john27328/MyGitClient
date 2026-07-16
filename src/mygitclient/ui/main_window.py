@@ -4,11 +4,12 @@ from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, Slot
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QFont, QFontDatabase, QFontMetrics
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 from mygitclient.git.models import FileStatus, RepositoryStatus, UnifiedDiff
 from mygitclient.git.service import GitService
 from mygitclient.theme import Theme, apply_theme
+from mygitclient.ui.diff_highlighter import DiffHighlighter
 from mygitclient.workspace import WorkspaceManager, find_repository_root
 
 
@@ -74,7 +76,32 @@ class MainWindow(QMainWindow):
         self._diff.setPlaceholderText("Select a changed file to view its diff.")
         self._diff.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self._diff.setMinimumWidth(400)
+        diff_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        diff_font.setStyleHint(QFont.StyleHint.Monospace)
+        diff_font.setFixedPitch(True)
+        self._diff.setFont(diff_font)
         self._diff.hide()
+        self._diff_highlighter = DiffHighlighter(self._diff)
+
+        self._diff_gutter = QPlainTextEdit()
+        self._diff_gutter.setObjectName("diffGutter")
+        self._diff_gutter.setReadOnly(True)
+        self._diff_gutter.setFont(diff_font)
+        self._diff_gutter.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._diff_gutter.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._diff_gutter.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._diff_gutter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._diff_gutter.setStyleSheet(
+            "QPlainTextEdit { background: palette(alternate-base); "
+            "color: palette(mid); border: 0; border-right: 1px solid palette(midlight); }"
+        )
+        self._diff_gutter.hide()
+        self._diff.verticalScrollBar().valueChanged.connect(
+            self._diff_gutter.verticalScrollBar().setValue
+        )
+        self._diff_gutter.verticalScrollBar().valueChanged.connect(
+            self._diff.verticalScrollBar().setValue
+        )
 
         self._diff_version = QComboBox()
         self._diff_version.setObjectName("diffVersionCombo")
@@ -86,7 +113,13 @@ class MainWindow(QMainWindow):
         diff_layout = QVBoxLayout(self._diff_container)
         diff_layout.setContentsMargins(0, 0, 0, 0)
         diff_layout.addWidget(self._diff_version)
-        diff_layout.addWidget(self._diff)
+        diff_body = QWidget()
+        diff_body_layout = QHBoxLayout(diff_body)
+        diff_body_layout.setContentsMargins(0, 0, 0, 0)
+        diff_body_layout.setSpacing(0)
+        diff_body_layout.addWidget(self._diff_gutter)
+        diff_body_layout.addWidget(self._diff, 1)
+        diff_layout.addWidget(diff_body)
         self._diff_container.hide()
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -197,9 +230,11 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
         self._diff.clear()
+        self._diff_gutter.clear()
         self._welcome.hide()
         self._changes.show()
         self._diff_version.show()
+        self._diff_gutter.show()
         self._diff.show()
         self._diff_container.show()
         self._restore_workspace_splitter_sizes()
@@ -276,9 +311,30 @@ class MainWindow(QMainWindow):
             return
         if self._diff_version.currentData() != value.staged:
             return
+        self._diff_highlighter.set_diff(value)
         self._diff.setPlainText(value.text or "No textual changes to display.")
+        self._show_diff_line_numbers(value)
         version = "staged" if value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {value.path}")
+
+    def _show_diff_line_numbers(self, diff: UnifiedDiff) -> None:
+        old_width = max(
+            (len(str(line.old_line)) for line in diff.lines if line.old_line is not None),
+            default=1,
+        )
+        new_width = max(
+            (len(str(line.new_line)) for line in diff.lines if line.new_line is not None),
+            default=1,
+        )
+        numbers: list[str] = []
+        for line in diff.lines:
+            old_number = str(line.old_line) if line.old_line is not None else ""
+            new_number = str(line.new_line) if line.new_line is not None else ""
+            numbers.append(f"{old_number:>{old_width}}  {new_number:>{new_width}}")
+        self._diff_gutter.setPlainText("\n".join(numbers))
+        metrics = QFontMetrics(self._diff_gutter.font())
+        sample = "0" * (old_width + new_width + 3)
+        self._diff_gutter.setFixedWidth(metrics.horizontalAdvance(sample) + 12)
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
@@ -293,6 +349,7 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if isinstance(app, QApplication):
             apply_theme(app, theme)
+            self._diff_highlighter.rehighlight()
 
     def _restore_window_state(self) -> None:
         geometry = self._settings.value("window/geometry")

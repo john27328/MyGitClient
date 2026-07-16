@@ -23,6 +23,32 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     window.close()
 
 
+def test_diff_and_line_numbers_scroll_together(qapp: QApplication, qtbot: QtBot) -> None:
+    settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "test", "scroll")
+    settings.clear()
+    window = MainWindow(settings, Theme.SYSTEM)
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    diff_gutter = window.findChild(QPlainTextEdit, "diffGutter")
+    assert diff_panel is not None
+    assert diff_gutter is not None
+    content = "\n".join(f"line {number}" for number in range(200))
+    numbers = "\n".join(str(number) for number in range(200))
+    diff_panel.setPlainText(content)
+    diff_gutter.setPlainText(numbers)
+    diff_panel.show()
+    diff_gutter.show()
+    window.resize(800, 300)
+    window.show()
+    qtbot.waitUntil(lambda: diff_panel.verticalScrollBar().maximum() > 0)
+
+    diff_panel.verticalScrollBar().setValue(40)
+    assert diff_gutter.verticalScrollBar().value() == 40
+
+    diff_gutter.verticalScrollBar().setValue(80)
+    assert diff_panel.verticalScrollBar().value() == 80
+    window.close()
+
+
 def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> None:
     repository = tmp_path / "project"
     repository.mkdir()
@@ -131,9 +157,11 @@ def test_selecting_changed_file_displays_diff(
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    diff_gutter = window.findChild(QPlainTextEdit, "diffGutter")
     splitter = window.findChild(QSplitter, "mainSplitter")
     assert changes is not None
     assert diff_panel is not None
+    assert diff_gutter is not None
     assert splitter is not None
 
     window.resize(1400, 800)
@@ -146,6 +174,9 @@ def test_selecting_changed_file_displays_diff(
     qtbot.waitUntil(lambda: "+after" in diff_panel.toPlainText(), timeout=5000)
 
     assert "-before" in diff_panel.toPlainText()
+    assert "│" not in diff_panel.toPlainText()
+    assert diff_gutter.toPlainText().endswith("1   \n   1")
+    assert diff_panel.font().fixedPitch()
     sizes = splitter.sizes()
     assert len(sizes) == 4
     assert sizes[1] == 0

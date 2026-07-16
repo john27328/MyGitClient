@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 
 from mygitclient.git.errors import GitParseError
 from mygitclient.git.models import (
     BranchStatus,
+    DiffHunk,
     DiffLine,
     DiffLineKind,
     FileStatus,
@@ -12,12 +14,68 @@ from mygitclient.git.models import (
     UnifiedDiff,
 )
 
+_HUNK_HEADER = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$"
+)
+
 
 def parse_unified_diff(output: bytes, path: str, *, staged: bool) -> UnifiedDiff:
     """Decode unified diff output and classify its lines for presentation."""
     text = output.decode("utf-8", errors="replace")
-    lines = tuple(DiffLine(line, _diff_line_kind(line)) for line in text.splitlines())
-    return UnifiedDiff(path=path, staged=staged, lines=lines)
+    lines: list[DiffLine] = []
+    hunks: list[DiffHunk] = []
+    hunk_lines: list[DiffLine] = []
+    hunk_values: tuple[int, int, int, int, str] | None = None
+    old_line: int | None = None
+    new_line: int | None = None
+
+    for text_line in text.splitlines():
+        kind = _diff_line_kind(text_line)
+        if kind == "hunk":
+            if hunk_values is not None:
+                hunks.append(_make_hunk(hunk_values, hunk_lines))
+            match = _HUNK_HEADER.match(text_line)
+            if match is None:
+                raise GitParseError(f"Malformed diff hunk header: {text_line!r}")
+            old_start = int(match.group(1))
+            old_count = int(match.group(2) or "1")
+            new_start = int(match.group(3))
+            new_count = int(match.group(4) or "1")
+            hunk_values = (old_start, old_count, new_start, new_count, text_line)
+            hunk_lines = []
+            old_line = old_start
+            new_line = new_start
+            diff_line = DiffLine(text_line, kind)
+        elif kind == "deletion" and hunk_values is not None:
+            diff_line = DiffLine(text_line, kind, old_line=old_line)
+            old_line = _next_line(old_line)
+        elif kind == "addition" and hunk_values is not None:
+            diff_line = DiffLine(text_line, kind, new_line=new_line)
+            new_line = _next_line(new_line)
+        elif kind == "context" and hunk_values is not None:
+            diff_line = DiffLine(text_line, kind, old_line=old_line, new_line=new_line)
+            old_line = _next_line(old_line)
+            new_line = _next_line(new_line)
+        else:
+            diff_line = DiffLine(text_line, kind)
+        lines.append(diff_line)
+        if hunk_values is not None and kind != "hunk":
+            hunk_lines.append(diff_line)
+
+    if hunk_values is not None:
+        hunks.append(_make_hunk(hunk_values, hunk_lines))
+    return UnifiedDiff(path=path, staged=staged, lines=tuple(lines), hunks=tuple(hunks))
+
+
+def _next_line(value: int | None) -> int | None:
+    return None if value is None else value + 1
+
+
+def _make_hunk(
+    values: tuple[int, int, int, int, str], lines: list[DiffLine]
+) -> DiffHunk:
+    old_start, old_count, new_start, new_count, header = values
+    return DiffHunk(old_start, old_count, new_start, new_count, header, tuple(lines))
 
 
 def _diff_line_kind(line: str) -> DiffLineKind:
