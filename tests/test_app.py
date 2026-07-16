@@ -13,9 +13,11 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QTabWidget,
     QToolBar,
     QToolButton,
     QTreeWidget,
+    QWidget,
 )
 from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
@@ -82,6 +84,61 @@ def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> N
     item = repositories.topLevelItem(0)
     assert item is not None
     assert item.text(0) == "project"
+    window.close()
+
+
+def test_commit_history_is_loaded_asynchronously(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "history"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    for message in ("First commit", "Second commit"):
+        tracked.write_text(f"{message}\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=History Test",
+                "-c",
+                "user.email=history@example.invalid",
+                "commit",
+                "-m",
+                message,
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    settings = QSettings(str(tmp_path / "history.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    history = window.findChild(QTreeWidget, "historyTree")
+    load_more = window.findChild(QPushButton, "historyLoadMoreButton")
+    tabs = window.findChild(QTabWidget, "workspaceTabs")
+    diff_container = window.findChild(QWidget, "diffContainer")
+    assert history is not None
+    assert load_more is not None
+    assert tabs is not None
+    assert diff_container is not None
+
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: history.topLevelItemCount() == 2, timeout=5000)
+
+    first = history.topLevelItem(0)
+    second = history.topLevelItem(1)
+    assert first is not None
+    assert second is not None
+    assert first.text(1) == "Second commit"
+    assert first.text(2) == "History Test"
+    assert len(first.text(4)) == 8
+    assert second.text(1) == "First commit"
+    assert not load_more.isVisible()
+    tabs.setCurrentIndex(1)
+    assert diff_container.isHidden()
+    tabs.setCurrentIndex(0)
+    assert not diff_container.isHidden()
     window.close()
 
 
@@ -461,15 +518,19 @@ def test_commit_and_amend_from_commit_panel(
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
     message = window.findChild(QPlainTextEdit, "commitMessageEdit")
+    description = window.findChild(QPlainTextEdit, "commitDescriptionEdit")
     commit_button = window.findChild(QPushButton, "commitButton")
     amend = window.findChild(QCheckBox, "amendCheckBox")
     assert changes is not None
     assert message is not None
+    assert description is not None
     assert commit_button is not None
     assert amend is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
-    assert not commit_button.isEnabled()
+    assert message.toPlainText() == "Add tracked.txt"
+    assert description.toPlainText() == "- Add tracked.txt"
+    assert commit_button.isEnabled()
 
     message.setPlainText("initial commit")
     assert commit_button.isEnabled()
@@ -483,6 +544,14 @@ def test_commit_and_amend_from_commit_panel(
         text=True,
     )
     assert log.stdout.strip() == "initial commit"
+    body = subprocess.run(
+        ["git", "log", "-1", "--pretty=%b"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert body.stdout.strip() == "- Add tracked.txt"
 
     message.setPlainText("amended commit")
     amend.setChecked(True)

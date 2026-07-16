@@ -69,6 +69,24 @@ class RepositoryStatusSnapshot:
     status: RepositoryStatus
 
 
+@dataclass(frozen=True, slots=True)
+class CommitSummary:
+    oid: str
+    parent_oids: tuple[str, ...]
+    author_name: str
+    author_email: str
+    authored_at: str
+    subject: str
+
+
+@dataclass(frozen=True, slots=True)
+class CommitPage:
+    repository: Path
+    commits: tuple[CommitSummary, ...]
+    offset: int
+    has_more: bool
+
+
 DiffLineKind = Literal["header", "hunk", "addition", "deletion", "context", "metadata"]
 
 

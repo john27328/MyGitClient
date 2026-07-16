@@ -6,6 +6,7 @@ from dataclasses import replace
 from mygitclient.git.errors import GitParseError
 from mygitclient.git.models import (
     BranchStatus,
+    CommitSummary,
     DiffHunk,
     DiffLine,
     DiffLineKind,
@@ -13,6 +14,32 @@ from mygitclient.git.models import (
     RepositoryStatus,
     UnifiedDiff,
 )
+
+
+def parse_commit_log(output: bytes) -> tuple[CommitSummary, ...]:
+    """Parse NUL-delimited fields and record-separated commits from ``git log``."""
+    commits: list[CommitSummary] = []
+    for raw_record in output.split(b"\x1e"):
+        raw_record = raw_record.strip(b"\r\n")
+        if not raw_record:
+            continue
+        fields = raw_record.split(b"\x00")
+        if len(fields) != 6:
+            raise GitParseError("Malformed commit history record")
+        oid, parents, name, email, authored_at, subject = (
+            value.decode("utf-8", errors="surrogateescape") for value in fields
+        )
+        commits.append(
+            CommitSummary(
+                oid=oid,
+                parent_oids=tuple(parents.split()),
+                author_name=name,
+                author_email=email,
+                authored_at=authored_at,
+                subject=subject,
+            )
+        )
+    return tuple(commits)
 
 _HUNK_HEADER = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$"

@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, QTimer, Slot
+from PySide6.QtCore import QByteArray, QDateTime, QSettings, QSignalBlocker, Qt, QTimer, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QTabWidget,
     QTextEdit,
     QToolBar,
     QToolButton,
@@ -40,6 +41,8 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient.git.models import (
+    CommitPage,
+    CommitSummary,
     DiffLine,
     DiffLineKind,
     FileStatus,
@@ -51,6 +54,7 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
+from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_highlighter import DiffHighlighter
 from mygitclient.workspace import (
@@ -71,9 +75,12 @@ class MainWindow(QMainWindow):
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
         self._current_diff: UnifiedDiff | None = None
+        self._generated_commit_message = ""
+        self._generated_commit_description = ""
         self._selected_diff_lines: set[int] = set()
         self._last_selected_diff_line: int | None = None
         self._status_runner: GitRunner | None = None
+        self._history_runner: GitRunner | None = None
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(1500)
         self._refresh_timer.timeout.connect(self._poll_repository)
@@ -139,6 +146,11 @@ class MainWindow(QMainWindow):
         self._commit_message.setMaximumHeight(90)
         self._commit_message.textChanged.connect(self._update_commit_controls)
         changes_layout.addWidget(self._commit_message)
+        self._commit_description = QPlainTextEdit()
+        self._commit_description.setObjectName("commitDescriptionEdit")
+        self._commit_description.setPlaceholderText("Description (optional)")
+        self._commit_description.setMaximumHeight(110)
+        changes_layout.addWidget(self._commit_description)
         commit_actions = QWidget()
         commit_actions_layout = QHBoxLayout(commit_actions)
         commit_actions_layout.setContentsMargins(0, 0, 0, 0)
@@ -158,6 +170,36 @@ class MainWindow(QMainWindow):
         changes_layout.addWidget(self._commit_error)
         self._changes_container.hide()
         self._update_commit_controls()
+
+        self._history = QTreeWidget()
+        self._history.setObjectName("historyTree")
+        self._history.setHeaderLabels(["Graph", "Description", "Author", "Date", "Commit"])
+        self._history.setRootIsDecorated(False)
+        self._history.setUniformRowHeights(True)
+        self._history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._history.setColumnWidth(0, 60)
+        self._history.setColumnWidth(1, 360)
+        self._history.setColumnWidth(2, 150)
+        self._history.setColumnWidth(3, 190)
+        self._history.setColumnWidth(4, 90)
+        self._history.setItemDelegateForColumn(0, CommitGraphDelegate(self._history))
+        self._history_load_more = QPushButton("Load more")
+        self._history_load_more.setObjectName("historyLoadMoreButton")
+        self._history_load_more.clicked.connect(self._load_more_history)
+        self._history_load_more.hide()
+        self._history_container = QWidget()
+        history_layout = QVBoxLayout(self._history_container)
+        history_layout.setContentsMargins(0, 0, 0, 0)
+        history_layout.addWidget(self._history)
+        history_layout.addWidget(self._history_load_more)
+
+        self._workspace_tabs = QTabWidget()
+        self._workspace_tabs.setObjectName("workspaceTabs")
+        self._workspace_tabs.addTab(self._changes_container, "Changes")
+        self._workspace_tabs.addTab(self._history_container, "History")
+        self._workspace_tabs.setMinimumWidth(360)
+        self._workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
+        self._workspace_tabs.hide()
 
         self._diff = QPlainTextEdit()
         self._diff.setObjectName("diffPanel")
@@ -211,6 +253,7 @@ class MainWindow(QMainWindow):
         self._diff_view_mode.hide()
 
         self._diff_container = QWidget()
+        self._diff_container.setObjectName("diffContainer")
         diff_layout = QVBoxLayout(self._diff_container)
         diff_layout.setContentsMargins(0, 0, 0, 0)
         diff_body = QWidget()
@@ -294,7 +337,7 @@ class MainWindow(QMainWindow):
         self._splitter.setObjectName("mainSplitter")
         self._splitter.addWidget(self._repositories)
         self._splitter.addWidget(self._welcome)
-        self._splitter.addWidget(self._changes_container)
+        self._splitter.addWidget(self._workspace_tabs)
         self._splitter.addWidget(self._diff_container)
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
@@ -379,6 +422,7 @@ class MainWindow(QMainWindow):
 
     def _connect_services(self) -> None:
         self._git.status_ready.connect(self._show_status)
+        self._git.history_ready.connect(self._show_history)
         self._git.diff_ready.connect(self._show_diff)
         self._git.mutation_ready.connect(self._mutation_finished)
         self._git.operation_failed.connect(self._show_git_error)
@@ -460,10 +504,13 @@ class MainWindow(QMainWindow):
         self._show_linked_repositories(repository)
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
+        self._history.clear()
+        self._history_load_more.hide()
         self._diff.clear()
         self._diff_gutter.clear()
         self._welcome.hide()
         self._changes_container.show()
+        self._workspace_tabs.show()
         self._diff_version.show()
         self._diff_view_mode.show()
         self._diff_gutter.setVisible(not self._wrap_button.isChecked())
@@ -471,7 +518,95 @@ class MainWindow(QMainWindow):
         self._diff_container.show()
         self._restore_workspace_splitter_sizes()
         self._status_runner = self._git.request_status(repository)
+        self._history_runner = self._git.request_history(repository)
         self._refresh_timer.start()
+
+    @Slot(int)
+    def _workspace_tab_changed(self, index: int) -> None:
+        showing_history = index == 1
+        self._diff_container.setVisible(not showing_history and self._repository is not None)
+        if showing_history:
+            available = max(self._splitter.width() - self._repositories.minimumWidth(), 600)
+            self._splitter.setSizes([220, 0, available, 0])
+            self._history.header().setStretchLastSection(False)
+            self._history.header().setSectionResizeMode(
+                1, self._history.header().ResizeMode.Stretch
+            )
+        elif self._repository is not None:
+            self._history.header().setSectionResizeMode(
+                1, self._history.header().ResizeMode.Interactive
+            )
+            self._restore_workspace_splitter_sizes()
+
+    @Slot()
+    def _load_more_history(self) -> None:
+        if self._repository is None:
+            return
+        if self._history_runner is not None and self._history_runner.is_running:
+            return
+        self._history_load_more.setEnabled(False)
+        self._status_label.setText("Loading more commits…")
+        self._history_runner = self._git.request_history(
+            self._repository, offset=self._history.topLevelItemCount()
+        )
+
+    @Slot(object)
+    def _show_history(self, value: object) -> None:
+        if not isinstance(value, CommitPage):
+            return
+        if self._repository is None or value.repository != self._repository:
+            return
+        if value.offset == 0:
+            self._history.clear()
+        for commit in value.commits:
+            self._append_history_item(commit)
+        self._render_history_graph()
+        self._history_load_more.setVisible(value.has_more)
+        self._history_load_more.setEnabled(True)
+        count = self._history.topLevelItemCount()
+        self._status_label.setText(f"Loaded {count} commits")
+
+    def _append_history_item(self, commit: CommitSummary) -> None:
+        authored_at = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
+        display_date = (
+            authored_at.toLocalTime().toString("dd.MM.yyyy HH:mm")
+            if authored_at.isValid()
+            else commit.authored_at
+        )
+        item = QTreeWidgetItem(
+            ["", commit.subject, commit.author_name, display_date, commit.oid[:8]]
+        )
+        item.setData(0, Qt.ItemDataRole.UserRole, commit)
+        item.setToolTip(1, commit.subject)
+        item.setToolTip(2, f"{commit.author_name} <{commit.author_email}>")
+        item.setToolTip(4, commit.oid)
+        self._history.addTopLevelItem(item)
+
+    def _render_history_graph(self) -> None:
+        lanes: list[str] = []
+        widest = 1
+        for row in range(self._history.topLevelItemCount()):
+            item = self._history.topLevelItem(row)
+            if item is None:
+                continue
+            commit = item.data(0, Qt.ItemDataRole.UserRole)
+            if not isinstance(commit, CommitSummary):
+                continue
+            try:
+                lane = lanes.index(commit.oid)
+            except ValueError:
+                lane = 0
+                lanes.insert(0, commit.oid)
+            before = tuple(lanes)
+            lanes.pop(lane)
+            for parent in reversed(commit.parent_oids):
+                if parent not in lanes:
+                    lanes.insert(lane, parent)
+            parent_lanes = tuple(lanes.index(parent) for parent in commit.parent_oids)
+            graph_row = CommitGraphRow(before, tuple(lanes), lane, parent_lanes)
+            item.setData(0, GRAPH_ROLE, graph_row)
+            widest = max(widest, len(before), len(lanes))
+        self._history.setColumnWidth(0, max(60, widest * CommitGraphDelegate.lane_width + 16))
 
     def _show_linked_repositories(self, repository: Path) -> None:
         for index in range(self._repositories.topLevelItemCount()):
@@ -626,7 +761,35 @@ class MainWindow(QMainWindow):
         change_count = len(status_value.files)
         self.setWindowTitle(f"{repository_name} — {branch} — MyGitClient")
         self._status_label.setText(f"{branch} · {change_count} changed file(s)")
+        self._update_generated_commit_text(status_value)
         self._update_commit_controls()
+
+    def _update_generated_commit_text(self, status: RepositoryStatus) -> None:
+        staged = [file for file in status.files if file.is_staged]
+        changes = [(_commit_change_label(file), file.path) for file in staged]
+        if len(changes) == 1:
+            action, path = changes[0]
+            message = f"{action} {path}"
+        elif changes:
+            actions = {action for action, _path in changes}
+            action = actions.pop() if len(actions) == 1 else "Update"
+            message = f"{action} {len(changes)} files"
+        else:
+            message = ""
+        description = "\n".join(f"- {action} {path}" for action, path in changes)
+
+        current_message = self._commit_message.toPlainText()
+        if not current_message or current_message == self._generated_commit_message:
+            blocker = QSignalBlocker(self._commit_message)
+            self._commit_message.setPlainText(message)
+            del blocker
+        current_description = self._commit_description.toPlainText()
+        if not current_description or current_description == self._generated_commit_description:
+            blocker = QSignalBlocker(self._commit_description)
+            self._commit_description.setPlainText(description)
+            del blocker
+        self._generated_commit_message = message
+        self._generated_commit_description = description
 
     @Slot(QTreeWidgetItem, int)
     def _stage_checkbox_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -663,6 +826,9 @@ class MainWindow(QMainWindow):
         self._changes_container.setEnabled(True)
         if path == "commit":
             self._commit_message.clear()
+            self._commit_description.clear()
+            self._generated_commit_message = ""
+            self._generated_commit_description = ""
             self._amend.setChecked(False)
             self._status_label.setText("Commit created")
         else:
@@ -692,11 +858,14 @@ class MainWindow(QMainWindow):
     def _create_commit(self) -> None:
         repository = self._repository
         message = self._commit_message.toPlainText().strip()
+        description = self._commit_description.toPlainText().strip()
         if repository is None or not self._commit_button.isEnabled() or not message:
             return
         self._changes_container.setEnabled(False)
         self._status_label.setText("Creating commit…")
-        self._git.request_commit(repository, message, amend=self._amend.isChecked())
+        self._git.request_commit(
+            repository, message, description, amend=self._amend.isChecked()
+        )
 
     @Slot()
     def _selected_file_changed(self) -> None:
@@ -1098,3 +1267,13 @@ def _status_label(code: str) -> str:
         "U": "Unmerged",
         "T": "Type changed",
     }.get(code, code)
+
+
+def _commit_change_label(file: FileStatus) -> str:
+    return {
+        "A": "Add",
+        "D": "Delete",
+        "R": "Rename",
+        "C": "Copy",
+        "T": "Change type of",
+    }.get(file.index_status, "Update")

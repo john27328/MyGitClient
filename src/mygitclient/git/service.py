@@ -5,17 +5,19 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from mygitclient.git.models import (
+    CommitPage,
     FileStatus,
     GitCommand,
     GitResult,
     RepositoryStatusSnapshot,
     UnifiedDiff,
 )
-from mygitclient.git.parsers import parse_status_porcelain_v2, parse_unified_diff
+from mygitclient.git.parsers import parse_commit_log, parse_status_porcelain_v2, parse_unified_diff
 from mygitclient.git.runner import GitRunner
 
 
 class GitService(QObject):
+    history_ready = Signal(object)
     status_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
@@ -27,6 +29,31 @@ class GitService(QObject):
         self._status_requests: dict[GitRunner, Path] = {}
         self._diff_requests: dict[GitRunner, tuple[str, bool, bool]] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
+        self._history_requests: dict[GitRunner, tuple[Path, int, int]] = {}
+
+    def request_history(
+        self, repository: Path, *, offset: int = 0, limit: int = 100
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._history_requests[runner] = (repository, offset, limit)
+        runner.completed.connect(self._handle_history)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "log",
+                    "--all",
+                    f"--skip={offset}",
+                    f"--max-count={limit + 1}",
+                    "--date=iso-strict",
+                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                ),
+                repository,
+                "read commit history",
+            )
+        )
+        return runner
 
     def request_status(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
@@ -111,11 +138,15 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, repository, operation))
         return runner
 
-    def request_commit(self, repository: Path, message: str, *, amend: bool) -> GitRunner:
+    def request_commit(
+        self, repository: Path, message: str, description: str, *, amend: bool
+    ) -> GitRunner:
         arguments = ["commit"]
         if amend:
             arguments.append("--amend")
         arguments.extend(("-m", message))
+        if description:
+            arguments.extend(("-m", description))
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "commit"
@@ -232,7 +263,31 @@ class GitService(QObject):
         self._status_requests.pop(runner, None)
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
+        self._history_requests.pop(runner, None)
         self.operation_failed.emit(message)
+
+    @Slot(object)
+    def _handle_history(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned history from an unknown operation")
+            return
+        self._runners.discard(runner)
+        request = self._history_requests.pop(runner, None)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected history result")
+            return
+        repository, offset, limit = request
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read commit history")
+            return
+        try:
+            commits = parse_commit_log(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        page = CommitPage(repository, commits[:limit], offset, len(commits) > limit)
+        self.history_ready.emit(page)
 
     @Slot(object)
     def _handle_diff(self, result: object) -> None:

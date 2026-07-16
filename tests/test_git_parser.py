@@ -1,6 +1,27 @@
 from __future__ import annotations
 
-from mygitclient.git.parsers import parse_status_porcelain_v2, parse_unified_diff
+from mygitclient.git.parsers import (
+    parse_commit_log,
+    parse_status_porcelain_v2,
+    parse_unified_diff,
+)
+
+
+def test_parse_commit_log_preserves_commit_metadata() -> None:
+    output = (
+        b"\x1e0123456789\x00parent-one parent-two\x00Ada Lovelace\x00ada@example.com\x00"
+        b"2026-07-16T12:30:00+03:00\x00Merge feature\n"
+        b"\x1eabcdef0123\x00\x00Linus\x00linus@example.com\x00"
+        b"2026-07-15T09:00:00+03:00\x00Initial commit"
+    )
+
+    commits = parse_commit_log(output)
+
+    assert len(commits) == 2
+    assert commits[0].oid == "0123456789"
+    assert commits[0].parent_oids == ("parent-one", "parent-two")
+    assert commits[0].subject == "Merge feature"
+    assert commits[1].parent_oids == ()
 
 
 def test_parse_unified_diff_classifies_lines() -> None:
