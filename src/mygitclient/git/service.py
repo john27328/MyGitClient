@@ -33,8 +33,7 @@ class GitService(QObject):
         )
         return runner
 
-    def request_diff(self, repository: Path, file: FileStatus) -> GitRunner:
-        staged = file.is_staged and not file.has_worktree_change
+    def request_diff(self, repository: Path, file: FileStatus, *, staged: bool) -> GitRunner:
         arguments = ["diff", "--no-ext-diff", "--no-color"]
         if staged:
             arguments.append("--cached")

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QPlainTextEdit, QTreeWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QPlainTextEdit, QTreeWidget
 from pytestqt.qtbot import QtBot
 
 from mygitclient.theme import Theme
@@ -142,6 +142,65 @@ def test_selecting_changed_file_displays_diff(
     qtbot.waitUntil(lambda: "+after" in diff_panel.toPlainText(), timeout=5000)
 
     assert "-before" in diff_panel.toPlainText()
+    window.close()
+
+
+def test_diff_version_can_switch_between_worktree_and_staged(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_text("original\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked.write_text("staged version\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    tracked.write_text("working version\n", encoding="utf-8")
+
+    settings = QSettings(str(tmp_path / "versions.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    version_combo = window.findChild(QComboBox, "diffVersionCombo")
+    assert changes is not None
+    assert diff_panel is not None
+    assert version_combo is not None
+
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    changed_item = changes.topLevelItem(0)
+    assert changed_item is not None
+    changes.setCurrentItem(changed_item)
+    qtbot.waitUntil(lambda: "+working version" in diff_panel.toPlainText(), timeout=5000)
+
+    assert [version_combo.itemText(index) for index in range(version_combo.count())] == [
+        "Working tree",
+        "Staged",
+    ]
+    version_combo.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: "+staged version" in diff_panel.toPlainText(), timeout=5000)
+    assert "-original" in diff_panel.toPlainText()
     window.close()
 
 

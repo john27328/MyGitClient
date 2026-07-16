@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QSettings, Qt, Slot
+from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, Slot
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
     QLabel,
     QMainWindow,
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from mygitclient.git.models import FileStatus, RepositoryStatus, UnifiedDiff
@@ -69,11 +72,24 @@ class MainWindow(QMainWindow):
         self._diff.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self._diff.hide()
 
+        self._diff_version = QComboBox()
+        self._diff_version.setObjectName("diffVersionCombo")
+        self._diff_version.setToolTip("Choose which version of the selected file to compare")
+        self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
+        self._diff_version.hide()
+
+        self._diff_container = QWidget()
+        diff_layout = QVBoxLayout(self._diff_container)
+        diff_layout.setContentsMargins(0, 0, 0, 0)
+        diff_layout.addWidget(self._diff_version)
+        diff_layout.addWidget(self._diff)
+        self._diff_container.hide()
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._repositories)
         splitter.addWidget(self._welcome)
         splitter.addWidget(self._changes)
-        splitter.addWidget(self._diff)
+        splitter.addWidget(self._diff_container)
         splitter.setSizes([240, 360, 580])
         self.setCentralWidget(splitter)
         self._status_label = QLabel("Ready")
@@ -111,7 +127,7 @@ class MainWindow(QMainWindow):
         self._git.diff_ready.connect(self._show_diff)
         self._git.operation_failed.connect(self._show_git_error)
         self._repositories.itemActivated.connect(self._open_recent_item)
-        self._changes.itemSelectionChanged.connect(self._request_selected_diff)
+        self._changes.itemSelectionChanged.connect(self._selected_file_changed)
 
     def _populate_recent_repositories(self) -> None:
         self._repositories.clear()
@@ -174,7 +190,9 @@ class MainWindow(QMainWindow):
         self._diff.clear()
         self._welcome.hide()
         self._changes.show()
+        self._diff_version.show()
         self._diff.show()
+        self._diff_container.show()
         self._git.request_status(repository)
 
     @Slot(object)
@@ -199,6 +217,17 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"{branch} · {change_count} changed file(s)")
 
     @Slot()
+    def _selected_file_changed(self) -> None:
+        selected_items = self._changes.selectedItems()
+        if not selected_items:
+            return
+        file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(file, FileStatus):
+            return
+        self._populate_diff_versions(file)
+        self._request_selected_diff()
+
+    @Slot()
     def _request_selected_diff(self) -> None:
         selected_items = self._changes.selectedItems()
         repository = self._repository
@@ -208,9 +237,21 @@ class MainWindow(QMainWindow):
         file = item.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus):
             return
+        staged = self._diff_version.currentData()
+        if not isinstance(staged, bool):
+            return
         self._diff.setPlainText("Loading diff…")
         self._status_label.setText(f"Reading diff for {file.path}…")
-        self._git.request_diff(repository, file)
+        self._git.request_diff(repository, file, staged=staged)
+
+    def _populate_diff_versions(self, file: FileStatus) -> None:
+        blocker = QSignalBlocker(self._diff_version)
+        self._diff_version.clear()
+        if file.has_worktree_change:
+            self._diff_version.addItem("Working tree", False)
+        if file.is_staged:
+            self._diff_version.addItem("Staged", True)
+        del blocker
 
     @Slot(object)
     def _show_diff(self, value: object) -> None:
@@ -222,6 +263,8 @@ class MainWindow(QMainWindow):
         current = selected_items[0]
         file = current.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus) or file.path != value.path:
+            return
+        if self._diff_version.currentData() != value.staged:
             return
         self._diff.setPlainText(value.text or "No textual changes to display.")
         version = "staged" if value.staged else "working tree"
