@@ -2,6 +2,9 @@
 
 A cross-platform desktop Git client built with Python and PySide6.
 
+Development conventions and architecture are documented in [AGENTS.md](AGENTS.md).
+The current roadmap is maintained as a checklist in [PLAN.md](PLAN.md).
+
 ## Development
 
 ```powershell
