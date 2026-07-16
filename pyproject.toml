@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mygitclient"
+version = "0.1.0"
+description = "A cross-platform Git client built with Python and Qt"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "platformdirs>=4.3",
+    "PySide6>=6.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyright>=1.1.400",
+    "pytest>=8.3",
+    "pytest-qt>=4.4",
+    "ruff>=0.11",
+]
+
+[project.scripts]
+mygitclient = "mygitclient.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mygitclient"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+
