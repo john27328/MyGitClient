@@ -136,6 +136,34 @@ def test_recent_repository_can_be_removed_with_context_action(
     window.close()
 
 
+def test_open_repositories_are_restored_and_switchable(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repositories = [tmp_path / "first", tmp_path / "second"]
+    for repository in repositories:
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    settings = QSettings(str(tmp_path / "session.ini"), QSettings.Format.IniFormat)
+    settings.setValue("workspace/openRepositories", [str(path) for path in repositories])
+    settings.setValue("workspace/lastRepository", str(repositories[1]))
+
+    window = MainWindow(settings, Theme.SYSTEM)
+    switcher = window.findChild(QComboBox, "repositorySwitcher")
+    assert switcher is not None
+    assert switcher.count() == 2
+    qtbot.waitUntil(lambda: window.windowTitle().startswith("second —"), timeout=5000)
+
+    switcher.setCurrentIndex(0)
+    qtbot.waitUntil(lambda: window.windowTitle().startswith("first —"), timeout=5000)
+    assert settings.value("workspace/lastRepository") == str(repositories[0])
+    window.close()
+
+
 def test_invalid_theme_falls_back_to_system() -> None:
     assert Theme.from_value("unknown") is Theme.SYSTEM
 

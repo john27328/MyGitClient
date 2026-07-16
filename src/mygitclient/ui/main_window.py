@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -35,13 +36,24 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mygitclient.git.models import DiffLine, DiffLineKind, FileStatus, RepositoryStatus, UnifiedDiff
+from mygitclient.git.models import (
+    DiffLine,
+    DiffLineKind,
+    FileStatus,
+    RepositoryStatus,
+    RepositoryStatusSnapshot,
+    UnifiedDiff,
+)
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
 from mygitclient.ui.diff_highlighter import DiffHighlighter
-from mygitclient.workspace import WorkspaceManager, find_repository_root
+from mygitclient.workspace import (
+    WorkspaceManager,
+    discover_linked_repositories,
+    find_repository_root,
+)
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +64,7 @@ class MainWindow(QMainWindow):
         self._workspace = WorkspaceManager(settings)
         self._git = GitService(self)
         self._repository: Path | None = None
+        self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
         self._current_diff: UnifiedDiff | None = None
         self._status_runner: GitRunner | None = None
@@ -66,6 +79,7 @@ class MainWindow(QMainWindow):
         self._connect_services()
         self._populate_recent_repositories()
         self._restore_window_state()
+        self._restore_open_repositories()
 
     def _build_ui(self) -> None:
         self._repositories = QTreeWidget()
@@ -306,6 +320,11 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toolbar.addAction(open_action)
+        self._repository_switcher = QComboBox()
+        self._repository_switcher.setObjectName("repositorySwitcher")
+        self._repository_switcher.setMinimumWidth(180)
+        self._repository_switcher.currentIndexChanged.connect(self._repository_selected)
+        toolbar.addWidget(self._repository_switcher)
         refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
         refresh_action.setObjectName("refreshAction")
         refresh_action.setShortcut("F5")
@@ -316,6 +335,13 @@ class MainWindow(QMainWindow):
         cancel_action.triggered.connect(self._cancel_operations)
         toolbar.addAction(cancel_action)
         self.addToolBar(toolbar)
+
+        workspace_menu = self.menuBar().addMenu("&Workspace")
+        save_workspace = QAction("Save Workspace…", self)
+        save_workspace.triggered.connect(self._save_workspace)
+        workspace_menu.addAction(save_workspace)
+        self._load_workspace_menu = workspace_menu.addMenu("Open Workspace")
+        self._populate_workspace_menu()
 
         view_menu = self.menuBar().addMenu("&View")
         theme_menu = view_menu.addMenu("Theme")
@@ -394,10 +420,24 @@ class MainWindow(QMainWindow):
                 f"No Git repository was found in or above:\n{selected_path}",
             )
             return
+        if repository not in self._open_repositories:
+            self._open_repositories.append(repository)
+            self._workspace.save_open_repositories(self._open_repositories)
+            self._populate_repository_switcher()
+        self._activate_repository(repository)
+
+    def _activate_repository(self, repository: Path) -> None:
         self._repository = repository
         self._repository_status = None
+        self._workspace.set_last_repository(repository)
+        switcher_blocker = QSignalBlocker(self._repository_switcher)
+        self._repository_switcher.setCurrentIndex(
+            self._repository_switcher.findData(str(repository))
+        )
+        del switcher_blocker
         self._workspace.remember(repository)
         self._populate_recent_repositories()
+        self._show_linked_repositories(repository)
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
         self._diff.clear()
@@ -412,6 +452,79 @@ class MainWindow(QMainWindow):
         self._restore_workspace_splitter_sizes()
         self._status_runner = self._git.request_status(repository)
         self._refresh_timer.start()
+
+    def _show_linked_repositories(self, repository: Path) -> None:
+        for index in range(self._repositories.topLevelItemCount()):
+            item = self._repositories.topLevelItem(index)
+            if item is None or item.data(0, Qt.ItemDataRole.UserRole) != str(repository):
+                continue
+            for linked in discover_linked_repositories(repository):
+                child = QTreeWidgetItem([f"{linked.path.name} ({linked.kind})"])
+                child.setToolTip(0, str(linked.path))
+                child.setData(0, Qt.ItemDataRole.UserRole, str(linked.path))
+                item.addChild(child)
+            item.setExpanded(True)
+            return
+
+    def _populate_repository_switcher(self) -> None:
+        blocker = QSignalBlocker(self._repository_switcher)
+        self._repository_switcher.clear()
+        for repository in self._open_repositories:
+            self._repository_switcher.addItem(repository.name, str(repository))
+        if self._repository is not None:
+            index = self._repository_switcher.findData(str(self._repository))
+            self._repository_switcher.setCurrentIndex(index)
+        del blocker
+
+    @Slot(int)
+    def _repository_selected(self, index: int) -> None:
+        value = self._repository_switcher.itemData(index)
+        if isinstance(value, str):
+            repository = Path(value)
+            if repository != self._repository and repository.is_dir():
+                self._activate_repository(repository)
+
+    def _restore_open_repositories(self) -> None:
+        self._open_repositories = list(self._workspace.open_repositories())
+        last = self._workspace.last_repository()
+        if last is not None and last not in self._open_repositories:
+            self._open_repositories.append(last)
+        self._populate_repository_switcher()
+        if last is not None:
+            self._activate_repository(last)
+
+    @Slot()
+    def _save_workspace(self) -> None:
+        name, accepted = QInputDialog.getText(self, "Save Workspace", "Workspace name:")
+        if not accepted or not name.strip():
+            return
+        self._workspace.save_named_workspace(name, self._open_repositories)
+        self._populate_workspace_menu()
+
+    def _populate_workspace_menu(self) -> None:
+        self._load_workspace_menu.clear()
+        for name in self._workspace.named_workspaces():
+            action = QAction(name, self)
+            action.setData(name)
+            action.triggered.connect(self._load_workspace)
+            self._load_workspace_menu.addAction(action)
+        self._load_workspace_menu.setEnabled(bool(self._workspace.named_workspaces()))
+
+    @Slot()
+    def _load_workspace(self) -> None:
+        action = self.sender()
+        if not isinstance(action, QAction):
+            return
+        name = action.data()
+        if not isinstance(name, str):
+            return
+        repositories = list(self._workspace.load_named_workspace(name))
+        if not repositories:
+            return
+        self._open_repositories = repositories
+        self._workspace.save_open_repositories(repositories)
+        self._populate_repository_switcher()
+        self._activate_repository(repositories[0])
 
     @Slot()
     def _refresh_repository(self) -> None:
@@ -435,9 +548,12 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _show_status(self, value: object) -> None:
-        if not isinstance(value, RepositoryStatus):
+        if not isinstance(value, RepositoryStatusSnapshot):
             return
-        if value == self._repository_status:
+        if self._repository is None or value.repository != self._repository:
+            return
+        status_value = value.status
+        if status_value == self._repository_status:
             self._request_diff(silent=True)
             return
         selected_path: str | None = None
@@ -446,12 +562,12 @@ class MainWindow(QMainWindow):
             selected_file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
             if isinstance(selected_file, FileStatus):
                 selected_path = selected_file.path
-        self._repository_status = value
+        self._repository_status = status_value
         blocker = QSignalBlocker(self._changes)
         stage_all_blocker = QSignalBlocker(self._stage_all)
         item_to_restore: QTreeWidgetItem | None = None
         self._changes.clear()
-        for file in value.files:
+        for file in status_value.files:
             index_label = "" if file.index_status == "?" else _status_label(file.index_status)
             item = QTreeWidgetItem(
                 [file.path, index_label, _status_label(file.worktree_status)]
@@ -471,8 +587,8 @@ class MainWindow(QMainWindow):
             if file.path == selected_path:
                 item_to_restore = item
         del blocker
-        stageable = [file for file in value.files if not file.unmerged]
-        has_conflicts = any(file.unmerged for file in value.files)
+        stageable = [file for file in status_value.files if not file.unmerged]
+        has_conflicts = any(file.unmerged for file in status_value.files)
         self._stage_all.setEnabled(bool(stageable) and not has_conflicts)
         if not stageable or not any(file.is_staged for file in stageable):
             self._stage_all.setCheckState(Qt.CheckState.Unchecked)
@@ -485,9 +601,9 @@ class MainWindow(QMainWindow):
             self._changes.setCurrentItem(item_to_restore)
         self._changes.resizeColumnToContents(0)
 
-        branch = value.branch.head or "detached HEAD"
-        repository_name = self._repository.name if self._repository is not None else "Repository"
-        change_count = len(value.files)
+        branch = status_value.branch.head or "detached HEAD"
+        repository_name = self._repository.name
+        change_count = len(status_value.files)
         self.setWindowTitle(f"{repository_name} — {branch} — MyGitClient")
         self._status_label.setText(f"{branch} · {change_count} changed file(s)")
         self._update_commit_controls()

@@ -4,7 +4,13 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from mygitclient.git.models import FileStatus, GitCommand, GitResult, UnifiedDiff
+from mygitclient.git.models import (
+    FileStatus,
+    GitCommand,
+    GitResult,
+    RepositoryStatusSnapshot,
+    UnifiedDiff,
+)
 from mygitclient.git.parsers import parse_status_porcelain_v2, parse_unified_diff
 from mygitclient.git.runner import GitRunner
 
@@ -18,12 +24,14 @@ class GitService(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._runners: set[GitRunner] = set()
+        self._status_requests: dict[GitRunner, Path] = {}
         self._diff_requests: dict[GitRunner, tuple[str, bool, bool]] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
 
     def request_status(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
+        self._status_requests[runner] = repository
         runner.completed.connect(self._handle_status)
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(
@@ -181,6 +189,7 @@ class GitService(QObject):
             self.operation_failed.emit("Git returned a result from an unknown operation")
             return
         self._runners.discard(runner)
+        repository = self._status_requests.pop(runner, None)
         if not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected result")
             return
@@ -192,7 +201,10 @@ class GitService(QObject):
         except (ValueError, RuntimeError) as error:
             self.operation_failed.emit(str(error))
             return
-        self.status_ready.emit(status)
+        if repository is None:
+            self.operation_failed.emit("Git returned status without a repository")
+            return
+        self.status_ready.emit(RepositoryStatusSnapshot(repository, status))
 
     @Slot(str)
     def _handle_start_error(self, message: str) -> None:
@@ -200,6 +212,7 @@ class GitService(QObject):
         if not isinstance(runner, GitRunner):
             return
         self._runners.discard(runner)
+        self._status_requests.pop(runner, None)
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
         self.operation_failed.emit(message)

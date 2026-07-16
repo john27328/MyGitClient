@@ -63,6 +63,12 @@ class RepositoryStatus:
     ignored_count: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class RepositoryStatusSnapshot:
+    repository: Path
+    status: RepositoryStatus
+
+
 DiffLineKind = Literal["header", "hunk", "addition", "deletion", "context", "metadata"]
 
 
