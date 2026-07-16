@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSplitter,
     QStackedWidget,
+    QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from mygitclient.git.models import DiffLine, DiffLineKind, FileStatus, RepositoryStatus, UnifiedDiff
 from mygitclient.git.service import GitService
+from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
 from mygitclient.ui.diff_highlighter import DiffHighlighter
 from mygitclient.workspace import WorkspaceManager, find_repository_root
@@ -38,6 +40,7 @@ class MainWindow(QMainWindow):
         self._git = GitService(self)
         self._repository: Path | None = None
         self.setWindowTitle("MyGitClient")
+        self.setWindowIcon(load_icon("app-icon.png"))
         self.resize(1180, 760)
         self._build_ui()
         self._build_menu()
@@ -52,6 +55,7 @@ class MainWindow(QMainWindow):
         self._repositories.setMinimumWidth(180)
         self._repositories.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         self._remove_recent_action = QAction("Remove from recent list", self._repositories)
+        self._remove_recent_action.setIcon(load_icon("remove.svg"))
         self._remove_recent_action.setObjectName("removeRecentAction")
         self._remove_recent_action.triggered.connect(self._remove_selected_recent)
         self._repositories.addAction(self._remove_recent_action)
@@ -190,6 +194,7 @@ class MainWindow(QMainWindow):
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
         open_action = QAction("&Open Repository…", self)
+        open_action.setIcon(load_icon("open.svg"))
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._choose_repository)
         file_menu.addAction(open_action)
@@ -198,6 +203,18 @@ class MainWindow(QMainWindow):
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
+
+        toolbar = QToolBar("Repository", self)
+        toolbar.setObjectName("repositoryToolbar")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        toolbar.addAction(open_action)
+        refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
+        refresh_action.setObjectName("refreshAction")
+        refresh_action.setShortcut("F5")
+        refresh_action.triggered.connect(self._refresh_repository)
+        toolbar.addAction(refresh_action)
+        self.addToolBar(toolbar)
 
         view_menu = self.menuBar().addMenu("&View")
         theme_menu = view_menu.addMenu("Theme")
@@ -289,6 +306,13 @@ class MainWindow(QMainWindow):
         self._diff_container.show()
         self._restore_workspace_splitter_sizes()
         self._git.request_status(repository)
+
+    @Slot()
+    def _refresh_repository(self) -> None:
+        if self._repository is None:
+            return
+        self._status_label.setText(f"Refreshing {self._repository.name}…")
+        self._git.request_status(self._repository)
 
     @Slot(object)
     def _show_status(self, value: object) -> None:

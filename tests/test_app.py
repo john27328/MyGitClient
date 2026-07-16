@@ -5,7 +5,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QComboBox, QPlainTextEdit, QSplitter, QTreeWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QPlainTextEdit,
+    QSplitter,
+    QToolBar,
+    QTreeWidget,
+)
 from pytestqt.qtbot import QtBot
 
 from mygitclient.theme import Theme
@@ -19,6 +26,12 @@ def test_main_window_is_created(qapp: QApplication) -> None:
 
     assert window.windowTitle() == "MyGitClient"
     assert window.centralWidget() is not None
+    assert not window.windowIcon().isNull()
+    toolbar = window.findChild(QToolBar, "repositoryToolbar")
+    refresh_action = window.findChild(QAction, "refreshAction")
+    assert toolbar is not None
+    assert refresh_action is not None
+    assert not refresh_action.icon().isNull()
 
     window.close()
 
@@ -250,6 +263,37 @@ def test_diff_version_can_switch_between_worktree_and_staged(
     version_combo.setCurrentIndex(1)
     qtbot.waitUntil(lambda: "+staged version" in diff_panel.toPlainText(), timeout=5000)
     assert "-original" in diff_panel.toPlainText()
+    window.close()
+
+
+def test_untracked_file_is_listed_and_displays_diff(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    nested = repository / "assets" / "icon.svg"
+    nested.parent.mkdir()
+    nested.write_text("<svg>new icon</svg>\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "untracked.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    assert changes is not None
+    assert diff_panel is not None
+
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    item = changes.topLevelItem(0)
+    assert item is not None
+    assert item.text(0) == "assets/icon.svg"
+    changes.setCurrentItem(item)
+    qtbot.waitUntil(lambda: "+<svg>new icon</svg>" in diff_panel.toPlainText(), timeout=5000)
     window.close()
 
 

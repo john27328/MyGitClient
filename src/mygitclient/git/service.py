@@ -17,7 +17,7 @@ class GitService(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._runners: set[GitRunner] = set()
-        self._diff_requests: dict[GitRunner, tuple[str, bool]] = {}
+        self._diff_requests: dict[GitRunner, tuple[str, bool, bool]] = {}
 
     def request_status(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
@@ -26,7 +26,13 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(
             GitCommand(
-                arguments=("status", "--porcelain=v2", "--branch", "-z"),
+                arguments=(
+                    "status",
+                    "--porcelain=v2",
+                    "--branch",
+                    "--untracked-files=all",
+                    "-z",
+                ),
                 working_directory=repository,
                 operation="read repository status",
             )
@@ -34,14 +40,18 @@ class GitService(QObject):
         return runner
 
     def request_diff(self, repository: Path, file: FileStatus, *, staged: bool) -> GitRunner:
-        arguments = ["diff", "--no-ext-diff", "--no-color"]
-        if staged:
-            arguments.append("--cached")
-        arguments.extend(("--", file.path))
+        untracked = file.index_status == "?"
+        if untracked:
+            arguments = ["diff", "--no-index", "--no-color", "--", "/dev/null", file.path]
+        else:
+            arguments = ["diff", "--no-ext-diff", "--no-color"]
+            if staged:
+                arguments.append("--cached")
+            arguments.extend(("--", file.path))
 
         runner = GitRunner(parent=self)
         self._runners.add(runner)
-        self._diff_requests[runner] = (file.path, staged)
+        self._diff_requests[runner] = (file.path, staged, untracked)
         runner.completed.connect(self._handle_diff)
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(
@@ -93,8 +103,8 @@ class GitService(QObject):
         if request is None or not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected diff result")
             return
-        if not result.succeeded:
+        path, staged, accepts_difference = request
+        if not result.succeeded and not (accepts_difference and result.exit_code == 1):
             self.operation_failed.emit(result.error_text or "Could not read file diff")
             return
-        path, staged = request
         self.diff_ready.emit(parse_unified_diff(result.stdout, path, staged=staged))
