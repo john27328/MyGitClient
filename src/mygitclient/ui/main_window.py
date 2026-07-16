@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, Slot
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QFont, QFontDatabase, QFontMetrics
+from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, QTimer, Slot
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QFont,
+    QFontDatabase,
+    QFontMetrics,
+    QTextOption,
+)
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -14,9 +24,11 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QToolBar,
+    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -24,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient.git.models import DiffLine, DiffLineKind, FileStatus, RepositoryStatus, UnifiedDiff
+from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
@@ -39,6 +52,12 @@ class MainWindow(QMainWindow):
         self._workspace = WorkspaceManager(settings)
         self._git = GitService(self)
         self._repository: Path | None = None
+        self._repository_status: RepositoryStatus | None = None
+        self._current_diff: UnifiedDiff | None = None
+        self._status_runner: GitRunner | None = None
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(1500)
+        self._refresh_timer.timeout.connect(self._poll_repository)
         self.setWindowTitle("MyGitClient")
         self.setWindowIcon(load_icon("app-icon.png"))
         self.resize(1180, 760)
@@ -73,7 +92,52 @@ class MainWindow(QMainWindow):
         self._changes.setHeaderLabels(["File", "Index", "Working tree"])
         self._changes.setRootIsDecorated(False)
         self._changes.setMinimumWidth(280)
-        self._changes.hide()
+        self._changes.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        self._discard_action = QAction("Discard changes…", self._changes)
+        self._discard_action.setObjectName("discardChangesAction")
+        self._discard_action.setEnabled(False)
+        self._discard_action.triggered.connect(self._discard_selected_file)
+        self._ignore_action = QAction("Add to .gitignore", self._changes)
+        self._ignore_action.setObjectName("ignoreFileAction")
+        self._ignore_action.setEnabled(False)
+        self._ignore_action.triggered.connect(self._ignore_selected_file)
+        self._changes.addAction(self._discard_action)
+        self._changes.addAction(self._ignore_action)
+
+        self._stage_all = QCheckBox("Stage all changes")
+        self._stage_all.setObjectName("stageAllCheckBox")
+        self._stage_all.setTristate(True)
+        self._stage_all.stateChanged.connect(self._stage_all_changed)
+        self._changes_container = QWidget()
+        changes_layout = QVBoxLayout(self._changes_container)
+        changes_layout.setContentsMargins(0, 0, 0, 0)
+        changes_layout.addWidget(self._stage_all)
+        changes_layout.addWidget(self._changes)
+        self._commit_message = QPlainTextEdit()
+        self._commit_message.setObjectName("commitMessageEdit")
+        self._commit_message.setPlaceholderText("Commit message")
+        self._commit_message.setMaximumHeight(90)
+        self._commit_message.textChanged.connect(self._update_commit_controls)
+        changes_layout.addWidget(self._commit_message)
+        commit_actions = QWidget()
+        commit_actions_layout = QHBoxLayout(commit_actions)
+        commit_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self._amend = QCheckBox("Amend")
+        self._amend.setObjectName("amendCheckBox")
+        self._amend.toggled.connect(self._update_commit_controls)
+        self._commit_button = QPushButton(load_icon("commit.svg"), "Commit")
+        self._commit_button.setObjectName("commitButton")
+        self._commit_button.clicked.connect(self._create_commit)
+        commit_actions_layout.addWidget(self._amend)
+        commit_actions_layout.addStretch(1)
+        commit_actions_layout.addWidget(self._commit_button)
+        changes_layout.addWidget(commit_actions)
+        self._commit_error = QLabel()
+        self._commit_error.setObjectName("commitErrorLabel")
+        self._commit_error.setStyleSheet("color: palette(bright-text);")
+        changes_layout.addWidget(self._commit_error)
+        self._changes_container.hide()
+        self._update_commit_controls()
 
         self._diff = QPlainTextEdit()
         self._diff.setObjectName("diffPanel")
@@ -87,6 +151,7 @@ class MainWindow(QMainWindow):
         self._diff.setFont(diff_font)
         self._diff.hide()
         self._diff_highlighter = DiffHighlighter(self._diff)
+        self._diff.cursorPositionChanged.connect(self._update_hunk_button)
 
         self._diff_gutter = QPlainTextEdit()
         self._diff_gutter.setObjectName("diffGutter")
@@ -149,10 +214,36 @@ class MainWindow(QMainWindow):
         side_splitter.addWidget(self._side_new)
         side_splitter.setSizes([500, 500])
 
+        self._wrap_button = QToolButton()
+        self._wrap_button.setObjectName("diffWrapButton")
+        self._wrap_button.setText("Wrap")
+        self._wrap_button.setCheckable(True)
+        self._wrap_button.setToolTip("Wrap long diff lines")
+        self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
+        self._wrap_button.toggled.connect(self._diff_wrap_changed)
+
+        self._whitespace_button = QToolButton()
+        self._whitespace_button.setObjectName("diffWhitespaceButton")
+        self._whitespace_button.setText("Whitespace")
+        self._whitespace_button.setCheckable(True)
+        self._whitespace_button.setToolTip("Show spaces and tab characters")
+        self._whitespace_button.setChecked(self._read_bool_setting("diff/showWhitespace"))
+        self._whitespace_button.toggled.connect(self._diff_whitespace_changed)
+
+        self._hunk_button = QToolButton()
+        self._hunk_button.setObjectName("diffHunkButton")
+        self._hunk_button.setText("Stage hunk")
+        self._hunk_button.setToolTip("Stage the hunk under the cursor")
+        self._hunk_button.setEnabled(False)
+        self._hunk_button.clicked.connect(self._apply_selected_hunk)
+
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         toolbar_layout.addWidget(self._diff_version, 1)
+        toolbar_layout.addWidget(self._wrap_button)
+        toolbar_layout.addWidget(self._whitespace_button)
+        toolbar_layout.addWidget(self._hunk_button)
         toolbar_layout.addWidget(self._diff_view_mode)
         diff_layout.insertWidget(0, toolbar)
 
@@ -162,12 +253,14 @@ class MainWindow(QMainWindow):
         self._diff_stack.setCurrentIndex(max(saved_index, 0))
         diff_layout.addWidget(self._diff_stack)
         self._diff_container.hide()
+        self._apply_diff_wrap(self._wrap_button.isChecked())
+        self._apply_diff_whitespace(self._whitespace_button.isChecked())
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("mainSplitter")
         self._splitter.addWidget(self._repositories)
         self._splitter.addWidget(self._welcome)
-        self._splitter.addWidget(self._changes)
+        self._splitter.addWidget(self._changes_container)
         self._splitter.addWidget(self._diff_container)
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
@@ -190,6 +283,10 @@ class MainWindow(QMainWindow):
         font.setFixedPitch(True)
         editor.setFont(font)
         return editor
+
+    def _read_bool_setting(self, key: str) -> bool:
+        value = self._settings.value(key, False)
+        return value is True or value == "true" or value == 1
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -214,6 +311,10 @@ class MainWindow(QMainWindow):
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self._refresh_repository)
         toolbar.addAction(refresh_action)
+        cancel_action = QAction("Cancel", self)
+        cancel_action.setObjectName("cancelOperationsAction")
+        cancel_action.triggered.connect(self._cancel_operations)
+        toolbar.addAction(cancel_action)
         self.addToolBar(toolbar)
 
         view_menu = self.menuBar().addMenu("&View")
@@ -233,10 +334,11 @@ class MainWindow(QMainWindow):
     def _connect_services(self) -> None:
         self._git.status_ready.connect(self._show_status)
         self._git.diff_ready.connect(self._show_diff)
-        self._git.mutation_ready.connect(self._staging_finished)
+        self._git.mutation_ready.connect(self._mutation_finished)
         self._git.operation_failed.connect(self._show_git_error)
         self._repositories.itemActivated.connect(self._open_recent_item)
         self._changes.itemSelectionChanged.connect(self._selected_file_changed)
+        self._changes.itemSelectionChanged.connect(self._update_file_actions)
         self._changes.itemChanged.connect(self._stage_checkbox_changed)
 
     def _populate_recent_repositories(self) -> None:
@@ -293,6 +395,7 @@ class MainWindow(QMainWindow):
             )
             return
         self._repository = repository
+        self._repository_status = None
         self._workspace.remember(repository)
         self._populate_recent_repositories()
         self._status_label.setText(f"Reading {repository.name}…")
@@ -300,27 +403,53 @@ class MainWindow(QMainWindow):
         self._diff.clear()
         self._diff_gutter.clear()
         self._welcome.hide()
-        self._changes.show()
+        self._changes_container.show()
         self._diff_version.show()
         self._diff_view_mode.show()
-        self._diff_gutter.show()
+        self._diff_gutter.setVisible(not self._wrap_button.isChecked())
         self._diff.show()
         self._diff_container.show()
         self._restore_workspace_splitter_sizes()
-        self._git.request_status(repository)
+        self._status_runner = self._git.request_status(repository)
+        self._refresh_timer.start()
 
     @Slot()
     def _refresh_repository(self) -> None:
         if self._repository is None:
             return
         self._status_label.setText(f"Refreshing {self._repository.name}…")
-        self._git.request_status(self._repository)
+        self._status_runner = self._git.request_status(self._repository)
+
+    @Slot()
+    def _poll_repository(self) -> None:
+        if self._repository is None:
+            return
+        if self._status_runner is not None and self._status_runner.is_running:
+            return
+        self._status_runner = self._git.request_status(self._repository)
+
+    @Slot()
+    def _cancel_operations(self) -> None:
+        self._git.cancel_all()
+        self._status_label.setText("Cancelling Git operations…")
 
     @Slot(object)
     def _show_status(self, value: object) -> None:
         if not isinstance(value, RepositoryStatus):
             return
+        if value == self._repository_status:
+            self._request_diff(silent=True)
+            return
+        selected_path: str | None = None
+        selected_items = self._changes.selectedItems()
+        if selected_items:
+            selected_file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(selected_file, FileStatus):
+                selected_path = selected_file.path
+        self._repository_status = value
         blocker = QSignalBlocker(self._changes)
+        stage_all_blocker = QSignalBlocker(self._stage_all)
+        item_to_restore: QTreeWidgetItem | None = None
         self._changes.clear()
         for file in value.files:
             index_label = "" if file.index_status == "?" else _status_label(file.index_status)
@@ -339,7 +468,21 @@ class MainWindow(QMainWindow):
                 else:
                     item.setCheckState(0, Qt.CheckState.Unchecked)
             self._changes.addTopLevelItem(item)
+            if file.path == selected_path:
+                item_to_restore = item
         del blocker
+        stageable = [file for file in value.files if not file.unmerged]
+        has_conflicts = any(file.unmerged for file in value.files)
+        self._stage_all.setEnabled(bool(stageable) and not has_conflicts)
+        if not stageable or not any(file.is_staged for file in stageable):
+            self._stage_all.setCheckState(Qt.CheckState.Unchecked)
+        elif all(file.is_staged and not file.has_worktree_change for file in stageable):
+            self._stage_all.setCheckState(Qt.CheckState.Checked)
+        else:
+            self._stage_all.setCheckState(Qt.CheckState.PartiallyChecked)
+        del stage_all_blocker
+        if item_to_restore is not None:
+            self._changes.setCurrentItem(item_to_restore)
         self._changes.resizeColumnToContents(0)
 
         branch = value.branch.head or "detached HEAD"
@@ -347,6 +490,7 @@ class MainWindow(QMainWindow):
         change_count = len(value.files)
         self.setWindowTitle(f"{repository_name} — {branch} — MyGitClient")
         self._status_label.setText(f"{branch} · {change_count} changed file(s)")
+        self._update_commit_controls()
 
     @Slot(QTreeWidgetItem, int)
     def _stage_checkbox_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -361,12 +505,62 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"{action} {file.path}…")
         self._git.request_stage(self._repository, file, staged=should_stage)
 
+    @Slot(int)
+    def _stage_all_changed(self, state: int) -> None:
+        repository = self._repository
+        status = self._repository_status
+        if repository is None or status is None:
+            return
+        should_stage = Qt.CheckState(state) is not Qt.CheckState.Unchecked
+        self._changes_container.setEnabled(False)
+        action = "Staging" if should_stage else "Unstaging"
+        self._status_label.setText(f"{action} all changes…")
+        self._git.request_stage_all(
+            repository,
+            staged=should_stage,
+            has_head=status.branch.oid is not None,
+        )
+
     @Slot(str)
-    def _staging_finished(self, path: str) -> None:
+    def _mutation_finished(self, path: str) -> None:
         self._changes.setEnabled(True)
-        self._status_label.setText(f"Updated staging area for {path}")
+        self._changes_container.setEnabled(True)
+        if path == "commit":
+            self._commit_message.clear()
+            self._amend.setChecked(False)
+            self._status_label.setText("Commit created")
+        else:
+            self._status_label.setText(f"Updated staging area for {path}")
         if self._repository is not None:
-            self._git.request_status(self._repository)
+            self._status_runner = self._git.request_status(self._repository)
+
+    @Slot()
+    def _update_commit_controls(self) -> None:
+        status = self._repository_status
+        message = self._commit_message.toPlainText().strip()
+        amend = self._amend.isChecked()
+        has_staged = status is not None and any(file.is_staged for file in status.files)
+        has_head = status is not None and status.branch.oid is not None
+        allowed = bool(message) and ((amend and has_head) or (not amend and has_staged))
+        self._commit_button.setEnabled(allowed)
+        if not message:
+            self._commit_error.setText("Enter a commit message.")
+        elif amend and not has_head:
+            self._commit_error.setText("There is no commit to amend.")
+        elif not amend and not has_staged:
+            self._commit_error.setText("Stage at least one change.")
+        else:
+            self._commit_error.clear()
+
+    @Slot()
+    def _create_commit(self) -> None:
+        repository = self._repository
+        message = self._commit_message.toPlainText().strip()
+        if repository is None or not self._commit_button.isEnabled() or not message:
+            return
+        self._changes_container.setEnabled(False)
+        self._status_label.setText("Creating commit…")
+        self._git.request_commit(repository, message, amend=self._amend.isChecked())
 
     @Slot()
     def _selected_file_changed(self) -> None:
@@ -380,7 +574,55 @@ class MainWindow(QMainWindow):
         self._request_selected_diff()
 
     @Slot()
+    def _update_file_actions(self) -> None:
+        selected_items = self._changes.selectedItems()
+        file: FileStatus | None = None
+        if selected_items:
+            value = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(value, FileStatus):
+                file = value
+        self._discard_action.setEnabled(file is not None and not file.unmerged)
+        self._ignore_action.setEnabled(file is not None and file.index_status == "?")
+
+    def _selected_file(self) -> FileStatus | None:
+        selected_items = self._changes.selectedItems()
+        if not selected_items:
+            return None
+        value = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+        return value if isinstance(value, FileStatus) else None
+
+    @Slot()
+    def _discard_selected_file(self) -> None:
+        file = self._selected_file()
+        repository = self._repository
+        if file is None or repository is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Discard changes",
+            f"Permanently discard all changes to {file.path}?",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer is not QMessageBox.StandardButton.Discard:
+            return
+        self._changes_container.setEnabled(False)
+        self._status_label.setText(f"Discarding changes to {file.path}…")
+        self._git.request_discard(repository, file)
+
+    @Slot()
+    def _ignore_selected_file(self) -> None:
+        file = self._selected_file()
+        repository = self._repository
+        if file is None or repository is None or file.index_status != "?":
+            return
+        self._git.ignore_path(repository, file.path)
+
+    @Slot()
     def _request_selected_diff(self) -> None:
+        self._request_diff(silent=False)
+
+    def _request_diff(self, *, silent: bool) -> None:
         selected_items = self._changes.selectedItems()
         repository = self._repository
         if not selected_items or repository is None:
@@ -392,8 +634,9 @@ class MainWindow(QMainWindow):
         staged = self._diff_version.currentData()
         if not isinstance(staged, bool):
             return
-        self._diff.setPlainText("Loading diff…")
-        self._status_label.setText(f"Reading diff for {file.path}…")
+        if not silent:
+            self._diff.setPlainText("Loading diff…")
+            self._status_label.setText(f"Reading diff for {file.path}…")
         self._git.request_diff(repository, file, staged=staged)
 
     def _populate_diff_versions(self, file: FileStatus) -> None:
@@ -418,12 +661,14 @@ class MainWindow(QMainWindow):
             return
         if self._diff_version.currentData() != value.staged:
             return
+        self._current_diff = value
         self._diff_highlighter.set_diff(value)
         self._diff.setPlainText(value.text or "No textual changes to display.")
         self._show_diff_line_numbers(value)
         self._show_side_by_side(value)
         version = "staged" if value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {value.path}")
+        self._update_hunk_button()
 
     def _show_diff_line_numbers(self, diff: UnifiedDiff) -> None:
         old_width = max(
@@ -449,6 +694,8 @@ class MainWindow(QMainWindow):
         new_lines: list[str] = []
         old_kinds: list[DiffLineKind] = []
         new_kinds: list[DiffLineKind] = []
+        old_inline: dict[int, tuple[tuple[int, int], ...]] = {}
+        new_inline: dict[int, tuple[tuple[int, int], ...]] = {}
         old_width = max(
             (len(str(line.old_line)) for line in diff.lines if line.old_line is not None),
             default=1,
@@ -458,10 +705,36 @@ class MainWindow(QMainWindow):
             default=1,
         )
         for row in diff.side_by_side_rows:
-            old_lines.append(self._side_line_text(row.old, old_width, old=True))
-            new_lines.append(self._side_line_text(row.new, new_width, old=False))
+            old_text = self._side_line_text(row.old, old_width, old=True)
+            new_text = self._side_line_text(row.new, new_width, old=False)
+            row_index = len(old_lines)
+            old_lines.append(old_text)
+            new_lines.append(new_text)
             old_kinds.append(row.old.kind if row.old is not None else "metadata")
             new_kinds.append(row.new.kind if row.new is not None else "metadata")
+            if (
+                row.old is not None
+                and row.new is not None
+                and row.old.kind == "deletion"
+                and row.new.kind == "addition"
+            ):
+                old_prefix = old_width + 2
+                new_prefix = new_width + 2
+                matcher = SequenceMatcher(None, row.old.text[1:], row.new.text[1:])
+                old_ranges: list[tuple[int, int]] = []
+                new_ranges: list[tuple[int, int]] = []
+                for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+                    if tag != "equal":
+                        if old_end > old_start:
+                            old_ranges.append((old_prefix + old_start, old_end - old_start))
+                        if new_end > new_start:
+                            new_ranges.append((new_prefix + new_start, new_end - new_start))
+                old_inline[row_index] = tuple(old_ranges)
+                new_inline[row_index] = tuple(new_ranges)
+        self._side_old_highlighter.set_language(diff.path)
+        self._side_new_highlighter.set_language(diff.path)
+        self._side_old_highlighter.set_inline_ranges(old_inline)
+        self._side_new_highlighter.set_inline_ranges(new_inline)
         self._side_old_highlighter.set_line_kinds(tuple(old_kinds))
         self._side_new_highlighter.set_line_kinds(tuple(new_kinds))
         self._side_old.setPlainText("\n".join(old_lines))
@@ -483,10 +756,72 @@ class MainWindow(QMainWindow):
             return
         self._settings.setValue("diff/viewMode", mode)
         self._diff_stack.setCurrentIndex(1 if mode == "side-by-side" else 0)
+        self._update_hunk_button()
+
+    @Slot()
+    def _update_hunk_button(self) -> None:
+        diff = self._current_diff
+        unified = self._diff_view_mode.currentData() == "unified"
+        hunk_index = None
+        if diff is not None:
+            hunk_index = diff.hunk_index_for_line(self._diff.textCursor().blockNumber())
+        self._hunk_button.setEnabled(unified and hunk_index is not None)
+        if diff is not None and diff.staged:
+            self._hunk_button.setText("Unstage hunk")
+            self._hunk_button.setToolTip("Unstage the hunk under the cursor")
+        else:
+            self._hunk_button.setText("Stage hunk")
+            self._hunk_button.setToolTip("Stage the hunk under the cursor")
+
+    @Slot()
+    def _apply_selected_hunk(self) -> None:
+        repository = self._repository
+        diff = self._current_diff
+        if repository is None or diff is None:
+            return
+        hunk_index = diff.hunk_index_for_line(self._diff.textCursor().blockNumber())
+        if hunk_index is None:
+            return
+        self._changes_container.setEnabled(False)
+        action = "Unstaging" if diff.staged else "Staging"
+        self._status_label.setText(f"{action} hunk in {diff.path}…")
+        self._git.request_hunk(repository, diff, hunk_index, stage=not diff.staged)
+
+    @Slot(bool)
+    def _diff_wrap_changed(self, enabled: bool) -> None:
+        self._settings.setValue("diff/wrapLines", enabled)
+        self._apply_diff_wrap(enabled)
+
+    def _apply_diff_wrap(self, enabled: bool) -> None:
+        mode = (
+            QPlainTextEdit.LineWrapMode.WidgetWidth
+            if enabled
+            else QPlainTextEdit.LineWrapMode.NoWrap
+        )
+        for editor in (self._diff, self._side_old, self._side_new):
+            editor.setLineWrapMode(mode)
+        self._diff_gutter.setVisible(not enabled and self._diff_container.isVisible())
+
+    @Slot(bool)
+    def _diff_whitespace_changed(self, enabled: bool) -> None:
+        self._settings.setValue("diff/showWhitespace", enabled)
+        self._apply_diff_whitespace(enabled)
+
+    def _apply_diff_whitespace(self, enabled: bool) -> None:
+        for editor in (self._diff, self._side_old, self._side_new):
+            option = editor.document().defaultTextOption()
+            flags = option.flags()
+            if enabled:
+                flags |= QTextOption.Flag.ShowTabsAndSpaces
+            else:
+                flags &= ~QTextOption.Flag.ShowTabsAndSpaces
+            option.setFlags(flags)
+            editor.document().setDefaultTextOption(option)
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
         self._changes.setEnabled(True)
+        self._changes_container.setEnabled(True)
         self._status_label.setText("Git operation failed")
         QMessageBox.critical(self, "Git error", message)
 

@@ -19,8 +19,18 @@ _HUNK_HEADER = re.compile(
 )
 
 
-def parse_unified_diff(output: bytes, path: str, *, staged: bool) -> UnifiedDiff:
+def parse_unified_diff(
+    output: bytes, path: str, *, staged: bool, max_bytes: int = 2_000_000
+) -> UnifiedDiff:
     """Decode unified diff output and classify its lines for presentation."""
+    binary = b"Binary files " in output or b"GIT binary patch" in output
+    truncated = len(output) > max_bytes
+    if truncated:
+        output = output[:max_bytes]
+        boundary = output.rfind(b"\n")
+        if boundary >= 0:
+            output = output[: boundary + 1]
+        output += b"Diff truncated because it exceeds the 2 MB display limit.\n"
     text = output.decode("utf-8", errors="replace")
     lines: list[DiffLine] = []
     hunks: list[DiffHunk] = []
@@ -64,7 +74,14 @@ def parse_unified_diff(output: bytes, path: str, *, staged: bool) -> UnifiedDiff
 
     if hunk_values is not None:
         hunks.append(_make_hunk(hunk_values, hunk_lines))
-    return UnifiedDiff(path=path, staged=staged, lines=tuple(lines), hunks=tuple(hunks))
+    return UnifiedDiff(
+        path=path,
+        staged=staged,
+        lines=tuple(lines),
+        hunks=tuple(hunks),
+        binary=binary,
+        truncated=truncated,
+    )
 
 
 def _next_line(value: int | None) -> int | None:

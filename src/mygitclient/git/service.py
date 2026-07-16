@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from mygitclient.git.models import FileStatus, GitCommand, GitResult
+from mygitclient.git.models import FileStatus, GitCommand, GitResult, UnifiedDiff
 from mygitclient.git.parsers import parse_status_porcelain_v2, parse_unified_diff
 from mygitclient.git.runner import GitRunner
 
@@ -82,6 +82,97 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(GitCommand(arguments, repository, operation))
         return runner
+
+    def request_stage_all(
+        self, repository: Path, *, staged: bool, has_head: bool
+    ) -> GitRunner:
+        if staged:
+            arguments = ("add", "-A", "--", ".")
+            operation = "stage all files"
+        elif has_head:
+            arguments = ("reset", "-q", "HEAD", "--", ".")
+            operation = "unstage all files"
+        else:
+            arguments = ("rm", "-r", "--cached", "--", ".")
+            operation = "unstage all new files"
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "."
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, repository, operation))
+        return runner
+
+    def request_commit(self, repository: Path, message: str, *, amend: bool) -> GitRunner:
+        arguments = ["commit"]
+        if amend:
+            arguments.append("--amend")
+        arguments.extend(("-m", message))
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "commit"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(tuple(arguments), repository, "create commit"))
+        return runner
+
+    def request_hunk(
+        self, repository: Path, diff: UnifiedDiff, hunk_index: int, *, stage: bool
+    ) -> GitRunner:
+        arguments = ["apply", "--cached"]
+        if not stage:
+            arguments.append("--reverse")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = diff.path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(tuple(arguments), repository, "update staged hunk"),
+            diff.patch_for_hunk(hunk_index),
+        )
+        return runner
+
+    def request_discard(self, repository: Path, file: FileStatus) -> GitRunner:
+        if file.index_status == "?":
+            arguments = ("clean", "-f", "--", file.path)
+        elif file.index_status == "A":
+            arguments = ("rm", "-f", "--", file.path)
+        elif file.is_staged:
+            arguments = ("restore", "--source=HEAD", "--staged", "--worktree", "--", file.path)
+        else:
+            arguments = ("restore", "--worktree", "--", file.path)
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = file.path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, repository, "discard file changes"))
+        return runner
+
+    def ignore_path(self, repository: Path, path: str) -> None:
+        if "\n" in path or "\r" in path:
+            self.operation_failed.emit("Paths containing newlines cannot be added to .gitignore")
+            return
+        ignore_file = repository / ".gitignore"
+        existing = (
+            ignore_file.read_text(encoding="utf-8", errors="surrogateescape")
+            if ignore_file.exists()
+            else ""
+        )
+        lines = existing.splitlines()
+        if path not in lines:
+            prefix = "" if not existing or existing.endswith("\n") else "\n"
+            ignore_file.write_text(
+                f"{existing}{prefix}{path}\n",
+                encoding="utf-8",
+                errors="surrogateescape",
+            )
+        self.mutation_ready.emit(path)
+
+    def cancel_all(self) -> None:
+        for runner in tuple(self._runners):
+            runner.cancel()
 
     @Slot(object)
     def _handle_status(self, result: object) -> None:

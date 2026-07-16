@@ -96,6 +96,8 @@ class UnifiedDiff:
     staged: bool
     lines: tuple[DiffLine, ...] = ()
     hunks: tuple[DiffHunk, ...] = ()
+    binary: bool = False
+    truncated: bool = False
 
     @property
     def text(self) -> str:
@@ -142,3 +144,22 @@ class UnifiedDiff:
                 index += 1
             rows.extend(SideBySideRow(old, new) for old, new in zip_longest(deleted, added))
         return tuple(rows)
+
+    def hunk_index_for_line(self, line_index: int) -> int | None:
+        hunk_index: int | None = None
+        current = -1
+        for index, line in enumerate(self.lines):
+            if line.kind == "hunk":
+                current += 1
+                hunk_index = current
+            if index == line_index:
+                return hunk_index
+        return None
+
+    def patch_for_hunk(self, hunk_index: int) -> bytes:
+        if hunk_index < 0 or hunk_index >= len(self.hunks):
+            raise IndexError("Diff hunk index is out of range")
+        header = [line.text for line in self.lines if line.kind == "header"]
+        hunk = self.hunks[hunk_index]
+        patch_lines = [*header, hunk.header, *(line.text for line in hunk.lines)]
+        return ("\n".join(patch_lines) + "\n").encode("utf-8", errors="surrogateescape")

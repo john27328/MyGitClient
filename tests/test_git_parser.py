@@ -38,6 +38,9 @@ def test_parse_unified_diff_classifies_lines() -> None:
     assert changed_row.new is not None
     assert changed_row.old.text == "-before"
     assert changed_row.new.text == "+after"
+    patch = diff.patch_for_hunk(0)
+    assert patch.startswith(b"diff --git a/example.txt b/example.txt\n")
+    assert patch.endswith(b"-before\n+after\n")
 
 
 def test_parse_unified_diff_tracks_context_and_multiple_hunks() -> None:
@@ -63,6 +66,20 @@ def test_parse_unified_diff_tracks_context_and_multiple_hunks() -> None:
         (None, 11),
         (None, 12),
     ]
+
+
+def test_parse_binary_and_truncate_large_diff() -> None:
+    binary = parse_unified_diff(
+        b"diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ\n",
+        "image.png",
+        staged=False,
+    )
+    large = parse_unified_diff(b"metadata\n" * 100, "large.txt", staged=False, max_bytes=40)
+
+    assert binary.binary
+    assert not binary.truncated
+    assert large.truncated
+    assert large.text.endswith("Diff truncated because it exceeds the 2 MB display limit.")
 
 
 def test_parse_branch_and_file_records() -> None:

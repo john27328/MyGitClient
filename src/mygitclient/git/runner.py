@@ -36,7 +36,7 @@ class GitRunner(QObject):
     def is_running(self) -> bool:
         return self._process.state() is not QProcess.ProcessState.NotRunning
 
-    def run(self, command: GitCommand) -> None:
+    def run(self, command: GitCommand, input_data: bytes | None = None) -> None:
         if self.is_running:
             raise RuntimeError("This Git runner is already executing a command")
 
@@ -53,6 +53,9 @@ class GitRunner(QObject):
 
         logger.info("Running git operation %s", command.operation)
         self._process.start(str(self._executable), list(command.arguments))
+        if input_data is not None:
+            self._process.write(input_data)
+            self._process.closeWriteChannel()
         self.started.emit(command)
 
     def cancel(self) -> None:
