@@ -3,7 +3,35 @@ from __future__ import annotations
 from dataclasses import replace
 
 from mygitclient.git.errors import GitParseError
-from mygitclient.git.models import BranchStatus, FileStatus, RepositoryStatus
+from mygitclient.git.models import (
+    BranchStatus,
+    DiffLine,
+    DiffLineKind,
+    FileStatus,
+    RepositoryStatus,
+    UnifiedDiff,
+)
+
+
+def parse_unified_diff(output: bytes, path: str, *, staged: bool) -> UnifiedDiff:
+    """Decode unified diff output and classify its lines for presentation."""
+    text = output.decode("utf-8", errors="replace")
+    lines = tuple(DiffLine(line, _diff_line_kind(line)) for line in text.splitlines())
+    return UnifiedDiff(path=path, staged=staged, lines=lines)
+
+
+def _diff_line_kind(line: str) -> DiffLineKind:
+    if line.startswith(("diff --git ", "index ", "--- ", "+++ ")):
+        return "header"
+    if line.startswith("@@"):
+        return "hunk"
+    if line.startswith("+"):
+        return "addition"
+    if line.startswith("-"):
+        return "deletion"
+    if line.startswith(" "):
+        return "context"
+    return "metadata"
 
 
 def parse_status_porcelain_v2(output: bytes) -> RepositoryStatus:
@@ -88,4 +116,3 @@ def _file_status(xy: str, submodule: str, path: str) -> FileStatus:
     if len(xy) != 2:
         raise GitParseError(f"Invalid XY status: {xy!r}")
     return FileStatus(path, xy[0], xy[1], submodule=submodule)
-

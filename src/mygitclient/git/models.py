@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,3 +61,22 @@ class RepositoryStatus:
     files: tuple[FileStatus, ...] = ()
     ignored_count: int = 0
 
+
+DiffLineKind = Literal["header", "hunk", "addition", "deletion", "context", "metadata"]
+
+
+@dataclass(frozen=True, slots=True)
+class DiffLine:
+    text: str
+    kind: DiffLineKind
+
+
+@dataclass(frozen=True, slots=True)
+class UnifiedDiff:
+    path: str
+    staged: bool
+    lines: tuple[DiffLine, ...] = ()
+
+    @property
+    def text(self) -> str:
+        return "\n".join(line.text for line in self.lines)

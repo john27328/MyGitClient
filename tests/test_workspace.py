@@ -23,6 +23,8 @@ def test_recent_repositories_are_deduplicated_and_ordered(tmp_path: Path) -> Non
     second = tmp_path / "second"
     first.mkdir()
     second.mkdir()
+    (first / ".git").mkdir()
+    (second / ".git").mkdir()
     workspace = WorkspaceManager(settings)
 
     workspace.remember(first)
@@ -31,3 +33,12 @@ def test_recent_repositories_are_deduplicated_and_ordered(tmp_path: Path) -> Non
 
     assert workspace.recent_repositories() == (first, second)
 
+
+def test_missing_recent_repository_is_removed_from_settings(tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    repository = tmp_path / "deleted"
+    settings.setValue("workspace/recentRepositories", [str(repository)])
+    workspace = WorkspaceManager(settings)
+
+    assert workspace.recent_repositories() == ()
+    assert settings.value("workspace/recentRepositories") == []

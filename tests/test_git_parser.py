@@ -1,6 +1,30 @@
 from __future__ import annotations
 
-from mygitclient.git.parsers import parse_status_porcelain_v2
+from mygitclient.git.parsers import parse_status_porcelain_v2, parse_unified_diff
+
+
+def test_parse_unified_diff_classifies_lines() -> None:
+    output = (
+        b"diff --git a/example.txt b/example.txt\n"
+        b"--- a/example.txt\n"
+        b"+++ b/example.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-before\n"
+        b"+after\n"
+    )
+
+    diff = parse_unified_diff(output, "example.txt", staged=False)
+
+    assert diff.path == "example.txt"
+    assert [line.kind for line in diff.lines] == [
+        "header",
+        "header",
+        "header",
+        "hunk",
+        "deletion",
+        "addition",
+    ]
+    assert diff.text.endswith("-before\n+after")
 
 
 def test_parse_branch_and_file_records() -> None:
@@ -38,4 +62,3 @@ def test_parse_rename_record_with_nul_separated_original_path() -> None:
 
     assert status.files[0].path == "new name.txt"
     assert status.files[0].original_path == "old name.txt"
-

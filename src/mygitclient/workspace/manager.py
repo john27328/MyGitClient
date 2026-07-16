@@ -33,7 +33,12 @@ class WorkspaceManager:
             candidates = [item for item in items if isinstance(item, str)]
         else:
             candidates = []
-        return tuple(Path(item) for item in candidates if Path(item).is_dir())
+        repositories = tuple(
+            Path(item) for item in candidates if _is_repository_directory(Path(item))
+        )
+        if len(repositories) != len(candidates):
+            self._settings.setValue(_RECENT_KEY, [str(path) for path in repositories])
+        return repositories
 
     def remember(self, repository: Path) -> None:
         normalized = repository.resolve()
@@ -48,3 +53,7 @@ class WorkspaceManager:
         normalized = repository.resolve()
         recent = [path for path in self.recent_repositories() if path != normalized]
         self._settings.setValue(_RECENT_KEY, [str(path) for path in recent])
+
+
+def _is_repository_directory(path: Path) -> bool:
+    return path.is_dir() and (path / ".git").exists()

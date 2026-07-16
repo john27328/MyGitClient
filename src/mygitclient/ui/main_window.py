@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
 )
 
-from mygitclient.git.models import RepositoryStatus
+from mygitclient.git.models import FileStatus, RepositoryStatus, UnifiedDiff
 from mygitclient.git.service import GitService
 from mygitclient.theme import Theme, apply_theme
 from mygitclient.workspace import WorkspaceManager, find_repository_root
@@ -42,6 +42,11 @@ class MainWindow(QMainWindow):
         self._repositories = QTreeWidget()
         self._repositories.setObjectName("repositoriesTree")
         self._repositories.setHeaderLabel("Recent repositories")
+        self._repositories.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        self._remove_recent_action = QAction("Remove from recent list", self._repositories)
+        self._remove_recent_action.setObjectName("removeRecentAction")
+        self._remove_recent_action.triggered.connect(self._remove_selected_recent)
+        self._repositories.addAction(self._remove_recent_action)
 
         self._welcome = QPlainTextEdit()
         self._welcome.setObjectName("welcomePanel")
@@ -57,11 +62,19 @@ class MainWindow(QMainWindow):
         self._changes.setRootIsDecorated(False)
         self._changes.hide()
 
+        self._diff = QPlainTextEdit()
+        self._diff.setObjectName("diffPanel")
+        self._diff.setReadOnly(True)
+        self._diff.setPlaceholderText("Select a changed file to view its diff.")
+        self._diff.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._diff.hide()
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self._repositories)
         splitter.addWidget(self._welcome)
         splitter.addWidget(self._changes)
-        splitter.setSizes([280, 900])
+        splitter.addWidget(self._diff)
+        splitter.setSizes([240, 360, 580])
         self.setCentralWidget(splitter)
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
@@ -95,8 +108,10 @@ class MainWindow(QMainWindow):
 
     def _connect_services(self) -> None:
         self._git.status_ready.connect(self._show_status)
+        self._git.diff_ready.connect(self._show_diff)
         self._git.operation_failed.connect(self._show_git_error)
         self._repositories.itemActivated.connect(self._open_recent_item)
+        self._changes.itemSelectionChanged.connect(self._request_selected_diff)
 
     def _populate_recent_repositories(self) -> None:
         self._repositories.clear()
@@ -122,7 +137,25 @@ class MainWindow(QMainWindow):
     def _open_recent_item(self, item: QTreeWidgetItem, _column: int) -> None:
         value = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(value, str):
-            self.open_repository(Path(value))
+            repository = Path(value)
+            if not repository.is_dir() or not (repository / ".git").exists():
+                self._workspace.forget(repository)
+                self._populate_recent_repositories()
+                self._status_label.setText("Removed missing repository from recent list")
+                return
+            self.open_repository(repository)
+
+    @Slot()
+    def _remove_selected_recent(self) -> None:
+        selected_items = self._repositories.selectedItems()
+        if not selected_items:
+            return
+        value = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(value, str):
+            return
+        self._workspace.forget(Path(value))
+        self._populate_recent_repositories()
+        self._status_label.setText("Removed repository from recent list")
 
     def open_repository(self, selected_path: Path) -> None:
         repository = find_repository_root(selected_path)
@@ -138,8 +171,10 @@ class MainWindow(QMainWindow):
         self._populate_recent_repositories()
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
+        self._diff.clear()
         self._welcome.hide()
         self._changes.show()
+        self._diff.show()
         self._git.request_status(repository)
 
     @Slot(object)
@@ -153,6 +188,7 @@ class MainWindow(QMainWindow):
             )
             if file.original_path is not None:
                 item.setToolTip(0, f"Renamed from {file.original_path}")
+            item.setData(0, Qt.ItemDataRole.UserRole, file)
             self._changes.addTopLevelItem(item)
         self._changes.resizeColumnToContents(0)
 
@@ -161,6 +197,35 @@ class MainWindow(QMainWindow):
         change_count = len(value.files)
         self.setWindowTitle(f"{repository_name} — {branch} — MyGitClient")
         self._status_label.setText(f"{branch} · {change_count} changed file(s)")
+
+    @Slot()
+    def _request_selected_diff(self) -> None:
+        selected_items = self._changes.selectedItems()
+        repository = self._repository
+        if not selected_items or repository is None:
+            return
+        item = selected_items[0]
+        file = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(file, FileStatus):
+            return
+        self._diff.setPlainText("Loading diff…")
+        self._status_label.setText(f"Reading diff for {file.path}…")
+        self._git.request_diff(repository, file)
+
+    @Slot(object)
+    def _show_diff(self, value: object) -> None:
+        if not isinstance(value, UnifiedDiff):
+            return
+        selected_items = self._changes.selectedItems()
+        if not selected_items:
+            return
+        current = selected_items[0]
+        file = current.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(file, FileStatus) or file.path != value.path:
+            return
+        self._diff.setPlainText(value.text or "No textual changes to display.")
+        version = "staged" if value.staged else "working tree"
+        self._status_label.setText(f"Showing {version} diff for {value.path}")
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
