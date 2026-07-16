@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from pathlib import Path
 from typing import Literal
 
@@ -84,6 +85,12 @@ class DiffHunk:
 
 
 @dataclass(frozen=True, slots=True)
+class SideBySideRow:
+    old: DiffLine | None
+    new: DiffLine | None
+
+
+@dataclass(frozen=True, slots=True)
 class UnifiedDiff:
     path: str
     staged: bool
@@ -110,3 +117,28 @@ class UnifiedDiff:
                 f"{old_number:>{old_width}} {new_number:>{new_width}} │ {line.text}"
             )
         return "\n".join(rendered)
+
+    @property
+    def side_by_side_rows(self) -> tuple[SideBySideRow, ...]:
+        rows: list[SideBySideRow] = []
+        index = 0
+        while index < len(self.lines):
+            line = self.lines[index]
+            if line.kind == "addition":
+                rows.append(SideBySideRow(None, line))
+                index += 1
+                continue
+            if line.kind != "deletion":
+                rows.append(SideBySideRow(line, line))
+                index += 1
+                continue
+            deleted: list[DiffLine] = []
+            added: list[DiffLine] = []
+            while index < len(self.lines) and self.lines[index].kind == "deletion":
+                deleted.append(self.lines[index])
+                index += 1
+            while index < len(self.lines) and self.lines[index].kind == "addition":
+                added.append(self.lines[index])
+                index += 1
+            rows.extend(SideBySideRow(old, new) for old, new in zip_longest(deleted, added))
+        return tuple(rows)

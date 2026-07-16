@@ -158,10 +158,16 @@ def test_selecting_changed_file_displays_diff(
     changes = window.findChild(QTreeWidget, "changesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     diff_gutter = window.findChild(QPlainTextEdit, "diffGutter")
+    view_mode = window.findChild(QComboBox, "diffViewModeCombo")
+    side_old = window.findChild(QPlainTextEdit, "sideBySideOld")
+    side_new = window.findChild(QPlainTextEdit, "sideBySideNew")
     splitter = window.findChild(QSplitter, "mainSplitter")
     assert changes is not None
     assert diff_panel is not None
     assert diff_gutter is not None
+    assert view_mode is not None
+    assert side_old is not None
+    assert side_new is not None
     assert splitter is not None
 
     window.resize(1400, 800)
@@ -177,6 +183,10 @@ def test_selecting_changed_file_displays_diff(
     assert "│" not in diff_panel.toPlainText()
     assert diff_gutter.toPlainText().endswith("1   \n   1")
     assert diff_panel.font().fixedPitch()
+    view_mode.setCurrentIndex(1)
+    assert "before" in side_old.toPlainText()
+    assert "after" in side_new.toPlainText()
+    assert settings.value("diff/viewMode") == "side-by-side"
     sizes = splitter.sizes()
     assert len(sizes) == 4
     assert sizes[1] == 0

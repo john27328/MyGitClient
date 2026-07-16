@@ -15,7 +15,10 @@ class DiffHighlighter(QSyntaxHighlighter):
         self._line_kinds: tuple[DiffLineKind, ...] = ()
 
     def set_diff(self, diff: UnifiedDiff | None) -> None:
-        self._line_kinds = () if diff is None else tuple(line.kind for line in diff.lines)
+        self.set_line_kinds(() if diff is None else tuple(line.kind for line in diff.lines))
+
+    def set_line_kinds(self, line_kinds: tuple[DiffLineKind, ...]) -> None:
+        self._line_kinds = line_kinds
         self.rehighlight()
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802

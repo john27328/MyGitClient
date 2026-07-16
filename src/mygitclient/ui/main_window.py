@@ -15,13 +15,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QSplitter,
+    QStackedWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from mygitclient.git.models import FileStatus, RepositoryStatus, UnifiedDiff
+from mygitclient.git.models import DiffLine, DiffLineKind, FileStatus, RepositoryStatus, UnifiedDiff
 from mygitclient.git.service import GitService
 from mygitclient.theme import Theme, apply_theme
 from mygitclient.ui.diff_highlighter import DiffHighlighter
@@ -109,17 +110,53 @@ class MainWindow(QMainWindow):
         self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
         self._diff_version.hide()
 
+        self._diff_view_mode = QComboBox()
+        self._diff_view_mode.setObjectName("diffViewModeCombo")
+        self._diff_view_mode.addItem("Unified", "unified")
+        self._diff_view_mode.addItem("Side-by-side", "side-by-side")
+        saved_view = self._settings.value("diff/viewMode", "unified")
+        saved_index = self._diff_view_mode.findData(saved_view)
+        self._diff_view_mode.setCurrentIndex(max(saved_index, 0))
+        self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
+        self._diff_view_mode.hide()
+
         self._diff_container = QWidget()
         diff_layout = QVBoxLayout(self._diff_container)
         diff_layout.setContentsMargins(0, 0, 0, 0)
-        diff_layout.addWidget(self._diff_version)
         diff_body = QWidget()
         diff_body_layout = QHBoxLayout(diff_body)
         diff_body_layout.setContentsMargins(0, 0, 0, 0)
         diff_body_layout.setSpacing(0)
         diff_body_layout.addWidget(self._diff_gutter)
         diff_body_layout.addWidget(self._diff, 1)
-        diff_layout.addWidget(diff_body)
+
+        self._side_old = self._make_side_diff_editor("sideBySideOld")
+        self._side_new = self._make_side_diff_editor("sideBySideNew")
+        self._side_old_highlighter = DiffHighlighter(self._side_old)
+        self._side_new_highlighter = DiffHighlighter(self._side_new)
+        self._side_old.verticalScrollBar().valueChanged.connect(
+            self._side_new.verticalScrollBar().setValue
+        )
+        self._side_new.verticalScrollBar().valueChanged.connect(
+            self._side_old.verticalScrollBar().setValue
+        )
+        side_splitter = QSplitter(Qt.Orientation.Horizontal)
+        side_splitter.addWidget(self._side_old)
+        side_splitter.addWidget(self._side_new)
+        side_splitter.setSizes([500, 500])
+
+        toolbar = QWidget()
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.addWidget(self._diff_version, 1)
+        toolbar_layout.addWidget(self._diff_view_mode)
+        diff_layout.insertWidget(0, toolbar)
+
+        self._diff_stack = QStackedWidget()
+        self._diff_stack.addWidget(diff_body)
+        self._diff_stack.addWidget(side_splitter)
+        self._diff_stack.setCurrentIndex(max(saved_index, 0))
+        diff_layout.addWidget(self._diff_stack)
         self._diff_container.hide()
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -137,6 +174,18 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
         self.statusBar().addWidget(self._status_label)
+
+    @staticmethod
+    def _make_side_diff_editor(object_name: str) -> QPlainTextEdit:
+        editor = QPlainTextEdit()
+        editor.setObjectName(object_name)
+        editor.setReadOnly(True)
+        editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        font.setStyleHint(QFont.StyleHint.Monospace)
+        font.setFixedPitch(True)
+        editor.setFont(font)
+        return editor
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -234,6 +283,7 @@ class MainWindow(QMainWindow):
         self._welcome.hide()
         self._changes.show()
         self._diff_version.show()
+        self._diff_view_mode.show()
         self._diff_gutter.show()
         self._diff.show()
         self._diff_container.show()
@@ -314,6 +364,7 @@ class MainWindow(QMainWindow):
         self._diff_highlighter.set_diff(value)
         self._diff.setPlainText(value.text or "No textual changes to display.")
         self._show_diff_line_numbers(value)
+        self._show_side_by_side(value)
         version = "staged" if value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {value.path}")
 
@@ -336,6 +387,46 @@ class MainWindow(QMainWindow):
         sample = "0" * (old_width + new_width + 3)
         self._diff_gutter.setFixedWidth(metrics.horizontalAdvance(sample) + 12)
 
+    def _show_side_by_side(self, diff: UnifiedDiff) -> None:
+        old_lines: list[str] = []
+        new_lines: list[str] = []
+        old_kinds: list[DiffLineKind] = []
+        new_kinds: list[DiffLineKind] = []
+        old_width = max(
+            (len(str(line.old_line)) for line in diff.lines if line.old_line is not None),
+            default=1,
+        )
+        new_width = max(
+            (len(str(line.new_line)) for line in diff.lines if line.new_line is not None),
+            default=1,
+        )
+        for row in diff.side_by_side_rows:
+            old_lines.append(self._side_line_text(row.old, old_width, old=True))
+            new_lines.append(self._side_line_text(row.new, new_width, old=False))
+            old_kinds.append(row.old.kind if row.old is not None else "metadata")
+            new_kinds.append(row.new.kind if row.new is not None else "metadata")
+        self._side_old_highlighter.set_line_kinds(tuple(old_kinds))
+        self._side_new_highlighter.set_line_kinds(tuple(new_kinds))
+        self._side_old.setPlainText("\n".join(old_lines))
+        self._side_new.setPlainText("\n".join(new_lines))
+
+    @staticmethod
+    def _side_line_text(line: DiffLine | None, width: int, *, old: bool) -> str:
+        if line is None:
+            return ""
+        number = line.old_line if old else line.new_line
+        number_text = str(number) if number is not None else ""
+        content = line.text[1:] if line.kind in {"addition", "deletion", "context"} else line.text
+        return f"{number_text:>{width}}  {content}"
+
+    @Slot(int)
+    def _diff_view_changed(self, _index: int) -> None:
+        mode = self._diff_view_mode.currentData()
+        if not isinstance(mode, str):
+            return
+        self._settings.setValue("diff/viewMode", mode)
+        self._diff_stack.setCurrentIndex(1 if mode == "side-by-side" else 0)
+
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
         self._status_label.setText("Git operation failed")
@@ -350,6 +441,8 @@ class MainWindow(QMainWindow):
         if isinstance(app, QApplication):
             apply_theme(app, theme)
             self._diff_highlighter.rehighlight()
+            self._side_old_highlighter.rehighlight()
+            self._side_new_highlighter.rehighlight()
 
     def _restore_window_state(self) -> None:
         geometry = self._settings.value("window/geometry")

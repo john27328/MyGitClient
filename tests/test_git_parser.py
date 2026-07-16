@@ -33,6 +33,11 @@ def test_parse_unified_diff_classifies_lines() -> None:
     assert diff.lines[5].old_line is None
     assert diff.lines[5].new_line == 1
     assert diff.display_text.endswith("1   │ -before\n  1 │ +after")
+    changed_row = diff.side_by_side_rows[-1]
+    assert changed_row.old is not None
+    assert changed_row.new is not None
+    assert changed_row.old.text == "-before"
+    assert changed_row.new.text == "+after"
 
 
 def test_parse_unified_diff_tracks_context_and_multiple_hunks() -> None:
