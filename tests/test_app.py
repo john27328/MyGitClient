@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTreeWidget
 
 from mygitclient.theme import Theme
 from mygitclient.ui.main_window import MainWindow
@@ -15,6 +17,23 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert window.windowTitle() == "MyGitClient"
     assert window.centralWidget() is not None
 
+    window.close()
+
+
+def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> None:
+    repository = tmp_path / "project"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    settings.setValue("workspace/recentRepositories", [str(repository)])
+
+    window = MainWindow(settings, Theme.SYSTEM)
+    repositories = window.findChild(QTreeWidget, "repositoriesTree")
+
+    assert repositories is not None
+    item = repositories.topLevelItem(0)
+    assert item is not None
+    assert item.text(0) == "project"
     window.close()
 
 
