@@ -285,10 +285,8 @@ def test_selecting_changed_file_displays_diff(
 
     assert "-before" in diff_panel.toPlainText()
     assert "│" not in diff_panel.toPlainText()
-    assert [line.strip() for line in diff_gutter.toPlainText().splitlines()[-2:]] == [
-        "1",
-        "1",
-    ]
+    gutter_lines = [line.strip() for line in diff_gutter.toPlainText().splitlines()[-2:]]
+    assert all(line.startswith("□") and line.endswith("1") for line in gutter_lines)
     assert diff_panel.font().fixedPitch()
     tracked.write_text("changed again\n", encoding="utf-8")
     qtbot.waitUntil(lambda: "+changed again" in diff_panel.toPlainText(), timeout=5000)
@@ -682,10 +680,12 @@ def test_selected_diff_lines_can_be_staged(
     assert item is not None
     changes.setCurrentItem(item)
     qtbot.waitUntil(lambda: "+TWO" in diff_panel.toPlainText(), timeout=5000)
+    assert "□" in gutter.toPlainText()
     hunk_header = diff_panel.document().find("@@")
     assert not hunk_header.isNull()
     gutter.line_activated.emit(hunk_header.blockNumber(), False)
     assert gutter.toPlainText().count("✓") == 4
+    assert "■" in gutter.toPlainText()
     clear_lines.click()
     assert "✓" not in gutter.toPlainText()
     deleted = diff_panel.document().find("-two")
@@ -696,6 +696,8 @@ def test_selected_diff_lines_can_be_staged(
     gutter.line_activated.emit(added.blockNumber(), False)
     assert apply_lines.isEnabled()
     assert "✓" in gutter.toPlainText()
+    qtbot.wait(1800)
+    assert gutter.toPlainText().count("✓") == 2
     apply_lines.click()
 
     def selected_lines_are_staged() -> bool:

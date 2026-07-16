@@ -223,6 +223,11 @@ class MainWindow(QMainWindow):
         self._diff_gutter.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._diff_gutter.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._diff_gutter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._diff_gutter.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._diff_gutter.setToolTip(
+            "Click a checkbox to select a changed line. "
+            "Click a hunk checkbox to select the whole block."
+        )
         self._diff_gutter.setStyleSheet(
             "QPlainTextEdit { background: palette(alternate-base); "
             "color: palette(mid); border: 0; border-right: 1px solid palette(midlight); }"
@@ -966,9 +971,11 @@ class MainWindow(QMainWindow):
             return
         if self._diff_version.currentData() != value.staged:
             return
+        preserve_selection = value == self._current_diff
         self._current_diff = value
-        self._selected_diff_lines.clear()
-        self._last_selected_diff_line = None
+        if not preserve_selection:
+            self._selected_diff_lines.clear()
+            self._last_selected_diff_line = None
         self._diff_highlighter.set_diff(value)
         self._diff.setPlainText(value.text or "No textual changes to display.")
         self._show_diff_line_numbers(value)
@@ -990,7 +997,24 @@ class MainWindow(QMainWindow):
         numbers: list[str] = []
         for line in diff.lines:
             line_index = len(numbers)
-            marker = "✓" if line_index in self._selected_diff_lines else " "
+            marker = " "
+            if line.kind in {"addition", "deletion"}:
+                marker = "✓" if line_index in self._selected_diff_lines else "□"
+            elif line.kind == "hunk":
+                hunk_index = diff.hunk_index_for_line(line_index)
+                hunk_lines = {
+                    index
+                    for index, candidate in enumerate(diff.lines)
+                    if diff.hunk_index_for_line(index) == hunk_index
+                    and candidate.kind in {"addition", "deletion"}
+                }
+                selected_count = len(hunk_lines & self._selected_diff_lines)
+                if hunk_lines and selected_count == len(hunk_lines):
+                    marker = "■"
+                elif selected_count:
+                    marker = "◩"
+                else:
+                    marker = "□"
             old_number = str(line.old_line) if line.old_line is not None else ""
             new_number = str(line.new_line) if line.new_line is not None else ""
             numbers.append(f"{marker} {old_number:>{old_width}}  {new_number:>{new_width}}")
@@ -1191,6 +1215,14 @@ class MainWindow(QMainWindow):
         for editor in (self._diff, self._side_old, self._side_new):
             editor.setLineWrapMode(mode)
         self._diff_gutter.setVisible(not enabled and self._diff_container.isVisible())
+        if enabled:
+            self._selected_lines_button.setToolTip(
+                "Turn off Wrap to select individual lines in the gutter"
+            )
+        else:
+            self._selected_lines_button.setToolTip(
+                "Apply the lines selected with gutter checkboxes"
+            )
 
     @Slot(bool)
     def _diff_whitespace_changed(self, enabled: bool) -> None:
