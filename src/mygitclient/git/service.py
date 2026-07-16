@@ -12,12 +12,14 @@ from mygitclient.git.runner import GitRunner
 class GitService(QObject):
     status_ready = Signal(object)
     diff_ready = Signal(object)
+    mutation_ready = Signal(str)
     operation_failed = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._runners: set[GitRunner] = set()
         self._diff_requests: dict[GitRunner, tuple[str, bool, bool]] = {}
+        self._mutation_requests: dict[GitRunner, str] = {}
 
     def request_status(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
@@ -63,6 +65,24 @@ class GitService(QObject):
         )
         return runner
 
+    def request_stage(self, repository: Path, file: FileStatus, *, staged: bool) -> GitRunner:
+        if staged:
+            arguments = ("add", "--", file.path)
+            operation = "stage file"
+        elif file.index_status == "A":
+            arguments = ("rm", "--cached", "--", file.path)
+            operation = "unstage new file"
+        else:
+            arguments = ("restore", "--staged", "--", file.path)
+            operation = "unstage file"
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = file.path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, repository, operation))
+        return runner
+
     @Slot(object)
     def _handle_status(self, result: object) -> None:
         runner = self.sender()
@@ -90,6 +110,7 @@ class GitService(QObject):
             return
         self._runners.discard(runner)
         self._diff_requests.pop(runner, None)
+        self._mutation_requests.pop(runner, None)
         self.operation_failed.emit(message)
 
     @Slot(object)
@@ -108,3 +129,19 @@ class GitService(QObject):
             self.operation_failed.emit(result.error_text or "Could not read file diff")
             return
         self.diff_ready.emit(parse_unified_diff(result.stdout, path, staged=staged))
+
+    @Slot(object)
+    def _handle_mutation(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned a result from an unknown mutation")
+            return
+        self._runners.discard(runner)
+        path = self._mutation_requests.pop(runner, None)
+        if path is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected mutation result")
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not update staging area")
+            return
+        self.mutation_ready.emit(path)

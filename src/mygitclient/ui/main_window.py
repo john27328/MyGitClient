@@ -233,9 +233,11 @@ class MainWindow(QMainWindow):
     def _connect_services(self) -> None:
         self._git.status_ready.connect(self._show_status)
         self._git.diff_ready.connect(self._show_diff)
+        self._git.mutation_ready.connect(self._staging_finished)
         self._git.operation_failed.connect(self._show_git_error)
         self._repositories.itemActivated.connect(self._open_recent_item)
         self._changes.itemSelectionChanged.connect(self._selected_file_changed)
+        self._changes.itemChanged.connect(self._stage_checkbox_changed)
 
     def _populate_recent_repositories(self) -> None:
         self._repositories.clear()
@@ -318,15 +320,26 @@ class MainWindow(QMainWindow):
     def _show_status(self, value: object) -> None:
         if not isinstance(value, RepositoryStatus):
             return
+        blocker = QSignalBlocker(self._changes)
         self._changes.clear()
         for file in value.files:
+            index_label = "" if file.index_status == "?" else _status_label(file.index_status)
             item = QTreeWidgetItem(
-                [file.path, _status_label(file.index_status), _status_label(file.worktree_status)]
+                [file.path, index_label, _status_label(file.worktree_status)]
             )
             if file.original_path is not None:
                 item.setToolTip(0, f"Renamed from {file.original_path}")
             item.setData(0, Qt.ItemDataRole.UserRole, file)
+            if not file.unmerged:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                if file.is_staged and file.has_worktree_change:
+                    item.setCheckState(0, Qt.CheckState.PartiallyChecked)
+                elif file.is_staged:
+                    item.setCheckState(0, Qt.CheckState.Checked)
+                else:
+                    item.setCheckState(0, Qt.CheckState.Unchecked)
             self._changes.addTopLevelItem(item)
+        del blocker
         self._changes.resizeColumnToContents(0)
 
         branch = value.branch.head or "detached HEAD"
@@ -334,6 +347,26 @@ class MainWindow(QMainWindow):
         change_count = len(value.files)
         self.setWindowTitle(f"{repository_name} — {branch} — MyGitClient")
         self._status_label.setText(f"{branch} · {change_count} changed file(s)")
+
+    @Slot(QTreeWidgetItem, int)
+    def _stage_checkbox_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if column != 0 or self._repository is None:
+            return
+        file = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(file, FileStatus) or file.unmerged:
+            return
+        should_stage = item.checkState(0) is not Qt.CheckState.Unchecked
+        self._changes.setEnabled(False)
+        action = "Staging" if should_stage else "Unstaging"
+        self._status_label.setText(f"{action} {file.path}…")
+        self._git.request_stage(self._repository, file, staged=should_stage)
+
+    @Slot(str)
+    def _staging_finished(self, path: str) -> None:
+        self._changes.setEnabled(True)
+        self._status_label.setText(f"Updated staging area for {path}")
+        if self._repository is not None:
+            self._git.request_status(self._repository)
 
     @Slot()
     def _selected_file_changed(self) -> None:
@@ -453,6 +486,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
+        self._changes.setEnabled(True)
         self._status_label.setText("Git operation failed")
         QMessageBox.critical(self, "Git error", message)
 
