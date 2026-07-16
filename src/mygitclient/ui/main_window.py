@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, Slot
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
@@ -45,6 +46,7 @@ class MainWindow(QMainWindow):
         self._repositories = QTreeWidget()
         self._repositories.setObjectName("repositoriesTree")
         self._repositories.setHeaderLabel("Recent repositories")
+        self._repositories.setMinimumWidth(180)
         self._repositories.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         self._remove_recent_action = QAction("Remove from recent list", self._repositories)
         self._remove_recent_action.setObjectName("removeRecentAction")
@@ -63,6 +65,7 @@ class MainWindow(QMainWindow):
         self._changes.setObjectName("changesTree")
         self._changes.setHeaderLabels(["File", "Index", "Working tree"])
         self._changes.setRootIsDecorated(False)
+        self._changes.setMinimumWidth(280)
         self._changes.hide()
 
         self._diff = QPlainTextEdit()
@@ -70,6 +73,7 @@ class MainWindow(QMainWindow):
         self._diff.setReadOnly(True)
         self._diff.setPlaceholderText("Select a changed file to view its diff.")
         self._diff.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self._diff.setMinimumWidth(400)
         self._diff.hide()
 
         self._diff_version = QComboBox()
@@ -85,13 +89,18 @@ class MainWindow(QMainWindow):
         diff_layout.addWidget(self._diff)
         self._diff_container.hide()
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._repositories)
-        splitter.addWidget(self._welcome)
-        splitter.addWidget(self._changes)
-        splitter.addWidget(self._diff_container)
-        splitter.setSizes([240, 360, 580])
-        self.setCentralWidget(splitter)
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setObjectName("mainSplitter")
+        self._splitter.addWidget(self._repositories)
+        self._splitter.addWidget(self._welcome)
+        self._splitter.addWidget(self._changes)
+        self._splitter.addWidget(self._diff_container)
+        self._splitter.setStretchFactor(0, 0)
+        self._splitter.setStretchFactor(1, 1)
+        self._splitter.setStretchFactor(2, 0)
+        self._splitter.setStretchFactor(3, 1)
+        self._splitter.setSizes([260, 920, 0, 0])
+        self.setCentralWidget(self._splitter)
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
         self.statusBar().addWidget(self._status_label)
@@ -193,6 +202,7 @@ class MainWindow(QMainWindow):
         self._diff_version.show()
         self._diff.show()
         self._diff_container.show()
+        self._restore_workspace_splitter_sizes()
         self._git.request_status(repository)
 
     @Slot(object)
@@ -292,9 +302,22 @@ class MainWindow(QMainWindow):
         if isinstance(state, QByteArray):
             self.restoreState(state)
 
+    def _restore_workspace_splitter_sizes(self) -> None:
+        value: object = self._settings.value("window/workspaceSplitterSizes")
+        if isinstance(value, list):
+            items = cast(list[object], value)
+            sizes = [item for item in items if isinstance(item, int)]
+            if len(items) == 4 and len(sizes) == 4:
+                sizes[1] = 0
+                self._splitter.setSizes(sizes)
+                return
+        self._splitter.setSizes([240, 0, 360, 900])
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self._settings.setValue("window/geometry", self.saveGeometry())
         self._settings.setValue("window/state", self.saveState())
+        if self._repository is not None:
+            self._settings.setValue("window/workspaceSplitterSizes", self._splitter.sizes())
         super().closeEvent(event)
 
 

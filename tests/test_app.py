@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QComboBox, QPlainTextEdit, QTreeWidget
+from PySide6.QtWidgets import QApplication, QComboBox, QPlainTextEdit, QSplitter, QTreeWidget
 from pytestqt.qtbot import QtBot
 
 from mygitclient.theme import Theme
@@ -131,9 +131,13 @@ def test_selecting_changed_file_displays_diff(
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    splitter = window.findChild(QSplitter, "mainSplitter")
     assert changes is not None
     assert diff_panel is not None
+    assert splitter is not None
 
+    window.resize(1400, 800)
+    window.show()
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     changed_item = changes.topLevelItem(0)
@@ -142,6 +146,10 @@ def test_selecting_changed_file_displays_diff(
     qtbot.waitUntil(lambda: "+after" in diff_panel.toPlainText(), timeout=5000)
 
     assert "-before" in diff_panel.toPlainText()
+    sizes = splitter.sizes()
+    assert len(sizes) == 4
+    assert sizes[1] == 0
+    assert sizes[3] > sizes[2]
     window.close()
 
 
