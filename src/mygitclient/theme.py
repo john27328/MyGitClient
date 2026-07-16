@@ -5,6 +5,9 @@ from enum import StrEnum
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication
 
+_system_style_name: str | None = None
+_system_palette: QPalette | None = None
+
 
 class Theme(StrEnum):
     SYSTEM = "system"
@@ -20,12 +23,22 @@ class Theme(StrEnum):
 
 
 def apply_theme(app: QApplication, theme: Theme) -> None:
-    app.setStyle("Fusion")
+    global _system_palette, _system_style_name
+    if _system_style_name is None:
+        _system_style_name = app.style().objectName()
+        _system_palette = QPalette(app.palette())
+
     if theme is Theme.SYSTEM:
-        app.setPalette(QPalette())
         app.setStyleSheet("")
+        if _system_style_name:
+            app.setStyle(_system_style_name)
+        if _system_palette is not None:
+            app.setPalette(_system_palette)
         return
 
+    app.setStyle("Fusion")
+    if _system_palette is not None:
+        app.setPalette(_system_palette)
     app.setStyleSheet(_DARK_STYLESHEET if theme is Theme.DARK else _LIGHT_STYLESHEET)
 
 
@@ -43,4 +56,3 @@ QTreeWidget, QPlainTextEdit { background: #181a1d; border: 1px solid #3b3f46; }
 QPushButton { background: #343840; border: 1px solid #484d56; padding: 5px 10px; }
 QPushButton:hover { background: #3c414a; }
 """
-

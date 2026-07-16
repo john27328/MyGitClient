@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings, Qt, Slot
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -81,12 +81,17 @@ class MainWindow(QMainWindow):
 
         view_menu = self.menuBar().addMenu("&View")
         theme_menu = view_menu.addMenu("Theme")
+        self._theme_actions = QActionGroup(self)
+        self._theme_actions.setExclusive(True)
         for theme in Theme:
             action = QAction(theme.value.title(), self)
+            action.setObjectName(f"themeAction_{theme.value}")
             action.setCheckable(True)
             action.setChecked(theme is self._theme)
-            action.triggered.connect(lambda checked=False, value=theme: self._set_theme(value))
+            action.setData(theme.value)
+            self._theme_actions.addAction(action)
             theme_menu.addAction(action)
+        self._theme_actions.triggered.connect(self._theme_selected)
 
     def _connect_services(self) -> None:
         self._git.status_ready.connect(self._show_status)
@@ -162,16 +167,14 @@ class MainWindow(QMainWindow):
         self._status_label.setText("Git operation failed")
         QMessageBox.critical(self, "Git error", message)
 
-    def _set_theme(self, theme: Theme) -> None:
+    @Slot(QAction)
+    def _theme_selected(self, action: QAction) -> None:
+        theme = Theme.from_value(action.data())
         self._theme = theme
         self._settings.setValue("appearance/theme", theme.value)
         app = QApplication.instance()
         if isinstance(app, QApplication):
             apply_theme(app, theme)
-        theme_names = {item.value for item in Theme}
-        for action in self.menuBar().findChildren(QAction):
-            if action.parent() is not None and action.text().lower() in theme_names:
-                action.setChecked(action.text().lower() == theme.value)
 
     def _restore_window_state(self) -> None:
         geometry = self._settings.value("window/geometry")
