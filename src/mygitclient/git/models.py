@@ -169,3 +169,51 @@ class UnifiedDiff:
         hunk = self.hunks[hunk_index]
         patch_lines = [*header, hunk.header, *(line.text for line in hunk.lines)]
         return ("\n".join(patch_lines) + "\n").encode("utf-8", errors="surrogateescape")
+
+    def patch_for_lines(self, selected_lines: set[int]) -> bytes:
+        header = [line.text for line in self.lines if line.kind == "header"]
+        patch_lines = list(header)
+        index = 0
+        hunk_index = -1
+        while index < len(self.lines):
+            line = self.lines[index]
+            if line.kind != "hunk":
+                index += 1
+                continue
+            hunk_index += 1
+            hunk = self.hunks[hunk_index]
+            index += 1
+            body: list[str] = []
+            old_count = 0
+            new_count = 0
+            has_selection = False
+            while index < len(self.lines) and self.lines[index].kind != "hunk":
+                body_line = self.lines[index]
+                if body_line.kind == "addition":
+                    if index in selected_lines:
+                        body.append(body_line.text)
+                        new_count += 1
+                        has_selection = True
+                elif body_line.kind == "deletion":
+                    old_count += 1
+                    if index in selected_lines:
+                        body.append(body_line.text)
+                        has_selection = True
+                    else:
+                        body.append(f" {body_line.text[1:]}")
+                        new_count += 1
+                else:
+                    body.append(body_line.text)
+                    if body_line.kind == "context":
+                        old_count += 1
+                        new_count += 1
+                index += 1
+            if has_selection:
+                suffix = hunk.header.split("@@", 2)[-1]
+                patch_lines.append(
+                    f"@@ -{hunk.old_start},{old_count} +{hunk.new_start},{new_count} @@{suffix}"
+                )
+                patch_lines.extend(body)
+        if len(patch_lines) == len(header):
+            raise ValueError("No changed lines were selected")
+        return ("\n".join(patch_lines) + "\n").encode("utf-8", errors="surrogateescape")

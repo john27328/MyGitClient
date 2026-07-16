@@ -21,6 +21,7 @@ from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
 
 from mygitclient.theme import Theme
+from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.main_window import MainWindow
 
 
@@ -227,7 +228,10 @@ def test_selecting_changed_file_displays_diff(
 
     assert "-before" in diff_panel.toPlainText()
     assert "│" not in diff_panel.toPlainText()
-    assert diff_gutter.toPlainText().endswith("1   \n   1")
+    assert [line.strip() for line in diff_gutter.toPlainText().splitlines()[-2:]] == [
+        "1",
+        "1",
+    ]
     assert diff_panel.font().fixedPitch()
     tracked.write_text("changed again\n", encoding="utf-8")
     qtbot.waitUntil(lambda: "+changed again" in diff_panel.toPlainText(), timeout=5000)
@@ -564,6 +568,113 @@ def test_selected_hunk_can_be_staged(qapp: QApplication, qtbot: QtBot, tmp_path:
     window.close()
 
 
+def test_selected_diff_lines_can_be_staged(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked.write_text("one\nTWO\nthree\nFOUR\nfive\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "lines.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    gutter = window.findChild(DiffGutter, "diffGutter")
+    apply_lines = window.findChild(QToolButton, "diffSelectedLinesButton")
+    clear_lines = window.findChild(QToolButton, "diffClearSelectionButton")
+    version_combo = window.findChild(QComboBox, "diffVersionCombo")
+    assert changes is not None
+    assert diff_panel is not None
+    assert gutter is not None
+    assert apply_lines is not None
+    assert clear_lines is not None
+    assert version_combo is not None
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    item = changes.topLevelItem(0)
+    assert item is not None
+    changes.setCurrentItem(item)
+    qtbot.waitUntil(lambda: "+TWO" in diff_panel.toPlainText(), timeout=5000)
+    hunk_header = diff_panel.document().find("@@")
+    assert not hunk_header.isNull()
+    gutter.line_activated.emit(hunk_header.blockNumber(), False)
+    assert gutter.toPlainText().count("✓") == 4
+    clear_lines.click()
+    assert "✓" not in gutter.toPlainText()
+    deleted = diff_panel.document().find("-two")
+    added = diff_panel.document().find("+TWO")
+    assert not deleted.isNull()
+    assert not added.isNull()
+    gutter.line_activated.emit(deleted.blockNumber(), False)
+    gutter.line_activated.emit(added.blockNumber(), False)
+    assert apply_lines.isEnabled()
+    assert "✓" in gutter.toPlainText()
+    apply_lines.click()
+
+    def selected_lines_are_staged() -> bool:
+        cached = subprocess.run(
+            ["git", "diff", "--cached", "--", "tracked.txt"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return "+TWO" in cached
+
+    qtbot.waitUntil(selected_lines_are_staged, timeout=5000)
+    cached = subprocess.run(
+        ["git", "diff", "--cached", "--", "tracked.txt"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "+FOUR" not in cached
+
+    qtbot.waitUntil(lambda: version_combo.findData(True) >= 0, timeout=5000)
+    version_combo.setCurrentIndex(version_combo.findData(True))
+    qtbot.waitUntil(lambda: "+TWO" in diff_panel.toPlainText(), timeout=5000)
+    staged_deleted = diff_panel.document().find("-two")
+    staged_added = diff_panel.document().find("+TWO")
+    assert not staged_deleted.isNull()
+    assert not staged_added.isNull()
+    gutter.line_activated.emit(staged_deleted.blockNumber(), False)
+    gutter.line_activated.emit(staged_added.blockNumber(), False)
+    assert apply_lines.text() == "Unstage selected"
+    apply_lines.click()
+
+    def selected_lines_are_unstaged() -> bool:
+        result = subprocess.run(
+            ["git", "diff", "--cached", "--", "tracked.txt"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return "+TWO" not in result.stdout
+
+    qtbot.waitUntil(selected_lines_are_unstaged, timeout=5000)
+    window.close()
+
+
 def test_discard_requires_confirmation_and_restores_file(
     qapp: QApplication, qtbot: QtBot, monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -605,7 +716,10 @@ def test_discard_requires_confirmation_and_restores_file(
 
     monkeypatch.setattr(QMessageBox, "question", confirm_discard)
     discard.trigger()
-    qtbot.waitUntil(lambda: tracked.read_text(encoding="utf-8") == "before\n", timeout=5000)
+    qtbot.waitUntil(
+        lambda: tracked.exists() and tracked.read_text(encoding="utf-8") == "before\n",
+        timeout=5000,
+    )
     window.close()
 
 

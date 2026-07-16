@@ -141,6 +141,23 @@ class GitService(QObject):
         )
         return runner
 
+    def request_lines(
+        self, repository: Path, diff: UnifiedDiff, selected_lines: set[int], *, stage: bool
+    ) -> GitRunner:
+        arguments = ["apply", "--cached"]
+        if not stage:
+            arguments.append("--reverse")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = diff.path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(tuple(arguments), repository, "update selected diff lines"),
+            diff.patch_for_lines(selected_lines),
+        )
+        return runner
+
     def request_discard(self, repository: Path, file: FileStatus) -> GitRunner:
         if file.index_status == "?":
             arguments = ("clean", "-f", "--", file.path)

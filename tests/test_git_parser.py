@@ -41,6 +41,9 @@ def test_parse_unified_diff_classifies_lines() -> None:
     patch = diff.patch_for_hunk(0)
     assert patch.startswith(b"diff --git a/example.txt b/example.txt\n")
     assert patch.endswith(b"-before\n+after\n")
+    selected_patch = diff.patch_for_lines({4, 5})
+    assert b"@@ -1,1 +1,1 @@\n" in selected_patch
+    assert selected_patch.endswith(b"-before\n+after\n")
 
 
 def test_parse_unified_diff_tracks_context_and_multiple_hunks() -> None:
