@@ -40,8 +40,9 @@ from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.repositories_panel import RepositoriesPanel
 from mygitclient.workspace import (
+    LinkedRepositoriesSnapshot,
+    WorkspaceDiscoveryService,
     WorkspaceManager,
-    discover_linked_repositories,
     find_repository_root,
 )
 
@@ -52,6 +53,7 @@ class MainWindow(QMainWindow):
         self._settings = settings
         self._theme = theme
         self._workspace = WorkspaceManager(settings)
+        self._workspace_discovery = WorkspaceDiscoveryService(self)
         self._git = GitService(self)
         self._repository: Path | None = None
         self._open_repositories: list[Path] = []
@@ -218,6 +220,10 @@ class MainWindow(QMainWindow):
         self._git.mutation_ready.connect(self._mutation_finished)
         self._git.operation_cancelled.connect(self._operation_cancelled)
         self._git.operation_failed.connect(self._show_git_error)
+        self._workspace_discovery.linked_repositories_ready.connect(
+            self._linked_repositories_ready
+        )
+        self._workspace_discovery.operation_failed.connect(self._show_git_error)
         self._repositories_panel.repository_activated.connect(self._open_recent_repository)
         self._repositories_panel.remove_requested.connect(self._remove_recent_repository)
         self._repositories_panel.switch_requested.connect(self._repository_selected)
@@ -332,9 +338,13 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Loaded {count} commits")
 
     def _show_linked_repositories(self, repository: Path) -> None:
-        self._repositories_panel.set_linked(
-            repository, discover_linked_repositories(repository)
-        )
+        self._workspace_discovery.request_linked_repositories(repository)
+
+    @Slot(object)
+    def _linked_repositories_ready(self, value: object) -> None:
+        if not isinstance(value, LinkedRepositoriesSnapshot):
+            return
+        self._repositories_panel.set_linked(value.repository, value.repositories)
 
     def _populate_repository_switcher(self) -> None:
         self._repositories_panel.set_open(self._open_repositories, self._repository)
@@ -404,7 +414,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def _cancel_operations(self) -> None:
         self._git.cancel_all()
-        self._status_label.setText("Cancelling Git operations…")
+        self._workspace_discovery.cancel_all()
+        self._status_label.setText("Cancelling operations…")
 
     @Slot()
     def _operation_cancelled(self) -> None:
@@ -812,6 +823,7 @@ class MainWindow(QMainWindow):
         self._splitter.setSizes([240, 0, 360, 900])
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self._workspace_discovery.cancel_all()
         self._settings.setValue("window/geometry", self.saveGeometry())
         self._settings.setValue("window/state", self.saveState())
         if self._repository is not None:

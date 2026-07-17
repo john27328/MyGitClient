@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import configparser
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -21,14 +22,21 @@ class LinkedRepository:
     kind: str
 
 
-def discover_linked_repositories(repository: Path) -> tuple[LinkedRepository, ...]:
+def discover_linked_repositories(
+    repository: Path, *, cancelled: Callable[[], bool] | None = None
+) -> tuple[LinkedRepository, ...]:
+    is_cancelled = cancelled or (lambda: False)
     root = repository.resolve()
     discovered: dict[Path, str] = {}
+    if is_cancelled():
+        return ()
     gitmodules = root / ".gitmodules"
     if gitmodules.is_file():
         parser = configparser.ConfigParser()
         parser.read(gitmodules, encoding="utf-8")
         for section in parser.sections():
+            if is_cancelled():
+                return ()
             path_value = parser.get(section, "path", fallback="").strip()
             path = (root / path_value).resolve()
             if path_value and _is_repository_directory(path):
@@ -37,6 +45,8 @@ def discover_linked_repositories(repository: Path) -> tuple[LinkedRepository, ..
     worktrees = root / ".git" / "worktrees"
     if worktrees.is_dir():
         for gitdir in worktrees.glob("*/gitdir"):
+            if is_cancelled():
+                return ()
             try:
                 linked_git = Path(
                     gitdir.read_text(encoding="utf-8", errors="surrogateescape").strip()
@@ -49,6 +59,8 @@ def discover_linked_repositories(repository: Path) -> tuple[LinkedRepository, ..
 
     skipped = {".git", ".venv", "node_modules", "__pycache__"}
     for current, directories, _files in os.walk(root):
+        if is_cancelled():
+            return ()
         directories[:] = [name for name in directories if name not in skipped]
         current_path = Path(current)
         for name in tuple(directories):
