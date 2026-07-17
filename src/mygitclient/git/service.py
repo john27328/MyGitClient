@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from mygitclient.git.models import (
+    BranchInfo,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
     CommitPage,
@@ -17,6 +18,7 @@ from mygitclient.git.models import (
     UnifiedDiff,
 )
 from mygitclient.git.parsers import (
+    parse_branches,
     parse_commit_files,
     parse_commit_log,
     parse_status_porcelain_v2,
@@ -27,6 +29,7 @@ from mygitclient.git.runner import GitRunner
 
 class GitService(QObject):
     history_ready = Signal(object)
+    branches_ready = Signal(object)
     commit_files_ready = Signal(object)
     commit_diff_ready = Signal(object)
     status_ready = Signal(object)
@@ -46,10 +49,59 @@ class GitService(QObject):
         self._mutation_requests: dict[GitRunner, str] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
+        self._branch_requests: dict[GitRunner, tuple[Path, int]] = {}
+        self._latest_branch_request: dict[Path, int] = {}
         self._commit_files_requests: dict[GitRunner, tuple[Path, str, int]] = {}
         self._latest_commit_files_request: dict[Path, int] = {}
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_commit_diff_request: dict[Path, int] = {}
+
+    def request_branches(self, repository: Path) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_branch_request[repository] = request_id
+        self._branch_requests[runner] = (repository, request_id)
+        runner.completed.connect(self._handle_branches)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "for-each-ref",
+                    "--sort=refname",
+                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00"
+                    "%(upstream:short)%00%(upstream:track)%00%(HEAD)%1e",
+                    "refs/heads",
+                    "refs/remotes",
+                ),
+                repository,
+                "read branches",
+            )
+        )
+        return runner
+
+    def request_checkout(self, repository: Path, branch: BranchInfo) -> GitRunner:
+        arguments = (
+            ("switch", "--track", branch.name)
+            if branch.remote
+            else ("switch", branch.name)
+        )
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = f"branch:{branch.name}"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, repository, "checkout branch"))
+        return runner
+
+    def request_create_branch(self, repository: Path, name: str) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = f"branch:{name}"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(("switch", "-c", name), repository, "create branch"))
+        return runner
 
     def request_commit_files(self, repository: Path, commit_oid: str) -> GitRunner:
         runner = GitRunner(parent=self)
@@ -366,6 +418,7 @@ class GitService(QObject):
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
+        self._branch_requests.pop(runner, None)
         self._commit_files_requests.pop(runner, None)
         self._commit_diff_requests.pop(runner, None)
         self.operation_failed.emit(message)
@@ -398,6 +451,34 @@ class GitService(QObject):
             return
         page = CommitPage(repository, commits[:limit], offset, len(commits) > limit)
         self.history_ready.emit(page)
+
+    @Slot(object)
+    def _handle_branches(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned branches from an unknown operation")
+            return
+        request = self._branch_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected branch result")
+            return
+        repository, request_id = request
+        if self._latest_branch_request.get(repository) != request_id:
+            return
+        self._latest_branch_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read branches")
+            return
+        try:
+            snapshot = parse_branches(repository, result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.branches_ready.emit(snapshot)
 
     @Slot(object)
     def _handle_commit_files(self, result: object) -> None:

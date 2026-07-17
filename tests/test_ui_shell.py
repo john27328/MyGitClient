@@ -8,6 +8,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QInputDialog,
     QLabel,
     QPlainTextEdit,
     QPushButton,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QWidget,
 )
+from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
 
 from mygitclient.theme import Theme
@@ -270,6 +272,79 @@ def test_selected_commit_shows_details_files_and_diff(
     assert "-before" in diff.toPlainText()
     assert not diff_container.isHidden()
     assert tabs.currentIndex() == 1
+    window.close()
+
+
+def test_branches_tab_can_checkout_and_create_branch(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    repository = tmp_path / "branches"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_text("content\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "branch", "feature"], cwd=repository, check=True)
+    settings = QSettings(str(tmp_path / "branches.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    tabs = window.findChild(QTabWidget, "workspaceTabs")
+    branches = window.findChild(QTreeWidget, "branchesTree")
+    checkout = window.findChild(QPushButton, "checkoutBranchButton")
+    create = window.findChild(QPushButton, "createBranchButton")
+    assert tabs is not None
+    assert branches is not None
+    assert checkout is not None
+    assert create is not None
+    window.show()
+    window.open_repository(repository)
+    tabs.setCurrentIndex(2)
+
+    def local_branch_count() -> int:
+        root = branches.topLevelItem(0)
+        return root.childCount() if root is not None else 0
+
+    qtbot.waitUntil(lambda: local_branch_count() == 2, timeout=5000)
+    local = branches.topLevelItem(0)
+    assert local is not None
+    feature = None
+    for index in range(local.childCount()):
+        child = local.child(index)
+        if child.text(0) == "feature":
+            feature = child
+            break
+    assert feature is not None
+    branches.setCurrentItem(feature)
+    checkout.click()
+    qtbot.waitUntil(lambda: window.windowTitle().startswith("branches — feature —"), timeout=5000)
+
+    def branch_name_dialog(*_args: object) -> tuple[str, bool]:
+        return "new-branch", True
+
+    monkeypatch.setattr(QInputDialog, "getText", branch_name_dialog)
+    create.click()
+    qtbot.waitUntil(
+        lambda: window.windowTitle().startswith("branches — new-branch —"), timeout=5000
+    )
     window.close()
 
 

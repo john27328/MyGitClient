@@ -6,6 +6,7 @@ from pathlib import Path
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
+    BranchesSnapshot,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
     DiffSnapshot,
@@ -113,3 +114,44 @@ def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
     assert isinstance(diff, CommitDiffSnapshot)
     assert "-before" in diff.diff.text
     assert "+after" in diff.diff.text
+
+
+def test_branches_can_be_loaded_checked_out_and_created(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("content\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    _git(tmp_path, "branch", "feature")
+    service = GitService()
+    results: list[object] = []
+    service.branches_ready.connect(results.append)
+
+    with qtbot.waitSignal(service.branches_ready, timeout=5000):
+        service.request_branches(tmp_path)
+    snapshot = results[-1]
+    assert isinstance(snapshot, BranchesSnapshot)
+    feature = next(branch for branch in snapshot.branches if branch.name == "feature")
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_checkout(tmp_path, feature)
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_create_branch(tmp_path, "new-branch")
+    with qtbot.waitSignal(service.branches_ready, timeout=5000):
+        service.request_branches(tmp_path)
+
+    refreshed = results[-1]
+    assert isinstance(refreshed, BranchesSnapshot)
+    current = next(branch for branch in refreshed.branches if branch.current)
+    assert current.name == "new-branch"

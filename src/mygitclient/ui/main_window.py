@@ -24,6 +24,8 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient.git.models import (
+    BranchesSnapshot,
+    BranchInfo,
     CommitDiffSnapshot,
     CommitFileChange,
     CommitFilesSnapshot,
@@ -39,6 +41,7 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
+from mygitclient.ui.branches_panel import BranchesPanel
 from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
@@ -117,10 +120,15 @@ class MainWindow(QMainWindow):
         self._history_panel.commit_selected.connect(self._history_commit_selected)
         self._history_panel.file_selected.connect(self._history_file_selected)
 
+        self._branches_panel = BranchesPanel()
+        self._branches_panel.checkout_requested.connect(self._checkout_branch)
+        self._branches_panel.create_requested.connect(self._create_branch)
+
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
         self._workspace_tabs.addTab(self._changes_container, "Changes")
         self._workspace_tabs.addTab(self._history_panel, "History")
+        self._workspace_tabs.addTab(self._branches_panel, "Branches")
         self._workspace_tabs.setMinimumWidth(360)
         self._workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
         self._workspace_tabs.hide()
@@ -223,6 +231,7 @@ class MainWindow(QMainWindow):
     def _connect_services(self) -> None:
         self._git.status_ready.connect(self._show_status)
         self._git.history_ready.connect(self._show_history)
+        self._git.branches_ready.connect(self._show_branches)
         self._git.commit_files_ready.connect(self._show_commit_files)
         self._git.commit_diff_ready.connect(self._show_commit_diff)
         self._git.diff_ready.connect(self._show_diff)
@@ -299,6 +308,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
         self._history_panel.reset()
+        self._branches_panel.reset()
         self._diff_view.reset()
         self._welcome.hide()
         self._changes_container.show()
@@ -310,14 +320,16 @@ class MainWindow(QMainWindow):
         self._workspace_tab_changed(self._workspace_tabs.currentIndex())
         self._status_runner = self._git.request_status(repository)
         self._history_runner = self._git.request_history(repository)
+        self._git.request_branches(repository)
         self._refresh_timer.start()
 
     @Slot(int)
     def _workspace_tab_changed(self, index: int) -> None:
         showing_history = index == 1
+        showing_branches = index == 2
         show_diff = self._repository is not None and (
             not showing_history or self._commit_diff_visible
-        )
+        ) and not showing_branches
         self._diff_container.setVisible(show_diff)
         if showing_history:
             if self._commit_diff_visible:
@@ -329,6 +341,12 @@ class MainWindow(QMainWindow):
                 )
                 self._splitter.setSizes([220, 0, available, 0])
                 self._history_panel.set_expanded_layout(True)
+        elif showing_branches:
+            available = max(
+                self._splitter.width() - self._repositories_panel.minimumWidth(), 600
+            )
+            self._splitter.setSizes([220, 0, available, 0])
+            self._history_panel.set_expanded_layout(False)
         elif self._repository is not None:
             self._commit_diff_visible = False
             self._history_panel.set_expanded_layout(False)
@@ -428,6 +446,32 @@ class MainWindow(QMainWindow):
         self._status_label.setText(
             f"Showing {value.diff.path} from {value.commit_oid[:8]}"
         )
+
+    @Slot(object)
+    def _show_branches(self, value: object) -> None:
+        if not isinstance(value, BranchesSnapshot) or value.repository != self._repository:
+            return
+        self._branches_panel.show_branches(value)
+
+    @Slot(object)
+    def _checkout_branch(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, BranchInfo):
+            return
+        self._branches_panel.setEnabled(False)
+        self._status_label.setText(f"Checking out {value.name}…")
+        self._git.request_checkout(self._repository, value)
+
+    @Slot()
+    def _create_branch(self) -> None:
+        if self._repository is None:
+            return
+        name, accepted = QInputDialog.getText(self, "New branch", "Branch name:")
+        name = name.strip()
+        if not accepted or not name:
+            return
+        self._branches_panel.setEnabled(False)
+        self._status_label.setText(f"Creating branch {name}…")
+        self._git.request_create_branch(self._repository, name)
 
     def _show_linked_repositories(self, repository: Path) -> None:
         self._workspace_discovery.request_linked_repositories(repository)
@@ -647,6 +691,7 @@ class MainWindow(QMainWindow):
     def _mutation_finished(self, path: str) -> None:
         self._changes.setEnabled(True)
         self._changes_container.setEnabled(True)
+        self._branches_panel.setEnabled(True)
         if path == "commit":
             self._commit_message.clear()
             self._commit_description.clear()
@@ -654,10 +699,13 @@ class MainWindow(QMainWindow):
             self._generated_commit_description = ""
             self._amend.setChecked(False)
             self._status_label.setText("Commit created")
+        elif path.startswith("branch:"):
+            self._status_label.setText(f"Checked out {path.removeprefix('branch:')}")
         else:
             self._status_label.setText(f"Updated staging area for {path}")
         if self._repository is not None:
             self._status_runner = self._git.request_status(self._repository)
+            self._git.request_branches(self._repository)
 
     @Slot()
     def _update_commit_controls(self) -> None:
@@ -889,6 +937,7 @@ class MainWindow(QMainWindow):
         self._history_runner = None
         self._changes.setEnabled(True)
         self._changes_container.setEnabled(True)
+        self._branches_panel.setEnabled(True)
         self._status_label.setText("Git operation failed")
         QMessageBox.critical(self, "Git error", message)
 

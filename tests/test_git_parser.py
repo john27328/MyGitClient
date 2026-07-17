@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from mygitclient.git.parsers import (
+    parse_branches,
     parse_commit_files,
     parse_commit_log,
     parse_status_porcelain_v2,
     parse_unified_diff,
 )
+
+
+def test_parse_branches_includes_tracking_and_remote_refs() -> None:
+    snapshot = parse_branches(
+        Path("repository"),
+        b"refs/heads/main\x00main\x001234\x00origin/main\x00[ahead 2, behind 1]"
+        b"\x00*\x1e\nrefs/remotes/origin/topic\x00origin/topic\x005678\x00\x00\x00 \x1e\n",
+    )
+
+    assert len(snapshot.branches) == 2
+    main, remote = snapshot.branches
+    assert main.current
+    assert main.upstream == "origin/main"
+    assert (main.ahead, main.behind) == (2, 1)
+    assert remote.remote
+    assert remote.name == "origin/topic"
 
 
 def test_parse_commit_files_supports_renames_and_regular_changes() -> None:

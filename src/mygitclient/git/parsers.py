@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from pathlib import Path
 
 from mygitclient.git.errors import GitParseError
 from mygitclient.git.models import (
+    BranchesSnapshot,
+    BranchInfo,
     BranchStatus,
     CommitFileChange,
     CommitSummary,
@@ -15,6 +18,41 @@ from mygitclient.git.models import (
     RepositoryStatus,
     UnifiedDiff,
 )
+
+_AHEAD = re.compile(r"ahead (\d+)")
+_BEHIND = re.compile(r"behind (\d+)")
+
+
+def parse_branches(repository: Path, output: bytes) -> BranchesSnapshot:
+    branches: list[BranchInfo] = []
+    for raw_record in output.split(b"\x1e"):
+        raw_record = raw_record.strip(b"\r\n")
+        if not raw_record:
+            continue
+        fields = raw_record.split(b"\x00")
+        if len(fields) != 6:
+            raise GitParseError("Malformed branch record")
+        full_name, name, oid, upstream, tracking, head = (
+            field.decode("utf-8", errors="surrogateescape") for field in fields
+        )
+        remote = full_name.startswith("refs/remotes/")
+        if remote and full_name.endswith("/HEAD"):
+            continue
+        ahead_match = _AHEAD.search(tracking)
+        behind_match = _BEHIND.search(tracking)
+        branches.append(
+            BranchInfo(
+                full_name=full_name,
+                name=name,
+                oid=oid,
+                remote=remote,
+                current=head == "*",
+                upstream=upstream or None,
+                ahead=int(ahead_match.group(1)) if ahead_match else 0,
+                behind=int(behind_match.group(1)) if behind_match else 0,
+            )
+        )
+    return BranchesSnapshot(repository, tuple(branches))
 
 
 def parse_commit_files(output: bytes) -> tuple[CommitFileChange, ...]:

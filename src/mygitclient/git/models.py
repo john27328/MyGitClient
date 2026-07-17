@@ -40,6 +40,24 @@ class BranchStatus:
 
 
 @dataclass(frozen=True, slots=True)
+class BranchInfo:
+    full_name: str
+    name: str
+    oid: str
+    remote: bool
+    current: bool = False
+    upstream: str | None = None
+    ahead: int = 0
+    behind: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class BranchesSnapshot:
+    repository: Path
+    branches: tuple[BranchInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FileStatus:
     path: str
     index_status: str
