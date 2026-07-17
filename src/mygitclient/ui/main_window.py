@@ -258,8 +258,8 @@ class MainWindow(QMainWindow):
         if selected:
             self.open_repository(Path(selected))
 
-    @Slot(object)
-    def _open_recent_repository(self, value: object) -> None:
+    @Slot(object, bool)
+    def _open_recent_repository(self, value: object, remember: bool) -> None:
         if not isinstance(value, Path):
             return
         if not value.is_dir() or not (value / ".git").exists():
@@ -267,7 +267,7 @@ class MainWindow(QMainWindow):
             self._populate_recent_repositories()
             self._status_label.setText("Removed missing repository from recent list")
             return
-        self.open_repository(value)
+        self.open_repository(value, remember=remember)
 
     @Slot(object)
     def _remove_recent_repository(self, value: object) -> None:
@@ -277,7 +277,7 @@ class MainWindow(QMainWindow):
         self._populate_recent_repositories()
         self._status_label.setText("Removed repository from recent list")
 
-    def open_repository(self, selected_path: Path) -> None:
+    def open_repository(self, selected_path: Path, *, remember: bool = True) -> None:
         repository = find_repository_root(selected_path)
         if repository is None:
             QMessageBox.warning(
@@ -290,9 +290,9 @@ class MainWindow(QMainWindow):
             self._open_repositories.append(repository)
             self._workspace.save_open_repositories(self._open_repositories)
             self._populate_repository_switcher()
-        self._activate_repository(repository)
+        self._activate_repository(repository, remember=remember)
 
-    def _activate_repository(self, repository: Path) -> None:
+    def _activate_repository(self, repository: Path, *, remember: bool = False) -> None:
         if repository not in self._open_repositories:
             self._open_repositories.append(repository)
             self._workspace.save_open_repositories(self._open_repositories)
@@ -302,8 +302,9 @@ class MainWindow(QMainWindow):
         self._commit_diff_visible = False
         self._workspace.set_last_repository(repository)
         self._repositories_panel.select_repository(repository)
-        self._workspace.remember(repository)
-        self._populate_recent_repositories()
+        if remember:
+            self._workspace.remember(repository)
+            self._populate_recent_repositories()
         self._show_linked_repositories(repository)
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
@@ -311,7 +312,6 @@ class MainWindow(QMainWindow):
         self._branches_panel.reset()
         self._diff_view.reset()
         self._welcome.hide()
-        self._changes_container.show()
         self._workspace_tabs.show()
         self._diff_version.show()
         self._diff_view_mode.show()
@@ -971,7 +971,7 @@ class MainWindow(QMainWindow):
         self._splitter.setSizes([240, 0, 360, 900])
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        self._workspace_discovery.cancel_all()
+        self._workspace_discovery.shutdown()
         self._settings.setValue("window/geometry", self.saveGeometry())
         self._settings.setValue("window/state", self.saveState())
         if self._repository is not None:

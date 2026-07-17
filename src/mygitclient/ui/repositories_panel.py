@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtGui import QAction
@@ -11,7 +12,7 @@ from mygitclient.workspace import LinkedRepository
 
 
 class RepositoriesPanel(QWidget):
-    repository_activated = Signal(object)
+    repository_activated = Signal(object, bool)
     remove_requested = Signal(object)
     switch_requested = Signal(object)
 
@@ -56,14 +57,14 @@ class RepositoriesPanel(QWidget):
         blocker = QSignalBlocker(self.switcher)
         self.switcher.clear()
         for repository in repositories:
-            self.switcher.addItem(repository.name, repository)
+            self.switcher.addItem(repository.name, str(repository))
         if current is not None:
-            self.switcher.setCurrentIndex(self.switcher.findData(current))
+            self.switcher.setCurrentIndex(self.switcher.findData(str(current)))
         del blocker
 
     def select_repository(self, repository: Path) -> None:
         blocker = QSignalBlocker(self.switcher)
-        self.switcher.setCurrentIndex(self.switcher.findData(repository))
+        self.switcher.setCurrentIndex(self.switcher.findData(str(repository)))
         del blocker
 
     def set_linked(
@@ -74,6 +75,7 @@ class RepositoriesPanel(QWidget):
             if item is None or item.data(0, Qt.ItemDataRole.UserRole) != repository:
                 continue
             for linked in linked_repositories:
+                self._remove_duplicate_top_level(linked.path, except_item=item)
                 child = QTreeWidgetItem([f"{linked.path.name} ({linked.kind})"])
                 child.setToolTip(0, str(linked.path))
                 child.setData(0, Qt.ItemDataRole.UserRole, linked.path)
@@ -81,11 +83,24 @@ class RepositoriesPanel(QWidget):
             item.setExpanded(True)
             return
 
+    def _remove_duplicate_top_level(
+        self, repository: Path, *, except_item: QTreeWidgetItem
+    ) -> None:
+        for index in reversed(range(self.tree.topLevelItemCount())):
+            candidate = self.tree.topLevelItem(index)
+            if (
+                candidate is not None
+                and candidate is not except_item
+                and candidate.data(0, Qt.ItemDataRole.UserRole) == repository
+            ):
+                self.tree.takeTopLevelItem(index)
+
     @Slot(QTreeWidgetItem, int)
     def _item_activated(self, item: QTreeWidgetItem, _column: int) -> None:
         repository = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(repository, Path):
-            self.repository_activated.emit(repository)
+            parent = cast(QTreeWidgetItem | None, item.parent())
+            self.repository_activated.emit(repository, parent is None)
 
     @Slot()
     def _remove_selected(self) -> None:
@@ -99,5 +114,5 @@ class RepositoriesPanel(QWidget):
     @Slot(int)
     def _switcher_changed(self, index: int) -> None:
         repository = self.switcher.itemData(index)
-        if isinstance(repository, Path):
-            self.switch_requested.emit(repository)
+        if isinstance(repository, str):
+            self.switch_requested.emit(Path(repository))

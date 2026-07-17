@@ -7,6 +7,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QInputDialog,
     QLabel,
@@ -201,6 +202,46 @@ def test_open_repositories_are_restored_and_switchable(
     window.close()
 
 
+def test_linked_repository_stays_nested_and_is_selected_in_switcher(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    parent = tmp_path / "parent"
+    child = parent / "child"
+    child.mkdir(parents=True)
+    for repository in (parent, child):
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    settings = QSettings(str(tmp_path / "linked.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    repositories = window.findChild(QTreeWidget, "repositoriesTree")
+    switcher = window.findChild(QComboBox, "repositorySwitcher")
+    assert repositories is not None
+    assert switcher is not None
+    window.show()
+    window.open_repository(parent)
+
+    def linked_item() -> object:
+        root = repositories.topLevelItem(0)
+        return root.child(0) if root is not None and root.childCount() else None
+
+    qtbot.waitUntil(lambda: linked_item() is not None, timeout=5000)
+    root = repositories.topLevelItem(0)
+    assert root is not None
+    child_item = root.child(0)
+    assert child_item is not None
+    repositories.itemActivated.emit(child_item, 0)
+    qtbot.waitUntil(lambda: switcher.currentText() == "child", timeout=5000)
+
+    assert repositories.topLevelItemCount() == 1
+    assert root.childCount() == 1
+    assert settings.value("workspace/recentRepositories") == [str(parent.resolve())]
+    window.close()
+
+
 def test_invalid_theme_falls_back_to_system() -> None:
     assert Theme.from_value("unknown") is Theme.SYSTEM
 
@@ -311,10 +352,12 @@ def test_branches_tab_can_checkout_and_create_branch(
     branches = window.findChild(QTreeWidget, "branchesTree")
     checkout = window.findChild(QPushButton, "checkoutBranchButton")
     create = window.findChild(QPushButton, "createBranchButton")
+    stage_all = window.findChild(QCheckBox, "stageAllCheckBox")
     assert tabs is not None
     assert branches is not None
     assert checkout is not None
     assert create is not None
+    assert stage_all is not None
     window.show()
     window.open_repository(repository)
     tabs.setCurrentIndex(2)
@@ -323,6 +366,10 @@ def test_branches_tab_can_checkout_and_create_branch(
         root = branches.topLevelItem(0)
         return root.childCount() if root is not None else 0
 
+    qtbot.waitUntil(lambda: local_branch_count() == 2, timeout=5000)
+    window.open_repository(repository)
+    assert tabs.currentIndex() == 2
+    assert not stage_all.isVisible()
     qtbot.waitUntil(lambda: local_branch_count() == 2, timeout=5000)
     local = branches.topLevelItem(0)
     assert local is not None

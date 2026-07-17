@@ -94,6 +94,12 @@ class WorkspaceDiscoveryService(QObject):
         for _worker, cancelled in self._requests.values():
             cancelled.set()
 
+    def shutdown(self) -> None:
+        self.cancel_all()
+        for thread in tuple(self._requests):
+            thread.quit()
+            thread.wait(2000)
+
     @Slot(object)
     def _handle_completed(self, value: object) -> None:
         if isinstance(value, LinkedRepositoriesSnapshot) and (
