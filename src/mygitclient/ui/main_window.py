@@ -11,7 +11,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -21,7 +20,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTabWidget,
     QToolBar,
-    QTreeWidget,
     QTreeWidgetItem,
 )
 
@@ -40,6 +38,7 @@ from mygitclient.theme import Theme, apply_theme
 from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
+from mygitclient.ui.repositories_panel import RepositoriesPanel
 from mygitclient.workspace import (
     WorkspaceManager,
     discover_linked_repositories,
@@ -75,16 +74,8 @@ class MainWindow(QMainWindow):
         self._restore_open_repositories()
 
     def _build_ui(self) -> None:
-        self._repositories = QTreeWidget()
-        self._repositories.setObjectName("repositoriesTree")
-        self._repositories.setHeaderLabel("Recent repositories")
-        self._repositories.setMinimumWidth(180)
-        self._repositories.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
-        self._remove_recent_action = QAction("Remove from recent list", self._repositories)
-        self._remove_recent_action.setIcon(load_icon("remove.svg"))
-        self._remove_recent_action.setObjectName("removeRecentAction")
-        self._remove_recent_action.triggered.connect(self._remove_selected_recent)
-        self._repositories.addAction(self._remove_recent_action)
+        self._repositories_panel = RepositoriesPanel()
+        self._repositories = self._repositories_panel.tree
 
         self._welcome = QPlainTextEdit()
         self._welcome.setObjectName("welcomePanel")
@@ -150,7 +141,7 @@ class MainWindow(QMainWindow):
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("mainSplitter")
-        self._splitter.addWidget(self._repositories)
+        self._splitter.addWidget(self._repositories_panel)
         self._splitter.addWidget(self._welcome)
         self._splitter.addWidget(self._workspace_tabs)
         self._splitter.addWidget(self._diff_container)
@@ -186,10 +177,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toolbar.addAction(open_action)
-        self._repository_switcher = QComboBox()
-        self._repository_switcher.setObjectName("repositorySwitcher")
-        self._repository_switcher.setMinimumWidth(180)
-        self._repository_switcher.currentIndexChanged.connect(self._repository_selected)
+        self._repository_switcher = self._repositories_panel.switcher
         toolbar.addWidget(self._repository_switcher)
         refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
         refresh_action.setObjectName("refreshAction")
@@ -230,24 +218,15 @@ class MainWindow(QMainWindow):
         self._git.mutation_ready.connect(self._mutation_finished)
         self._git.operation_cancelled.connect(self._operation_cancelled)
         self._git.operation_failed.connect(self._show_git_error)
-        self._repositories.itemActivated.connect(self._open_recent_item)
+        self._repositories_panel.repository_activated.connect(self._open_recent_repository)
+        self._repositories_panel.remove_requested.connect(self._remove_recent_repository)
+        self._repositories_panel.switch_requested.connect(self._repository_selected)
         self._changes.itemSelectionChanged.connect(self._selected_file_changed)
         self._changes.itemSelectionChanged.connect(self._update_file_actions)
         self._changes.itemChanged.connect(self._stage_checkbox_changed)
 
     def _populate_recent_repositories(self) -> None:
-        self._repositories.clear()
-        recent = self._workspace.recent_repositories()
-        if not recent:
-            placeholder = QTreeWidgetItem(["No recent repositories"])
-            placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
-            self._repositories.addTopLevelItem(placeholder)
-            return
-        for repository in recent:
-            item = QTreeWidgetItem([repository.name])
-            item.setToolTip(0, str(repository))
-            item.setData(0, Qt.ItemDataRole.UserRole, str(repository))
-            self._repositories.addTopLevelItem(item)
+        self._repositories_panel.set_recent(self._workspace.recent_repositories())
 
     @Slot()
     def _choose_repository(self) -> None:
@@ -255,27 +234,22 @@ class MainWindow(QMainWindow):
         if selected:
             self.open_repository(Path(selected))
 
-    @Slot(QTreeWidgetItem, int)
-    def _open_recent_item(self, item: QTreeWidgetItem, _column: int) -> None:
-        value = item.data(0, Qt.ItemDataRole.UserRole)
-        if isinstance(value, str):
-            repository = Path(value)
-            if not repository.is_dir() or not (repository / ".git").exists():
-                self._workspace.forget(repository)
-                self._populate_recent_repositories()
-                self._status_label.setText("Removed missing repository from recent list")
-                return
-            self.open_repository(repository)
+    @Slot(object)
+    def _open_recent_repository(self, value: object) -> None:
+        if not isinstance(value, Path):
+            return
+        if not value.is_dir() or not (value / ".git").exists():
+            self._workspace.forget(value)
+            self._populate_recent_repositories()
+            self._status_label.setText("Removed missing repository from recent list")
+            return
+        self.open_repository(value)
 
-    @Slot()
-    def _remove_selected_recent(self) -> None:
-        selected_items = self._repositories.selectedItems()
-        if not selected_items:
+    @Slot(object)
+    def _remove_recent_repository(self, value: object) -> None:
+        if not isinstance(value, Path):
             return
-        value = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(value, str):
-            return
-        self._workspace.forget(Path(value))
+        self._workspace.forget(value)
         self._populate_recent_repositories()
         self._status_label.setText("Removed repository from recent list")
 
@@ -298,11 +272,7 @@ class MainWindow(QMainWindow):
         self._repository = repository
         self._repository_status = None
         self._workspace.set_last_repository(repository)
-        switcher_blocker = QSignalBlocker(self._repository_switcher)
-        self._repository_switcher.setCurrentIndex(
-            self._repository_switcher.findData(str(repository))
-        )
-        del switcher_blocker
+        self._repositories_panel.select_repository(repository)
         self._workspace.remember(repository)
         self._populate_recent_repositories()
         self._show_linked_repositories(repository)
@@ -329,7 +299,9 @@ class MainWindow(QMainWindow):
         showing_history = index == 1
         self._diff_container.setVisible(not showing_history and self._repository is not None)
         if showing_history:
-            available = max(self._splitter.width() - self._repositories.minimumWidth(), 600)
+            available = max(
+                self._splitter.width() - self._repositories_panel.minimumWidth(), 600
+            )
             self._splitter.setSizes([220, 0, available, 0])
             self._history_panel.set_expanded_layout(True)
         elif self._repository is not None:
@@ -360,35 +332,17 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Loaded {count} commits")
 
     def _show_linked_repositories(self, repository: Path) -> None:
-        for index in range(self._repositories.topLevelItemCount()):
-            item = self._repositories.topLevelItem(index)
-            if item is None or item.data(0, Qt.ItemDataRole.UserRole) != str(repository):
-                continue
-            for linked in discover_linked_repositories(repository):
-                child = QTreeWidgetItem([f"{linked.path.name} ({linked.kind})"])
-                child.setToolTip(0, str(linked.path))
-                child.setData(0, Qt.ItemDataRole.UserRole, str(linked.path))
-                item.addChild(child)
-            item.setExpanded(True)
-            return
+        self._repositories_panel.set_linked(
+            repository, discover_linked_repositories(repository)
+        )
 
     def _populate_repository_switcher(self) -> None:
-        blocker = QSignalBlocker(self._repository_switcher)
-        self._repository_switcher.clear()
-        for repository in self._open_repositories:
-            self._repository_switcher.addItem(repository.name, str(repository))
-        if self._repository is not None:
-            index = self._repository_switcher.findData(str(self._repository))
-            self._repository_switcher.setCurrentIndex(index)
-        del blocker
+        self._repositories_panel.set_open(self._open_repositories, self._repository)
 
-    @Slot(int)
-    def _repository_selected(self, index: int) -> None:
-        value = self._repository_switcher.itemData(index)
-        if isinstance(value, str):
-            repository = Path(value)
-            if repository != self._repository and repository.is_dir():
-                self._activate_repository(repository)
+    @Slot(object)
+    def _repository_selected(self, value: object) -> None:
+        if isinstance(value, Path) and value != self._repository and value.is_dir():
+            self._activate_repository(value)
 
     def _restore_open_repositories(self) -> None:
         self._open_repositories = list(self._workspace.open_repositories())

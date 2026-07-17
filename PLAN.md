@@ -41,7 +41,8 @@
 - [x] Вынести рендеринг unified/side-by-side, selection и scroll restore в `DiffView`.
 - [x] Передать `DiffView` владение выбором строк/hunk и сигналами частичного stage.
 - [x] Вынести дерево изменений и commit-форму в `ChangesPanel`.
-- [ ] Вынести diff, changes, commit и repositories в отдельные QWidget-панели.
+- [x] Вынести список, переключатель и действия репозиториев в `RepositoriesPanel`.
+- [x] Вынести diff, changes, commit и repositories в отдельные QWidget-панели.
 - [ ] Разделить UI-тесты по функциональным областям.
 - [ ] Выполнять поиск вложенных репозиториев вне GUI-потока.
 
