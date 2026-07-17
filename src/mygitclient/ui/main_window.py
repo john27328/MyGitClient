@@ -258,6 +258,7 @@ class MainWindow(QMainWindow):
         self._push_action.setObjectName("pushAction")
         self._push_action.triggered.connect(self._push_repository)
         toolbar.addAction(self._push_action)
+        self._update_sync_indicators()
         cancel_action = QAction(load_icon("cancel.svg"), "Cancel", self)
         cancel_action.setObjectName("cancelOperationsAction")
         cancel_action.triggered.connect(self._cancel_operations)
@@ -658,7 +659,39 @@ class MainWindow(QMainWindow):
             load_icon("pull-rebase.svg" if rebase else "pull-merge.svg")
         )
         suffix = " · Stash" if self._pull_autostash_action.isChecked() else ""
-        self._pull_action.setText(f"Pull · {strategy}{suffix}")
+        behind = (
+            self._repository_status.branch.behind
+            if self._repository_status is not None
+            else 0
+        )
+        incoming = f" ↓{behind}" if behind else ""
+        self._pull_action.setText(f"Pull{incoming} · {strategy}{suffix}")
+
+    def _update_sync_indicators(self) -> None:
+        self._update_pull_button()
+        status = self._repository_status
+        pull_text, push_text = sync_action_labels(
+            status,
+            rebase=self._pull_rebase_action.isChecked(),
+            autostash=self._pull_autostash_action.isChecked(),
+        )
+        self._pull_action.setText(pull_text)
+        self._push_action.setText(push_text)
+        if status is None or status.branch.head is None:
+            self._push_action.setToolTip("No checked-out branch to push")
+            return
+        branch = status.branch
+        if branch.upstream is None:
+            self._push_action.setToolTip(
+                f"Publish {branch.head} to origin and configure its upstream"
+            )
+        else:
+            self._push_action.setToolTip(
+                f"{branch.ahead} commit(s) ready to push to {branch.upstream}"
+            )
+        self._pull_action.setToolTip(
+            f"{branch.behind} commit(s) available from {branch.upstream or 'upstream'}"
+        )
 
     @Slot()
     def _fetch_repository(self) -> None:
@@ -729,6 +762,7 @@ class MainWindow(QMainWindow):
             if isinstance(selected_file, FileStatus):
                 selected_path = selected_file.path
         self._repository_status = status_value
+        self._update_sync_indicators()
         changed_paths = {file.path for file in status_value.files}
         self._diff_view.retain_changed_paths(value.repository, changed_paths)
         blocker = QSignalBlocker(self._changes)
@@ -1161,6 +1195,24 @@ class MainWindow(QMainWindow):
         if self._repository is not None:
             self._settings.setValue("window/workspaceSplitterSizes", self._splitter.sizes())
         super().closeEvent(event)
+
+
+def sync_action_labels(
+    status: RepositoryStatus | None, *, rebase: bool, autostash: bool
+) -> tuple[str, str]:
+    branch = status.branch if status is not None else None
+    incoming = f" ↓{branch.behind}" if branch is not None and branch.behind else ""
+    strategy = "Rebase" if rebase else "Merge"
+    stash = " · Stash" if autostash else ""
+    pull = f"Pull{incoming} · {strategy}{stash}"
+    if branch is None or branch.head is None:
+        push = "Push"
+    elif branch.upstream is None:
+        push = "Push · Publish"
+    else:
+        outgoing = f" ↑{branch.ahead}" if branch.ahead else ""
+        push = f"Push{outgoing}"
+    return pull, push
 
 
 def _status_label(code: str) -> str:
