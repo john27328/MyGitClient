@@ -39,3 +39,16 @@ def test_range_toggle_selects_only_changed_lines() -> None:
     assert selection.toggle(diff, 5, extend=True)
 
     assert selection.selected_lines == {4, 5}
+
+
+def test_whole_file_selection_is_distinct_from_partial_selection() -> None:
+    diff = _diff()
+    selection = DiffSelection()
+
+    selection.select_whole_file(diff)
+
+    assert selection.selected_lines == {4, 5}
+    assert selection.whole_file
+    selection.clear()
+    assert not selection.selected_lines
+    assert not selection.whole_file

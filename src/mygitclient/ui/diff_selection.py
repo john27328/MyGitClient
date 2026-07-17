@@ -11,14 +11,26 @@ class DiffSelection:
 
     selected_lines: set[int] = field(default_factory=lambda: set[int]())
     last_line: int | None = None
+    whole_file: bool = False
 
     def clear(self) -> None:
         self.selected_lines.clear()
         self.last_line = None
+        self.whole_file = False
+
+    def select_whole_file(self, diff: UnifiedDiff) -> None:
+        self.selected_lines = {
+            index
+            for index, line in enumerate(diff.lines)
+            if line.kind in {"addition", "deletion"}
+        }
+        self.last_line = None
+        self.whole_file = bool(self.selected_lines)
 
     def toggle(self, diff: UnifiedDiff, line_index: int, *, extend: bool) -> bool:
         if line_index < 0 or line_index >= len(diff.lines):
             return False
+        self.whole_file = False
         line = diff.lines[line_index]
         if line.kind == "hunk":
             selectable = self._changed_lines_in_hunk(diff, line_index)

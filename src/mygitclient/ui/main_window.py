@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QByteArray, QDateTime, QSettings, QSignalBlocker, Qt, QTimer, Slot
+from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, QTimer, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -42,7 +42,6 @@ from PySide6.QtWidgets import (
 
 from mygitclient.git.models import (
     CommitPage,
-    CommitSummary,
     DiffLine,
     DiffLineKind,
     DiffSnapshot,
@@ -55,10 +54,10 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
-from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_highlighter import DiffHighlighter
 from mygitclient.ui.diff_selection import DiffSelection
+from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.workspace import (
     WorkspaceManager,
     discover_linked_repositories,
@@ -172,32 +171,13 @@ class MainWindow(QMainWindow):
         self._changes_container.hide()
         self._update_commit_controls()
 
-        self._history = QTreeWidget()
-        self._history.setObjectName("historyTree")
-        self._history.setHeaderLabels(["Graph", "Description", "Author", "Date", "Commit"])
-        self._history.setRootIsDecorated(False)
-        self._history.setUniformRowHeights(True)
-        self._history.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._history.setColumnWidth(0, 60)
-        self._history.setColumnWidth(1, 360)
-        self._history.setColumnWidth(2, 150)
-        self._history.setColumnWidth(3, 190)
-        self._history.setColumnWidth(4, 90)
-        self._history.setItemDelegateForColumn(0, CommitGraphDelegate(self._history))
-        self._history_load_more = QPushButton("Load more")
-        self._history_load_more.setObjectName("historyLoadMoreButton")
-        self._history_load_more.clicked.connect(self._load_more_history)
-        self._history_load_more.hide()
-        self._history_container = QWidget()
-        history_layout = QVBoxLayout(self._history_container)
-        history_layout.setContentsMargins(0, 0, 0, 0)
-        history_layout.addWidget(self._history)
-        history_layout.addWidget(self._history_load_more)
+        self._history_panel = HistoryPanel()
+        self._history_panel.load_more_requested.connect(self._load_more_history)
 
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
         self._workspace_tabs.addTab(self._changes_container, "Changes")
-        self._workspace_tabs.addTab(self._history_container, "History")
+        self._workspace_tabs.addTab(self._history_panel, "History")
         self._workspace_tabs.setMinimumWidth(360)
         self._workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
         self._workspace_tabs.hide()
@@ -511,8 +491,7 @@ class MainWindow(QMainWindow):
         self._show_linked_repositories(repository)
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
-        self._history.clear()
-        self._history_load_more.hide()
+        self._history_panel.reset()
         self._diff.clear()
         self._diff_gutter.clear()
         self._welcome.hide()
@@ -535,14 +514,9 @@ class MainWindow(QMainWindow):
         if showing_history:
             available = max(self._splitter.width() - self._repositories.minimumWidth(), 600)
             self._splitter.setSizes([220, 0, available, 0])
-            self._history.header().setStretchLastSection(False)
-            self._history.header().setSectionResizeMode(
-                1, self._history.header().ResizeMode.Stretch
-            )
+            self._history_panel.set_expanded_layout(True)
         elif self._repository is not None:
-            self._history.header().setSectionResizeMode(
-                1, self._history.header().ResizeMode.Interactive
-            )
+            self._history_panel.set_expanded_layout(False)
             self._restore_workspace_splitter_sizes()
 
     @Slot()
@@ -551,10 +525,10 @@ class MainWindow(QMainWindow):
             return
         if self._history_runner is not None and self._history_runner.is_running:
             return
-        self._history_load_more.setEnabled(False)
+        self._history_panel.set_loading(True)
         self._status_label.setText("Loading more commits…")
         self._history_runner = self._git.request_history(
-            self._repository, offset=self._history.topLevelItemCount()
+            self._repository, offset=self._history_panel.commit_count
         )
 
     @Slot(object)
@@ -564,57 +538,9 @@ class MainWindow(QMainWindow):
         if self._repository is None or value.repository != self._repository:
             return
         self._history_runner = None
-        if value.offset == 0:
-            self._history.clear()
-        for commit in value.commits:
-            self._append_history_item(commit)
-        self._render_history_graph()
-        self._history_load_more.setVisible(value.has_more)
-        self._history_load_more.setEnabled(True)
-        count = self._history.topLevelItemCount()
+        self._history_panel.show_page(value)
+        count = self._history_panel.commit_count
         self._status_label.setText(f"Loaded {count} commits")
-
-    def _append_history_item(self, commit: CommitSummary) -> None:
-        authored_at = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
-        display_date = (
-            authored_at.toLocalTime().toString("dd.MM.yyyy HH:mm")
-            if authored_at.isValid()
-            else commit.authored_at
-        )
-        item = QTreeWidgetItem(
-            ["", commit.subject, commit.author_name, display_date, commit.oid[:8]]
-        )
-        item.setData(0, Qt.ItemDataRole.UserRole, commit)
-        item.setToolTip(1, commit.subject)
-        item.setToolTip(2, f"{commit.author_name} <{commit.author_email}>")
-        item.setToolTip(4, commit.oid)
-        self._history.addTopLevelItem(item)
-
-    def _render_history_graph(self) -> None:
-        lanes: list[str] = []
-        widest = 1
-        for row in range(self._history.topLevelItemCount()):
-            item = self._history.topLevelItem(row)
-            if item is None:
-                continue
-            commit = item.data(0, Qt.ItemDataRole.UserRole)
-            if not isinstance(commit, CommitSummary):
-                continue
-            try:
-                lane = lanes.index(commit.oid)
-            except ValueError:
-                lane = 0
-                lanes.insert(0, commit.oid)
-            before = tuple(lanes)
-            lanes.pop(lane)
-            for parent in reversed(commit.parent_oids):
-                if parent not in lanes:
-                    lanes.insert(lane, parent)
-            parent_lanes = tuple(lanes.index(parent) for parent in commit.parent_oids)
-            graph_row = CommitGraphRow(before, tuple(lanes), lane, parent_lanes)
-            item.setData(0, GRAPH_ROLE, graph_row)
-            widest = max(widest, len(before), len(lanes))
-        self._history.setColumnWidth(0, max(60, widest * CommitGraphDelegate.lane_width + 16))
 
     def _show_linked_repositories(self, repository: Path) -> None:
         for index in range(self._repositories.topLevelItemCount()):
@@ -987,13 +913,34 @@ class MainWindow(QMainWindow):
         if self._diff_version.currentData() != diff_value.staged:
             return
         preserve_selection = diff_value == self._current_diff
+        scroll_positions = (
+            self._diff.verticalScrollBar().value(),
+            self._diff.horizontalScrollBar().value(),
+            self._side_old.verticalScrollBar().value(),
+            self._side_old.horizontalScrollBar().value(),
+            self._side_new.horizontalScrollBar().value(),
+        )
         self._current_diff = diff_value
         if not preserve_selection:
             self._diff_selection.clear()
+        whole_file_staged = (
+            diff_value.staged and file.is_staged and not file.has_worktree_change
+        )
+        if whole_file_staged:
+            self._diff_selection.select_whole_file(diff_value)
         self._diff_highlighter.set_diff(diff_value)
         self._diff.setPlainText(diff_value.text or "No textual changes to display.")
         self._show_diff_line_numbers(diff_value)
         self._show_side_by_side(diff_value)
+        if preserve_selection:
+            diff_vertical, diff_horizontal, side_vertical, old_horizontal, new_horizontal = (
+                scroll_positions
+            )
+            self._diff.verticalScrollBar().setValue(diff_vertical)
+            self._diff.horizontalScrollBar().setValue(diff_horizontal)
+            self._side_old.verticalScrollBar().setValue(side_vertical)
+            self._side_old.horizontalScrollBar().setValue(old_horizontal)
+            self._side_new.horizontalScrollBar().setValue(new_horizontal)
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
         self._update_hunk_button()
@@ -1052,6 +999,30 @@ class MainWindow(QMainWindow):
         self._selected_lines_button.setText(
             "Unstage selected" if diff.staged else "Stage selected"
         )
+        self._sync_selected_file_checkbox()
+
+    def _sync_selected_file_checkbox(self) -> None:
+        selected_items = self._changes.selectedItems()
+        if not selected_items:
+            return
+        item = selected_items[0]
+        file = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(file, FileStatus) or file.unmerged:
+            return
+        if (
+            self._diff_selection.selected_lines
+            and not self._diff_selection.whole_file
+        ) or (
+            file.is_staged and file.has_worktree_change
+        ):
+            state = Qt.CheckState.PartiallyChecked
+        elif file.is_staged:
+            state = Qt.CheckState.Checked
+        else:
+            state = Qt.CheckState.Unchecked
+        blocker = QSignalBlocker(self._changes)
+        item.setCheckState(0, state)
+        del blocker
 
     @Slot()
     def _clear_selected_lines(self) -> None:

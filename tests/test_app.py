@@ -419,12 +419,15 @@ def test_file_checkbox_stages_and_unstages_changes(
     settings = QSettings(str(tmp_path / "stage.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
+    gutter = window.findChild(DiffGutter, "diffGutter")
     assert changes is not None
+    assert gutter is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     item = changes.topLevelItem(0)
     assert item is not None
     assert item.checkState(0) is Qt.CheckState.Unchecked
+    changes.setCurrentItem(item)
 
     def index_text_is(expected: str) -> bool:
         current = changes.topLevelItem(0)
@@ -435,12 +438,14 @@ def test_file_checkbox_stages_and_unstages_changes(
     staged_item = changes.topLevelItem(0)
     assert staged_item is not None
     assert staged_item.checkState(0) is Qt.CheckState.Checked
+    qtbot.waitUntil(lambda: gutter.toPlainText().count("✓") == 2, timeout=5000)
 
     staged_item.setCheckState(0, Qt.CheckState.Unchecked)
     qtbot.waitUntil(lambda: index_text_is(""), timeout=5000)
     unstaged_item = changes.topLevelItem(0)
     assert unstaged_item is not None
     assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
+    qtbot.waitUntil(lambda: "✓" not in gutter.toPlainText(), timeout=5000)
     window.close()
 
 
@@ -686,8 +691,10 @@ def test_selected_diff_lines_can_be_staged(
     gutter.line_activated.emit(hunk_header.blockNumber(), False)
     assert gutter.toPlainText().count("✓") == 4
     assert "■" in gutter.toPlainText()
+    assert item.checkState(0) is Qt.CheckState.PartiallyChecked
     clear_lines.click()
     assert "✓" not in gutter.toPlainText()
+    assert item.checkState(0) is Qt.CheckState.Unchecked
     deleted = diff_panel.document().find("-two")
     added = diff_panel.document().find("+TWO")
     assert not deleted.isNull()
@@ -743,6 +750,57 @@ def test_selected_diff_lines_can_be_staged(
         return "+TWO" not in result.stdout
 
     qtbot.waitUntil(selected_lines_are_unstaged, timeout=5000)
+    window.close()
+
+
+def test_unchanged_diff_refresh_preserves_scroll_position(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "scroll-refresh"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    lines = [f"line {number}\n" for number in range(250)]
+    tracked.write_text("".join(lines), encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    lines = [f"changed line {number}\n" for number in range(250)]
+    tracked.write_text("".join(lines), encoding="utf-8")
+    settings = QSettings(str(tmp_path / "scroll-refresh.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    assert changes is not None
+    assert diff_panel is not None
+    window.resize(900, 300)
+    window.show()
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    item = changes.topLevelItem(0)
+    assert item is not None
+    changes.setCurrentItem(item)
+    qtbot.waitUntil(lambda: "+changed line 200" in diff_panel.toPlainText(), timeout=5000)
+    qtbot.waitUntil(lambda: diff_panel.verticalScrollBar().maximum() > 0, timeout=5000)
+    target = max(1, diff_panel.verticalScrollBar().maximum() // 2)
+    diff_panel.verticalScrollBar().setValue(target)
+
+    qtbot.wait(1800)
+
+    assert diff_panel.verticalScrollBar().value() == target
     window.close()
 
 
