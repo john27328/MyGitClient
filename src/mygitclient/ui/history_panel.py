@@ -2,11 +2,17 @@ from __future__ import annotations
 
 from typing import cast
 
-from PySide6.QtCore import QDateTime, Qt, Signal, Slot
+from PySide6.QtCore import QDateTime, QModelIndex, QPersistentModelIndex, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
+    QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSplitter,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -20,6 +26,53 @@ from mygitclient.git.models import (
     CommitSummary,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
+
+FILTER_HIGHLIGHT_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+
+
+class FilterHighlightDelegate(QStyledItemDelegate):
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> None:
+        query = index.data(FILTER_HIGHLIGHT_ROLE)
+        if not isinstance(query, str) or not query:
+            super().paint(painter, option, index)
+            return
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        text = styled.text
+        start = text.casefold().find(query.casefold())
+        if start < 0:
+            super().paint(painter, option, index)
+            return
+        styled.text = ""
+        style = styled.widget.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, styled, painter, styled.widget)
+        text_rect = style.subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText, styled, styled.widget
+        )
+        metrics = styled.fontMetrics
+        baseline = (
+            text_rect.top()
+            + (text_rect.height() + metrics.ascent() - metrics.descent()) // 2
+        )
+        before = text[:start]
+        match = text[start : start + len(query)]
+        x = text_rect.left()
+        match_x = x + metrics.horizontalAdvance(before)
+        match_width = metrics.horizontalAdvance(match)
+        painter.save()
+        painter.setClipRect(text_rect)
+        painter.fillRect(
+            match_x, text_rect.top(), match_width, text_rect.height(), QColor(255, 210, 70, 150)
+        )
+        painter.setFont(styled.font)
+        painter.setPen(styled.palette.color(styled.palette.ColorRole.Text))
+        painter.drawText(x, baseline, text)
+        painter.restore()
 
 
 class HistoryPanel(QWidget):
@@ -38,7 +91,19 @@ class HistoryPanel(QWidget):
         for column, width in enumerate((60, 360, 150, 190, 90)):
             self.tree.setColumnWidth(column, width)
         self.tree.setItemDelegateForColumn(0, CommitGraphDelegate(self.tree))
+        for column in (1, 2, 4):
+            self.tree.setItemDelegateForColumn(column, FilterHighlightDelegate(self.tree))
         self.tree.currentItemChanged.connect(self._commit_changed)
+
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setObjectName("historyFilterEdit")
+        self.filter_edit.setPlaceholderText("Filter history…")
+        self.filter_edit.setClearButtonEnabled(True)
+        self.filter_edit.textChanged.connect(self._apply_filter)
+        self.filter_count = QLabel("0 commits")
+        self.filter_count.setObjectName("historyFilterCount")
+        clear_shortcut = QShortcut(QKeySequence.StandardKey.Cancel, self.filter_edit)
+        clear_shortcut.activated.connect(self.filter_edit.clear)
 
         self.load_more_button = QPushButton("Load more")
         self.load_more_button.setObjectName("historyLoadMoreButton")
@@ -48,6 +113,10 @@ class HistoryPanel(QWidget):
         history_list = QWidget()
         history_layout = QVBoxLayout(history_list)
         history_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(self.filter_edit, 1)
+        filter_layout.addWidget(self.filter_count)
+        history_layout.addLayout(filter_layout)
         history_layout.addWidget(self.tree)
         history_layout.addWidget(self.load_more_button)
 
@@ -82,10 +151,12 @@ class HistoryPanel(QWidget):
         return self.tree.topLevelItemCount()
 
     def reset(self) -> None:
+        self.filter_edit.clear()
         self.tree.clear()
         self.files.clear()
         self.details_label.setText("Select a commit to view its details.")
         self.load_more_button.hide()
+        self._update_filter_count()
 
     def set_loading(self, loading: bool) -> None:
         self.load_more_button.setEnabled(not loading)
@@ -96,6 +167,7 @@ class HistoryPanel(QWidget):
         for commit in page.commits:
             self._append_commit(commit)
         self._render_graph()
+        self._apply_filter(self.filter_edit.text())
         self.load_more_button.setVisible(page.has_more)
         self.load_more_button.setEnabled(True)
 
@@ -172,6 +244,38 @@ class HistoryPanel(QWidget):
         item.setToolTip(2, f"{commit.author_name} <{commit.author_email}>")
         item.setToolTip(4, commit.oid)
         self.tree.addTopLevelItem(item)
+
+    @Slot(str)
+    def _apply_filter(self, text: str) -> None:
+        query = text.strip().casefold()
+        self.tree.setColumnHidden(0, bool(query))
+        for row in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(row)
+            if item is None:
+                continue
+            commit = item.data(0, Qt.ItemDataRole.UserRole)
+            if not isinstance(commit, CommitSummary):
+                continue
+            searchable = " ".join(
+                (commit.subject, commit.author_name, commit.author_email, commit.oid)
+            ).casefold()
+            item.setHidden(bool(query) and query not in searchable)
+            for column in (1, 2, 4):
+                visible_text = item.text(column)
+                highlighted = query if query and query in visible_text.casefold() else None
+                item.setData(column, FILTER_HIGHLIGHT_ROLE, highlighted)
+        self._update_filter_count()
+
+    def _update_filter_count(self) -> None:
+        total = self.tree.topLevelItemCount()
+        visible = 0
+        for row in range(total):
+            item = self.tree.topLevelItem(row)
+            if item is not None and not item.isHidden():
+                visible += 1
+        self.filter_count.setText(
+            f"{visible} of {total} commits" if visible != total else f"{total} commits"
+        )
 
     def _render_graph(self) -> None:
         lanes: list[str] = []

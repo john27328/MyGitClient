@@ -647,9 +647,8 @@ class MainWindow(QMainWindow):
             if isinstance(selected_file, FileStatus):
                 selected_path = selected_file.path
         self._repository_status = status_value
-        self._diff_view.retain_changed_paths(
-            value.repository, {file.path for file in status_value.files}
-        )
+        changed_paths = {file.path for file in status_value.files}
+        self._diff_view.retain_changed_paths(value.repository, changed_paths)
         blocker = QSignalBlocker(self._changes)
         stage_all_blocker = QSignalBlocker(self._stage_all)
         item_to_restore: QTreeWidgetItem | None = None
@@ -689,6 +688,11 @@ class MainWindow(QMainWindow):
         del stage_all_blocker
         if item_to_restore is not None:
             self._changes.setCurrentItem(item_to_restore)
+        elif (
+            self._diff_view.current_diff is not None
+            and self._diff_view.current_diff.path not in changed_paths
+        ):
+            self._diff_view.reset()
         self._changes.resizeColumnToContents(0)
 
         branch = status_value.branch.head or "detached HEAD"

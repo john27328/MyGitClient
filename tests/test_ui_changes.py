@@ -150,22 +150,29 @@ def test_commit_and_amend_from_commit_panel(
     message = window.findChild(QPlainTextEdit, "commitMessageEdit")
     description = window.findChild(QPlainTextEdit, "commitDescriptionEdit")
     commit_button = window.findChild(QPushButton, "commitButton")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     amend = window.findChild(QCheckBox, "amendCheckBox")
     assert changes is not None
     assert message is not None
     assert description is not None
     assert commit_button is not None
+    assert diff_panel is not None
     assert amend is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     assert message.toPlainText() == "Add tracked.txt"
     assert description.toPlainText() == "- Add tracked.txt"
     assert commit_button.isEnabled()
+    changed_item = changes.topLevelItem(0)
+    assert changed_item is not None
+    changes.setCurrentItem(changed_item)
+    qtbot.waitUntil(lambda: "tracked.txt" in diff_panel.toPlainText(), timeout=5000)
 
     message.setPlainText("initial commit")
     assert commit_button.isEnabled()
     commit_button.click()
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 0, timeout=5000)
+    qtbot.waitUntil(lambda: diff_panel.toPlainText() == "", timeout=5000)
     log = subprocess.run(
         ["git", "log", "-1", "--pretty=%s"],
         cwd=repository,

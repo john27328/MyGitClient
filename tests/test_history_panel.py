@@ -11,7 +11,7 @@ from mygitclient.git.models import (
     CommitSummary,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphRow
-from mygitclient.ui.history_panel import HistoryPanel
+from mygitclient.ui.history_panel import FILTER_HIGHLIGHT_ROLE, HistoryPanel
 
 
 def _commit(oid: str, subject: str, *parents: str) -> CommitSummary:
@@ -56,6 +56,41 @@ def test_history_panel_emits_load_more_request(qtbot: QtBot) -> None:
 
     with qtbot.waitSignal(panel.load_more_requested, timeout=1000):
         panel.load_more_button.click()
+
+
+def test_history_panel_filters_loaded_commits(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    page = CommitPage(
+        Path("repository"),
+        (
+            _commit("abc123", "Update documentation"),
+            _commit("def456", "Fix checkout"),
+        ),
+        0,
+        False,
+    )
+    panel.show_page(page)
+
+    panel.filter_edit.setText("checkout")
+
+    first = panel.tree.topLevelItem(0)
+    second = panel.tree.topLevelItem(1)
+    assert first is not None and second is not None
+    assert first.isHidden()
+    assert not second.isHidden()
+    assert panel.filter_count.text() == "1 of 2 commits"
+    assert panel.tree.isColumnHidden(0)
+    assert second.data(1, FILTER_HIGHLIGHT_ROLE) == "checkout"
+
+    panel.filter_edit.setText("author@example.invalid")
+    assert not first.isHidden()
+    assert not second.isHidden()
+    assert first.data(2, FILTER_HIGHLIGHT_ROLE) is None
+
+    panel.filter_edit.clear()
+    assert not panel.tree.isColumnHidden(0)
+    assert second.data(1, FILTER_HIGHLIGHT_ROLE) is None
 
 
 def test_history_panel_shows_commit_details_and_emits_file_selection(
