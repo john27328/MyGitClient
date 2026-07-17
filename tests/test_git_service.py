@@ -10,6 +10,7 @@ from mygitclient.git.models import (
     BranchInfo,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
+    CommitPage,
     DiffSnapshot,
     FileStatus,
 )
@@ -31,6 +32,32 @@ def test_completed_runner_is_released(qtbot: QtBot, tmp_path: Path) -> None:
         service.request_status(tmp_path)
 
     qtbot.waitUntil(lambda: not service.findChildren(GitRunner), timeout=5000)
+
+
+def test_history_excludes_stash_commits(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(tmp_path, *identity, "commit", "-m", "initial")
+    tracked.write_text("after\n", encoding="utf-8")
+    _git(tmp_path, "stash", "push", "-m", "hidden stash")
+    service = GitService()
+    pages: list[object] = []
+    service.history_ready.connect(pages.append)
+
+    with qtbot.waitSignal(service.history_ready, timeout=5000):
+        service.request_history(tmp_path)
+
+    page = pages[-1]
+    assert isinstance(page, CommitPage)
+    assert [commit.subject for commit in page.commits] == ["initial"]
 
 
 def test_diff_result_identifies_its_repository(qtbot: QtBot, tmp_path: Path) -> None:

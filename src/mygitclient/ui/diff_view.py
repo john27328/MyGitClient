@@ -4,7 +4,14 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QTextCursor, QTextOption
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontDatabase,
+    QFontMetrics,
+    QTextCursor,
+    QTextOption,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -69,8 +76,8 @@ class DiffView(QWidget):
             "Click a hunk checkbox to select the whole block."
         )
         self.gutter.setStyleSheet(
-            "QPlainTextEdit { background: palette(alternate-base); "
-            "color: palette(mid); border: 0; border-right: 1px solid palette(midlight); }"
+            "QPlainTextEdit { background: palette(base); color: palette(mid); "
+            "border: 0; border-right: 1px solid palette(midlight); }"
         )
         self.gutter.hide()
         self.diff.verticalScrollBar().valueChanged.connect(
@@ -259,8 +266,15 @@ class DiffView(QWidget):
             cursor = QTextCursor(block)
             cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
             extra.cursor = cursor
-            extra.format.setBackground(QColor("#2f80ed"))
-            extra.format.setForeground(QColor("#ffffff"))
+            kind = diff.lines[line_index].kind
+            dark = self.diff.palette().base().color().lightness() < 128
+            if kind == "addition":
+                color = QColor("#2f7548" if dark else "#b7e8c3")
+            elif kind == "deletion":
+                color = QColor("#843944" if dark else "#f2b8b8")
+            else:
+                color = QColor("#365b8c" if dark else "#dbeafe")
+            extra.format.setBackground(color)
             selections.append(extra)
         self.diff.setExtraSelections(selections)
         has_selection = self._interactive and bool(self.selection.selected_lines)

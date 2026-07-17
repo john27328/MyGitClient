@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QPlainTextEdit, QStackedWidget, QToolButton
 from pytestqt.qtbot import QtBot
 
@@ -15,6 +15,9 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     settings = QSettings(str(tmp_path / "diff-view.ini"), QSettings.Format.IniFormat)
     view = DiffView(settings)
     qtbot.addWidget(view)
+
+    assert "palette(base)" in view.gutter.styleSheet()
+    assert "alternate-base" not in view.gutter.styleSheet()
 
     assert view.findChild(QPlainTextEdit, "diffPanel") is view.diff
     assert view.findChild(DiffGutter, "diffGutter") is view.gutter
@@ -66,10 +69,19 @@ def test_diff_view_owns_line_selection_and_emits_request(
     )
 
     view.gutter.line_activated.emit(4, False)
+    view.gutter.line_activated.emit(5, True)
     view.selected_lines_button.click()
 
-    assert view.selection.selected_lines == {4}
-    assert requests == [(diff, {4})]
+    assert view.selection.selected_lines == {4, 5}
+    rendered = view.diff.extraSelections()
+    assert len(rendered) == 2
+    deletion_color = rendered[0].format.background().color()
+    addition_color = rendered[1].format.background().color()
+    assert deletion_color != addition_color
+    assert deletion_color.red() > deletion_color.green()
+    assert addition_color.green() > addition_color.red()
+    assert rendered[0].format.foreground().style() == Qt.BrushStyle.NoBrush
+    assert requests == [(diff, {4, 5})]
 
 
 def test_diff_selection_is_restored_per_file_and_version(

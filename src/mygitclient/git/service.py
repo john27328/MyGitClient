@@ -280,7 +280,9 @@ class GitService(QObject):
             GitCommand(
                 (
                     "log",
-                    "--all",
+                    "--branches",
+                    "--remotes",
+                    "--tags",
                     f"--skip={offset}",
                     f"--max-count={limit + 1}",
                     "--date=iso-strict",

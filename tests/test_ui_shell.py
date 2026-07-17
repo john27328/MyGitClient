@@ -412,6 +412,10 @@ def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path:
     assert dark_action.isChecked()
     assert not system_action.isChecked()
     assert settings.value("appearance/theme") == Theme.DARK.value
+    assert qapp.palette().base().color().lightness() < 128
+    assert qapp.palette().highlight().color().name() == "#2f80ed"
+    assert "checkbox-checked.svg" in qapp.styleSheet()
+    assert "checkbox-partial.svg" in qapp.styleSheet()
 
     system_action.trigger()
     assert system_action.isChecked()
