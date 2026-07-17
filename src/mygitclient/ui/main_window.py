@@ -11,23 +11,18 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QComboBox,
     QFileDialog,
-    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QSplitter,
     QTabWidget,
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
 )
 
 from mygitclient.git.models import (
@@ -42,6 +37,7 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
+from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.workspace import (
@@ -98,61 +94,24 @@ class MainWindow(QMainWindow):
             "Open a Git repository with File → Open Repository."
         )
 
-        self._changes = QTreeWidget()
-        self._changes.setObjectName("changesTree")
-        self._changes.setHeaderLabels(["File", "Index", "Working tree"])
-        self._changes.setRootIsDecorated(False)
-        self._changes.setMinimumWidth(280)
-        self._changes.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
-        self._discard_action = QAction("Discard changes…", self._changes)
-        self._discard_action.setObjectName("discardChangesAction")
-        self._discard_action.setEnabled(False)
-        self._discard_action.triggered.connect(self._discard_selected_file)
-        self._ignore_action = QAction("Add to .gitignore", self._changes)
-        self._ignore_action.setObjectName("ignoreFileAction")
-        self._ignore_action.setEnabled(False)
-        self._ignore_action.triggered.connect(self._ignore_selected_file)
-        self._changes.addAction(self._discard_action)
-        self._changes.addAction(self._ignore_action)
+        self._changes_panel = ChangesPanel()
+        self._changes_container = self._changes_panel
+        self._changes = self._changes_panel.tree
+        self._discard_action = self._changes_panel.discard_action
+        self._ignore_action = self._changes_panel.ignore_action
+        self._stage_all = self._changes_panel.stage_all
+        self._commit_message = self._changes_panel.commit_message
+        self._commit_description = self._changes_panel.commit_description
+        self._amend = self._changes_panel.amend
+        self._commit_button = self._changes_panel.commit_button
+        self._commit_error = self._changes_panel.commit_error
 
-        self._stage_all = QCheckBox("Stage all changes")
-        self._stage_all.setObjectName("stageAllCheckBox")
-        self._stage_all.setTristate(True)
+        self._discard_action.triggered.connect(self._discard_selected_file)
+        self._ignore_action.triggered.connect(self._ignore_selected_file)
         self._stage_all.stateChanged.connect(self._stage_all_changed)
-        self._changes_container = QWidget()
-        changes_layout = QVBoxLayout(self._changes_container)
-        changes_layout.setContentsMargins(0, 0, 0, 0)
-        changes_layout.addWidget(self._stage_all)
-        changes_layout.addWidget(self._changes)
-        self._commit_message = QPlainTextEdit()
-        self._commit_message.setObjectName("commitMessageEdit")
-        self._commit_message.setPlaceholderText("Commit message")
-        self._commit_message.setMaximumHeight(90)
         self._commit_message.textChanged.connect(self._update_commit_controls)
-        changes_layout.addWidget(self._commit_message)
-        self._commit_description = QPlainTextEdit()
-        self._commit_description.setObjectName("commitDescriptionEdit")
-        self._commit_description.setPlaceholderText("Description (optional)")
-        self._commit_description.setMaximumHeight(110)
-        changes_layout.addWidget(self._commit_description)
-        commit_actions = QWidget()
-        commit_actions_layout = QHBoxLayout(commit_actions)
-        commit_actions_layout.setContentsMargins(0, 0, 0, 0)
-        self._amend = QCheckBox("Amend")
-        self._amend.setObjectName("amendCheckBox")
         self._amend.toggled.connect(self._update_commit_controls)
-        self._commit_button = QPushButton(load_icon("commit.svg"), "Commit")
-        self._commit_button.setObjectName("commitButton")
         self._commit_button.clicked.connect(self._create_commit)
-        commit_actions_layout.addWidget(self._amend)
-        commit_actions_layout.addStretch(1)
-        commit_actions_layout.addWidget(self._commit_button)
-        changes_layout.addWidget(commit_actions)
-        self._commit_error = QLabel()
-        self._commit_error.setObjectName("commitErrorLabel")
-        self._commit_error.setStyleSheet("color: palette(bright-text);")
-        changes_layout.addWidget(self._commit_error)
-        self._changes_container.hide()
         self._update_commit_controls()
 
         self._history_panel = HistoryPanel()
