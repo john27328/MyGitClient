@@ -42,7 +42,6 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
-from mygitclient.ui.diff_selection import DiffSelection
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.workspace import (
@@ -62,10 +61,8 @@ class MainWindow(QMainWindow):
         self._repository: Path | None = None
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
-        self._current_diff: UnifiedDiff | None = None
         self._generated_commit_message = ""
         self._generated_commit_description = ""
-        self._diff_selection = DiffSelection()
         self._status_runner: GitRunner | None = None
         self._history_runner: GitRunner | None = None
         self._refresh_timer = QTimer(self)
@@ -175,27 +172,20 @@ class MainWindow(QMainWindow):
         self._diff_gutter = self._diff_view.gutter
         self._diff_version = self._diff_view.version_combo
         self._diff_view_mode = self._diff_view.view_mode_combo
-        self._side_old = self._diff_view.side_old
-        self._side_new = self._diff_view.side_new
         self._wrap_button = self._diff_view.wrap_button
         self._whitespace_button = self._diff_view.whitespace_button
-        self._hunk_button = self._diff_view.hunk_button
-        self._selected_lines_button = self._diff_view.selected_lines_button
-        self._clear_lines_button = self._diff_view.clear_lines_button
 
-        self._diff.cursorPositionChanged.connect(self._update_hunk_button)
-        self._diff_gutter.line_activated.connect(self._diff_gutter_line_activated)
         self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
+        self._diff_view.selection_changed.connect(self._sync_selected_file_checkbox)
+        self._diff_view.lines_requested.connect(self._apply_diff_lines)
+        self._diff_view.hunk_requested.connect(self._apply_diff_hunk)
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
         self._wrap_button.toggled.connect(self._diff_wrap_changed)
         self._whitespace_button.setChecked(
             self._read_bool_setting("diff/showWhitespace")
         )
         self._whitespace_button.toggled.connect(self._diff_whitespace_changed)
-        self._hunk_button.clicked.connect(self._apply_selected_hunk)
-        self._selected_lines_button.clicked.connect(self._apply_selected_lines)
-        self._clear_lines_button.clicked.connect(self._clear_selected_lines)
         self._apply_diff_wrap(self._wrap_button.isChecked())
         self._apply_diff_whitespace(self._whitespace_button.isChecked())
 
@@ -780,37 +770,17 @@ class MainWindow(QMainWindow):
             return
         if self._diff_version.currentData() != diff_value.staged:
             return
-        preserve_selection = diff_value == self._current_diff
-        self._current_diff = diff_value
-        if not preserve_selection:
-            self._diff_selection.clear()
+        preserve_selection = diff_value == self._diff_view.current_diff
         whole_file_staged = (
             diff_value.staged and file.is_staged and not file.has_worktree_change
         )
-        if whole_file_staged:
-            self._diff_selection.select_whole_file(diff_value)
         self._diff_view.display_diff(
-            diff_value, self._diff_selection, preserve_scroll=preserve_selection
+            diff_value,
+            preserve_scroll=preserve_selection,
+            whole_file_staged=whole_file_staged,
         )
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
-        self._update_hunk_button()
-        self._update_line_selection()
-
-    @Slot(int, bool)
-    def _diff_gutter_line_activated(self, line_index: int, extend: bool) -> None:
-        diff = self._current_diff
-        if diff is None or line_index < 0 or line_index >= len(diff.lines):
-            return
-        if self._diff_selection.toggle(diff, line_index, extend=extend):
-            self._update_line_selection()
-
-    def _update_line_selection(self) -> None:
-        diff = self._current_diff
-        if diff is None:
-            return
-        self._diff_view.render_selection(diff, self._diff_selection)
-        self._sync_selected_file_checkbox()
 
     def _sync_selected_file_checkbox(self) -> None:
         selected_items = self._changes.selectedItems()
@@ -820,10 +790,7 @@ class MainWindow(QMainWindow):
         file = item.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus) or file.unmerged:
             return
-        if (
-            self._diff_selection.selected_lines
-            and not self._diff_selection.whole_file
-        ) or (
+        if self._diff_view.has_pending_partial_selection or (
             file.is_staged and file.has_worktree_change
         ):
             state = Qt.CheckState.PartiallyChecked
@@ -835,25 +802,27 @@ class MainWindow(QMainWindow):
         item.setCheckState(0, state)
         del blocker
 
-    @Slot()
-    def _clear_selected_lines(self) -> None:
-        self._diff_selection.clear()
-        self._update_line_selection()
-
-    @Slot()
-    def _apply_selected_lines(self) -> None:
+    @Slot(object, object)
+    def _apply_diff_lines(self, diff_value: object, selected_value: object) -> None:
         repository = self._repository
-        diff = self._current_diff
-        if repository is None or diff is None or not self._diff_selection.selected_lines:
+        if repository is None or not isinstance(diff_value, UnifiedDiff):
+            return
+        if not isinstance(selected_value, set):
+            return
+        selected_objects = cast(set[object], selected_value)
+        if not all(isinstance(index, int) for index in selected_objects):
+            return
+        selected_lines = {index for index in selected_objects if isinstance(index, int)}
+        if not selected_lines:
             return
         self._changes_container.setEnabled(False)
-        action = "Unstaging" if diff.staged else "Staging"
-        self._status_label.setText(f"{action} selected lines in {diff.path}…")
+        action = "Unstaging" if diff_value.staged else "Staging"
+        self._status_label.setText(f"{action} selected lines in {diff_value.path}…")
         self._git.request_lines(
             repository,
-            diff,
-            set(self._diff_selection.selected_lines),
-            stage=not diff.staged,
+            diff_value,
+            selected_lines,
+            stage=not diff_value.staged,
         )
 
     @Slot(int)
@@ -863,36 +832,17 @@ class MainWindow(QMainWindow):
             return
         self._settings.setValue("diff/viewMode", mode)
         self._diff_view.set_view_mode(mode)
-        self._update_hunk_button()
-
-    @Slot()
-    def _update_hunk_button(self) -> None:
-        diff = self._current_diff
-        unified = self._diff_view_mode.currentData() == "unified"
-        hunk_index = None
-        if diff is not None:
-            hunk_index = diff.hunk_index_for_line(self._diff.textCursor().blockNumber())
-        self._hunk_button.setEnabled(unified and hunk_index is not None)
-        if diff is not None and diff.staged:
-            self._hunk_button.setText("Unstage hunk")
-            self._hunk_button.setToolTip("Unstage the hunk under the cursor")
-        else:
-            self._hunk_button.setText("Stage hunk")
-            self._hunk_button.setToolTip("Stage the hunk under the cursor")
-
-    @Slot()
-    def _apply_selected_hunk(self) -> None:
+    @Slot(object, int)
+    def _apply_diff_hunk(self, diff_value: object, hunk_index: int) -> None:
         repository = self._repository
-        diff = self._current_diff
-        if repository is None or diff is None:
-            return
-        hunk_index = diff.hunk_index_for_line(self._diff.textCursor().blockNumber())
-        if hunk_index is None:
+        if repository is None or not isinstance(diff_value, UnifiedDiff):
             return
         self._changes_container.setEnabled(False)
-        action = "Unstaging" if diff.staged else "Staging"
-        self._status_label.setText(f"{action} hunk in {diff.path}…")
-        self._git.request_hunk(repository, diff, hunk_index, stage=not diff.staged)
+        action = "Unstaging" if diff_value.staged else "Staging"
+        self._status_label.setText(f"{action} hunk in {diff_value.path}…")
+        self._git.request_hunk(
+            repository, diff_value, hunk_index, stage=not diff_value.staged
+        )
 
     @Slot(bool)
     def _diff_wrap_changed(self, enabled: bool) -> None:

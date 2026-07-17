@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QComboBox,
@@ -25,8 +25,14 @@ from mygitclient.ui.diff_selection import DiffSelection
 class DiffView(QWidget):
     """Owns the diff presentation widgets while orchestration remains outside."""
 
+    selection_changed = Signal()
+    lines_requested = Signal(object, object)
+    hunk_requested = Signal(object, int)
+
     def __init__(self, settings: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.current_diff: UnifiedDiff | None = None
+        self.selection = DiffSelection()
         self.setObjectName("diffContainer")
 
         diff_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
@@ -145,6 +151,12 @@ class DiffView(QWidget):
         layout.addWidget(toolbar)
         layout.addWidget(self.stack)
         self.hide()
+        self.gutter.line_activated.connect(self._gutter_line_activated)
+        self.diff.cursorPositionChanged.connect(self._update_hunk_button)
+        self.view_mode_combo.currentIndexChanged.connect(self._update_hunk_button)
+        self.clear_lines_button.clicked.connect(self.clear_selection)
+        self.selected_lines_button.clicked.connect(self._request_selected_lines)
+        self.hunk_button.clicked.connect(self._request_selected_hunk)
 
     @staticmethod
     def _make_side_editor(object_name: str) -> QPlainTextEdit:
@@ -166,24 +178,38 @@ class DiffView(QWidget):
         button.setCheckable(True)
         return button
 
+    @property
+    def has_pending_partial_selection(self) -> bool:
+        return bool(self.selection.selected_lines) and not self.selection.whole_file
+
     def display_diff(
-        self, diff: UnifiedDiff, selection: DiffSelection, *, preserve_scroll: bool
+        self, diff: UnifiedDiff, *, preserve_scroll: bool, whole_file_staged: bool
     ) -> None:
         positions = self._scroll_positions()
+        self.current_diff = diff
+        if not preserve_scroll:
+            self.selection.clear()
+        if whole_file_staged:
+            self.selection.select_whole_file(diff)
         self.diff_highlighter.set_diff(diff)
         self.diff.setPlainText(diff.text or "No textual changes to display.")
-        self._render_gutter(diff, selection)
+        self._render_gutter(diff, self.selection)
         self._render_side_by_side(diff)
         if preserve_scroll:
             self._restore_scroll_positions(positions)
-        self.render_selection(diff, selection)
+        self.render_selection()
+        self._update_hunk_button()
+        self.selection_changed.emit()
 
-    def render_selection(self, diff: UnifiedDiff, selection: DiffSelection) -> None:
+    def render_selection(self) -> None:
+        diff = self.current_diff
+        if diff is None:
+            return
         scroll_value = self.gutter.verticalScrollBar().value()
-        self._render_gutter(diff, selection)
+        self._render_gutter(diff, self.selection)
         self.gutter.verticalScrollBar().setValue(scroll_value)
         selections: list[QTextEdit.ExtraSelection] = []
-        for line_index in sorted(selection.selected_lines):
+        for line_index in sorted(self.selection.selected_lines):
             extra = QTextEdit.ExtraSelection()
             block = self.diff.document().findBlockByNumber(line_index)
             cursor = QTextCursor(block)
@@ -193,12 +219,58 @@ class DiffView(QWidget):
             extra.format.setForeground(QColor("#ffffff"))
             selections.append(extra)
         self.diff.setExtraSelections(selections)
-        has_selection = bool(selection.selected_lines)
+        has_selection = bool(self.selection.selected_lines)
         self.selected_lines_button.setEnabled(has_selection)
         self.clear_lines_button.setEnabled(has_selection)
         self.selected_lines_button.setText(
             "Unstage selected" if diff.staged else "Stage selected"
         )
+
+    @Slot()
+    def clear_selection(self) -> None:
+        self.selection.clear()
+        self.render_selection()
+        self.selection_changed.emit()
+
+    @Slot(int, bool)
+    def _gutter_line_activated(self, line_index: int, extend: bool) -> None:
+        diff = self.current_diff
+        if diff is None:
+            return
+        if self.selection.toggle(diff, line_index, extend=extend):
+            self.render_selection()
+            self.selection_changed.emit()
+
+    @Slot()
+    def _request_selected_lines(self) -> None:
+        diff = self.current_diff
+        if diff is None or not self.selection.selected_lines:
+            return
+        self.lines_requested.emit(diff, set(self.selection.selected_lines))
+
+    @Slot()
+    def _request_selected_hunk(self) -> None:
+        diff = self.current_diff
+        if diff is None:
+            return
+        hunk_index = diff.hunk_index_for_line(self.diff.textCursor().blockNumber())
+        if hunk_index is not None:
+            self.hunk_requested.emit(diff, hunk_index)
+
+    @Slot()
+    def _update_hunk_button(self) -> None:
+        diff = self.current_diff
+        unified = self.view_mode_combo.currentData() == "unified"
+        hunk_index = None
+        if diff is not None:
+            hunk_index = diff.hunk_index_for_line(self.diff.textCursor().blockNumber())
+        self.hunk_button.setEnabled(unified and hunk_index is not None)
+        if diff is not None and diff.staged:
+            self.hunk_button.setText("Unstage hunk")
+            self.hunk_button.setToolTip("Unstage the hunk under the cursor")
+        else:
+            self.hunk_button.setText("Stage hunk")
+            self.hunk_button.setToolTip("Stage the hunk under the cursor")
 
     def set_wrap(self, enabled: bool) -> None:
         mode = (

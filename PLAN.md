@@ -39,6 +39,7 @@
 - [x] Вынести таблицу истории, пагинацию и построение графа в `HistoryPanel`.
 - [x] Вынести редакторы, gutter, toolbar и splitter представлений diff в `DiffView`.
 - [x] Вынести рендеринг unified/side-by-side, selection и scroll restore в `DiffView`.
+- [x] Передать `DiffView` владение выбором строк/hunk и сигналами частичного stage.
 - [ ] Вынести diff, changes, commit и repositories в отдельные QWidget-панели.
 - [ ] Разделить UI-тесты по функциональным областям.
 - [ ] Выполнять поиск вложенных репозиториев вне GUI-потока.
