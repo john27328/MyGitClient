@@ -275,6 +275,10 @@ class MainWindow(QMainWindow):
         self._activate_repository(repository)
 
     def _activate_repository(self, repository: Path) -> None:
+        if repository not in self._open_repositories:
+            self._open_repositories.append(repository)
+            self._workspace.save_open_repositories(self._open_repositories)
+            self._populate_repository_switcher()
         self._repository = repository
         self._repository_status = None
         self._workspace.set_last_repository(repository)
@@ -294,8 +298,7 @@ class MainWindow(QMainWindow):
         self._diff_view_mode.show()
         self._diff_gutter.setVisible(not self._wrap_button.isChecked())
         self._diff.show()
-        self._diff_container.show()
-        self._restore_workspace_splitter_sizes()
+        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
         self._status_runner = self._git.request_status(repository)
         self._history_runner = self._git.request_history(repository)
         self._refresh_timer.start()

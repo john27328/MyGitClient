@@ -179,12 +179,20 @@ def test_open_repositories_are_restored_and_switchable(
 
     window = MainWindow(settings, Theme.SYSTEM)
     switcher = window.findChild(QComboBox, "repositorySwitcher")
+    workspace_tabs = window.findChild(QTabWidget, "workspaceTabs")
+    diff_container = window.findChild(QWidget, "diffContainer")
     assert switcher is not None
+    assert workspace_tabs is not None
+    assert diff_container is not None
     assert switcher.count() == 2
     qtbot.waitUntil(lambda: window.windowTitle().startswith("second —"), timeout=5000)
 
+    workspace_tabs.setCurrentIndex(1)
     switcher.setCurrentIndex(0)
     qtbot.waitUntil(lambda: window.windowTitle().startswith("first —"), timeout=5000)
+    assert switcher.currentText() == "first"
+    assert diff_container.isHidden()
+    assert workspace_tabs.currentIndex() == 1
     assert settings.value("workspace/lastRepository") == str(repositories[0])
     window.close()
 
