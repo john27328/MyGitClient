@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from difflib import SequenceMatcher
+from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QTextCursor, QTextOption
@@ -19,7 +20,9 @@ from PySide6.QtWidgets import (
 from mygitclient.git.models import DiffLine, DiffLineKind, UnifiedDiff
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_highlighter import DiffHighlighter
-from mygitclient.ui.diff_selection import DiffSelection
+from mygitclient.ui.diff_selection import DiffSelection, LineFingerprint
+
+SelectionKey = tuple[Path, str, bool]
 
 
 class DiffView(QWidget):
@@ -32,6 +35,8 @@ class DiffView(QWidget):
     def __init__(self, settings: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.current_diff: UnifiedDiff | None = None
+        self._current_selection_key: SelectionKey | None = None
+        self._saved_selections: dict[SelectionKey, set[LineFingerprint]] = {}
         self.selection = DiffSelection()
         self.setObjectName("diffContainer")
 
@@ -182,15 +187,35 @@ class DiffView(QWidget):
     def has_pending_partial_selection(self) -> bool:
         return bool(self.selection.selected_lines) and not self.selection.whole_file
 
+    def has_saved_selection(self, repository: Path, path: str) -> bool:
+        return any(
+            bool(self._saved_selections.get((repository, path, staged)))
+            for staged in (False, True)
+        )
+
+    def retain_changed_paths(self, repository: Path, paths: set[str]) -> None:
+        self._saved_selections = {
+            key: selection
+            for key, selection in self._saved_selections.items()
+            if key[0] != repository or key[1] in paths
+        }
+
     def display_diff(
-        self, diff: UnifiedDiff, *, preserve_scroll: bool, whole_file_staged: bool
+        self,
+        diff: UnifiedDiff,
+        *,
+        selection_key: SelectionKey,
+        preserve_scroll: bool,
+        whole_file_staged: bool,
     ) -> None:
         positions = self._scroll_positions()
+        self._remember_selection()
         self.current_diff = diff
-        if not preserve_scroll:
-            self.selection.clear()
+        self._current_selection_key = selection_key
         if whole_file_staged:
             self.selection.select_whole_file(diff)
+        else:
+            self.selection.restore(diff, self._saved_selections.get(selection_key, set()))
         self.diff_highlighter.set_diff(diff)
         self.diff.setPlainText(diff.text or "No textual changes to display.")
         self._render_gutter(diff, self.selection)
@@ -200,6 +225,15 @@ class DiffView(QWidget):
         self.render_selection()
         self._update_hunk_button()
         self.selection_changed.emit()
+
+    def reset(self) -> None:
+        self._remember_selection()
+        self.current_diff = None
+        self._current_selection_key = None
+        self.selection.clear()
+        self.diff.clear()
+        self.gutter.clear()
+        self.diff.setExtraSelections([])
 
     def render_selection(self) -> None:
         diff = self.current_diff
@@ -229,6 +263,7 @@ class DiffView(QWidget):
     @Slot()
     def clear_selection(self) -> None:
         self.selection.clear()
+        self._remember_selection()
         self.render_selection()
         self.selection_changed.emit()
 
@@ -238,8 +273,19 @@ class DiffView(QWidget):
         if diff is None:
             return
         if self.selection.toggle(diff, line_index, extend=extend):
+            self._remember_selection()
             self.render_selection()
             self.selection_changed.emit()
+
+    def _remember_selection(self) -> None:
+        diff = self.current_diff
+        key = self._current_selection_key
+        if diff is None or key is None:
+            return
+        if self.selection.selected_lines and not self.selection.whole_file:
+            self._saved_selections[key] = self.selection.fingerprints(diff)
+        else:
+            self._saved_selections.pop(key, None)
 
     @Slot()
     def _request_selected_lines(self) -> None:

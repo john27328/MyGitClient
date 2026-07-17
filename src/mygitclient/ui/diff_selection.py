@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 
 from mygitclient.git.models import UnifiedDiff
 
+LineFingerprint = tuple[tuple[tuple[str, str], ...], int]
+
 
 @dataclass(slots=True)
 class DiffSelection:
@@ -26,6 +28,22 @@ class DiffSelection:
         }
         self.last_line = None
         self.whole_file = bool(self.selected_lines)
+
+    def fingerprints(self, diff: UnifiedDiff) -> set[LineFingerprint]:
+        available = self._line_fingerprints(diff)
+        return {
+            fingerprint
+            for index, fingerprint in available.items()
+            if index in self.selected_lines
+        }
+
+    def restore(self, diff: UnifiedDiff, fingerprints: set[LineFingerprint]) -> None:
+        available = self._line_fingerprints(diff)
+        self.selected_lines = {
+            index for index, fingerprint in available.items() if fingerprint in fingerprints
+        }
+        self.last_line = None
+        self.whole_file = False
 
     def toggle(self, diff: UnifiedDiff, line_index: int, *, extend: bool) -> bool:
         if line_index < 0 or line_index >= len(diff.lines):
@@ -75,3 +93,25 @@ class DiffSelection:
             if diff.hunk_index_for_line(index) == hunk_index
             and line.kind in {"addition", "deletion"}
         }
+
+    @staticmethod
+    def _line_fingerprints(diff: UnifiedDiff) -> dict[int, LineFingerprint]:
+        fingerprints: dict[int, LineFingerprint] = {}
+        hunk_lines: list[tuple[int, str, str]] = []
+
+        def add_hunk() -> None:
+            if not hunk_lines:
+                return
+            signature = tuple((kind, text) for _index, kind, text in hunk_lines)
+            for ordinal, (index, kind, _text) in enumerate(hunk_lines):
+                if kind in {"addition", "deletion"}:
+                    fingerprints[index] = (signature, ordinal)
+
+        for index, line in enumerate(diff.lines):
+            if line.kind == "hunk":
+                add_hunk()
+                hunk_lines = []
+            elif diff.hunk_index_for_line(index) is not None:
+                hunk_lines.append((index, line.kind, line.text))
+        add_hunk()
+        return fingerprints

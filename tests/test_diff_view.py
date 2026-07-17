@@ -58,10 +58,75 @@ def test_diff_view_owns_line_selection_and_emits_request(
         requests.append((value, lines))
 
     view.lines_requested.connect(capture_request)
-    view.display_diff(diff, preserve_scroll=False, whole_file_staged=False)
+    view.display_diff(
+        diff,
+        selection_key=(tmp_path, diff.path, diff.staged),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
 
     view.gutter.line_activated.emit(4, False)
     view.selected_lines_button.click()
 
     assert view.selection.selected_lines == {4}
     assert requests == [(diff, {4})]
+
+
+def test_diff_selection_is_restored_per_file_and_version(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "saved-selection.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    first = parse_unified_diff(
+        b"diff --git a/first.txt b/first.txt\n"
+        b"--- a/first.txt\n"
+        b"+++ b/first.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-before\n"
+        b"+after\n",
+        "first.txt",
+        staged=False,
+    )
+    second = parse_unified_diff(
+        b"diff --git a/second.txt b/second.txt\n"
+        b"--- a/second.txt\n"
+        b"+++ b/second.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-old\n"
+        b"+new\n",
+        "second.txt",
+        staged=False,
+    )
+    first_key = (tmp_path, first.path, False)
+
+    view.display_diff(
+        first,
+        selection_key=first_key,
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+    view.gutter.line_activated.emit(4, False)
+    view.display_diff(
+        second,
+        selection_key=(tmp_path, second.path, False),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+    assert view.selection.selected_lines == set()
+
+    view.display_diff(
+        first,
+        selection_key=first_key,
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+    assert view.selection.selected_lines == {4}
+
+    view.display_diff(
+        first,
+        selection_key=(tmp_path, first.path, True),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+    assert view.selection.selected_lines == set()

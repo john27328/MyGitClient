@@ -289,8 +289,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
         self._history_panel.reset()
-        self._diff.clear()
-        self._diff_gutter.clear()
+        self._diff_view.reset()
         self._welcome.hide()
         self._changes_container.show()
         self._workspace_tabs.show()
@@ -446,6 +445,9 @@ class MainWindow(QMainWindow):
             if isinstance(selected_file, FileStatus):
                 selected_path = selected_file.path
         self._repository_status = status_value
+        self._diff_view.retain_changed_paths(
+            value.repository, {file.path for file in status_value.files}
+        )
         blocker = QSignalBlocker(self._changes)
         stage_all_blocker = QSignalBlocker(self._stage_all)
         item_to_restore: QTreeWidgetItem | None = None
@@ -460,7 +462,10 @@ class MainWindow(QMainWindow):
             item.setData(0, Qt.ItemDataRole.UserRole, file)
             if not file.unmerged:
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                if file.is_staged and file.has_worktree_change:
+                has_saved_selection = self._diff_view.has_saved_selection(
+                    value.repository, file.path
+                )
+                if has_saved_selection or (file.is_staged and file.has_worktree_change):
                     item.setCheckState(0, Qt.CheckState.PartiallyChecked)
                 elif file.is_staged:
                     item.setCheckState(0, Qt.CheckState.Checked)
@@ -703,6 +708,7 @@ class MainWindow(QMainWindow):
         )
         self._diff_view.display_diff(
             diff_value,
+            selection_key=(value.repository, diff_value.path, diff_value.staged),
             preserve_scroll=preserve_selection,
             whole_file_staged=whole_file_staged,
         )

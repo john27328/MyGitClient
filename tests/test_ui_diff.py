@@ -197,8 +197,10 @@ def test_untracked_file_is_listed_and_displays_diff(
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    gutter = window.findChild(DiffGutter, "diffGutter")
     assert changes is not None
     assert diff_panel is not None
+    assert gutter is not None
 
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
@@ -422,8 +424,10 @@ def test_unchanged_diff_refresh_preserves_scroll_position(
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    gutter = window.findChild(DiffGutter, "diffGutter")
     assert changes is not None
     assert diff_panel is not None
+    assert gutter is not None
     window.resize(900, 300)
     window.show()
     window.open_repository(repository)
@@ -435,10 +439,14 @@ def test_unchanged_diff_refresh_preserves_scroll_position(
     qtbot.waitUntil(lambda: diff_panel.verticalScrollBar().maximum() > 0, timeout=5000)
     target = max(1, diff_panel.verticalScrollBar().maximum() // 2)
     diff_panel.verticalScrollBar().setValue(target)
+    gutter.line_activated.emit(5, False)
+    assert item.checkState(0) is Qt.CheckState.PartiallyChecked
 
     qtbot.wait(1800)
 
     assert diff_panel.verticalScrollBar().value() == target
+    assert gutter.toPlainText().count("✓") == 1
+    assert item.checkState(0) is Qt.CheckState.PartiallyChecked
     window.close()
 
 
