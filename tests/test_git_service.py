@@ -357,3 +357,39 @@ def test_pull_rebase_autostash_restores_changes(qtbot: QtBot, tmp_path: Path) ->
 
     assert (client / "local.txt").read_text(encoding="utf-8") == "local change\n"
     assert (client / "remote.txt").read_text(encoding="utf-8") == "remote update\n"
+
+
+def test_fetch_and_push_with_upstream(qtbot: QtBot, tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    repository.mkdir()
+    _git(repository, "init", "--initial-branch=main")
+    _git(repository, "remote", "add", "origin", str(remote))
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(repository, *identity, "commit", "--allow-empty", "-m", "initial")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_push(repository, branch="main", set_upstream=True)
+
+    assert subprocess.check_output(
+        ["git", "rev-parse", "--abbrev-ref", "main@{upstream}"],
+        cwd=repository,
+        text=True,
+    ).strip() == "origin/main"
+    local_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repository, text=True
+    ).strip()
+    remote_oid = subprocess.check_output(
+        ["git", "rev-parse", "refs/heads/main"], cwd=remote, text=True
+    ).strip()
+    assert remote_oid == local_oid
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_fetch(repository)

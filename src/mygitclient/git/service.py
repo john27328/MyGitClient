@@ -183,6 +183,31 @@ class GitService(QObject):
         runner.run(GitCommand(tuple(arguments), repository, "pull changes"))
         return runner
 
+    def request_fetch(self, repository: Path) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "fetch"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(("fetch", "--prune"), repository, "fetch changes"))
+        return runner
+
+    def request_push(
+        self, repository: Path, *, branch: str, set_upstream: bool
+    ) -> GitRunner:
+        arguments = (
+            ("push", "--set-upstream", "origin", branch)
+            if set_upstream
+            else ("push",)
+        )
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "push"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, repository, "push changes"))
+        return runner
+
     def request_commit_files(self, repository: Path, commit_oid: str) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)

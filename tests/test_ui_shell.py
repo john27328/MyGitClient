@@ -35,8 +35,12 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert not window.windowIcon().isNull()
     toolbar = window.findChild(QToolBar, "repositoryToolbar")
     refresh_action = window.findChild(QAction, "refreshAction")
+    fetch_action = window.findChild(QAction, "fetchAction")
+    push_action = window.findChild(QAction, "pushAction")
     assert toolbar is not None
     assert refresh_action is not None
+    assert fetch_action is not None
+    assert push_action is not None
     assert not refresh_action.icon().isNull()
 
     window.close()

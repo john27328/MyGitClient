@@ -207,6 +207,10 @@ class MainWindow(QMainWindow):
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self._refresh_repository)
         toolbar.addAction(refresh_action)
+        self._fetch_action = QAction("Fetch", self)
+        self._fetch_action.setObjectName("fetchAction")
+        self._fetch_action.triggered.connect(self._fetch_repository)
+        toolbar.addAction(self._fetch_action)
         self._pull_strategy = QComboBox()
         self._pull_strategy.setObjectName("pullStrategyCombo")
         self._pull_strategy.addItem("Pull (merge)", False)
@@ -219,6 +223,10 @@ class MainWindow(QMainWindow):
         pull_action.setObjectName("pullAction")
         pull_action.triggered.connect(self._pull_repository)
         toolbar.addAction(pull_action)
+        self._push_action = QAction("Push", self)
+        self._push_action.setObjectName("pushAction")
+        self._push_action.triggered.connect(self._push_repository)
+        toolbar.addAction(self._push_action)
         cancel_action = QAction("Cancel", self)
         cancel_action.setObjectName("cancelOperationsAction")
         cancel_action.triggered.connect(self._cancel_operations)
@@ -608,6 +616,35 @@ class MainWindow(QMainWindow):
         )
 
     @Slot()
+    def _fetch_repository(self) -> None:
+        if self._repository is None:
+            return
+        self._status_label.setText("Fetching changes…")
+        self._git.request_fetch(self._repository)
+
+    @Slot()
+    def _push_repository(self) -> None:
+        if self._repository is None or self._repository_status is None:
+            return
+        branch = self._repository_status.branch
+        if branch.head is None:
+            QMessageBox.information(self, "Cannot push", "Check out a branch before pushing.")
+            return
+        set_upstream = branch.upstream is None
+        if set_upstream:
+            answer = QMessageBox.question(
+                self,
+                "Publish branch",
+                f"Publish '{branch.head}' to origin and set its upstream?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._status_label.setText(f"Pushing {branch.head}…")
+        self._git.request_push(
+            self._repository, branch=branch.head, set_upstream=set_upstream
+        )
+
+    @Slot()
     def _poll_repository(self) -> None:
         if self._repository is None:
             return
@@ -779,6 +816,10 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Branch deleted")
         elif path == "pull":
             self._status_label.setText("Pull completed")
+        elif path == "fetch":
+            self._status_label.setText("Fetch completed")
+        elif path == "push":
+            self._status_label.setText("Push completed")
         elif path == "stash":
             self._status_label.setText("Selected changes stashed")
         else:
