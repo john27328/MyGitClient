@@ -24,7 +24,11 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient.git.models import (
+    CommitDiffSnapshot,
+    CommitFileChange,
+    CommitFilesSnapshot,
     CommitPage,
+    CommitSummary,
     DiffSnapshot,
     FileStatus,
     RepositoryStatus,
@@ -58,6 +62,7 @@ class MainWindow(QMainWindow):
         self._repository: Path | None = None
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
+        self._commit_diff_visible = False
         self._generated_commit_message = ""
         self._generated_commit_description = ""
         self._status_runner: GitRunner | None = None
@@ -109,6 +114,8 @@ class MainWindow(QMainWindow):
 
         self._history_panel = HistoryPanel()
         self._history_panel.load_more_requested.connect(self._load_more_history)
+        self._history_panel.commit_selected.connect(self._history_commit_selected)
+        self._history_panel.file_selected.connect(self._history_file_selected)
 
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
@@ -216,6 +223,8 @@ class MainWindow(QMainWindow):
     def _connect_services(self) -> None:
         self._git.status_ready.connect(self._show_status)
         self._git.history_ready.connect(self._show_history)
+        self._git.commit_files_ready.connect(self._show_commit_files)
+        self._git.commit_diff_ready.connect(self._show_commit_diff)
         self._git.diff_ready.connect(self._show_diff)
         self._git.mutation_ready.connect(self._mutation_finished)
         self._git.operation_cancelled.connect(self._operation_cancelled)
@@ -281,6 +290,7 @@ class MainWindow(QMainWindow):
             self._populate_repository_switcher()
         self._repository = repository
         self._repository_status = None
+        self._commit_diff_visible = False
         self._workspace.set_last_repository(repository)
         self._repositories_panel.select_repository(repository)
         self._workspace.remember(repository)
@@ -305,14 +315,22 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _workspace_tab_changed(self, index: int) -> None:
         showing_history = index == 1
-        self._diff_container.setVisible(not showing_history and self._repository is not None)
+        show_diff = self._repository is not None and (
+            not showing_history or self._commit_diff_visible
+        )
+        self._diff_container.setVisible(show_diff)
         if showing_history:
-            available = max(
-                self._splitter.width() - self._repositories_panel.minimumWidth(), 600
-            )
-            self._splitter.setSizes([220, 0, available, 0])
-            self._history_panel.set_expanded_layout(True)
+            if self._commit_diff_visible:
+                self._splitter.setSizes([220, 0, 560, 840])
+                self._history_panel.set_expanded_layout(False)
+            else:
+                available = max(
+                    self._splitter.width() - self._repositories_panel.minimumWidth(), 600
+                )
+                self._splitter.setSizes([220, 0, available, 0])
+                self._history_panel.set_expanded_layout(True)
         elif self._repository is not None:
+            self._commit_diff_visible = False
             self._history_panel.set_expanded_layout(False)
             self._restore_workspace_splitter_sizes()
 
@@ -338,6 +356,78 @@ class MainWindow(QMainWindow):
         self._history_panel.show_page(value)
         count = self._history_panel.commit_count
         self._status_label.setText(f"Loaded {count} commits")
+
+    @Slot(object)
+    def _history_commit_selected(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, CommitSummary):
+            return
+        self._commit_diff_visible = False
+        self._diff_view.reset()
+        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
+        self._status_label.setText(f"Reading files for {value.oid[:8]}…")
+        self._git.request_commit_files(self._repository, value.oid)
+
+    @Slot(object)
+    def _show_commit_files(self, value: object) -> None:
+        if not isinstance(value, CommitFilesSnapshot) or value.repository != self._repository:
+            return
+        commit = self._history_panel.selected_commit
+        if commit is None or commit.oid != value.commit_oid:
+            return
+        self._history_panel.show_files(value)
+        self._status_label.setText(
+            f"{len(value.files)} file(s) changed in {value.commit_oid[:8]}"
+        )
+
+    @Slot(object, object)
+    def _history_file_selected(self, commit_value: object, file_value: object) -> None:
+        if (
+            self._repository is None
+            or not isinstance(commit_value, CommitSummary)
+            or not isinstance(file_value, CommitFileChange)
+        ):
+            return
+        self._status_label.setText(
+            f"Reading {file_value.path} from {commit_value.oid[:8]}…"
+        )
+        self._git.request_commit_diff(
+            self._repository,
+            commit_value.oid,
+            file_value.path,
+            parent_oid=commit_value.parent_oids[0] if commit_value.parent_oids else None,
+        )
+
+    @Slot(object)
+    def _show_commit_diff(self, value: object) -> None:
+        if (
+            not isinstance(value, CommitDiffSnapshot)
+            or value.repository != self._repository
+            or self._workspace_tabs.currentIndex() != 1
+        ):
+            return
+        commit = self._history_panel.selected_commit
+        if commit is None or commit.oid != value.commit_oid:
+            return
+        blocker = QSignalBlocker(self._diff_version)
+        self._diff_version.clear()
+        self._diff_version.addItem(f"Commit {value.commit_oid[:8]}", None)
+        del blocker
+        self._diff_view.display_diff(
+            value.diff,
+            selection_key=None,
+            preserve_scroll=False,
+            whole_file_staged=False,
+            interactive=False,
+        )
+        self._diff_version.show()
+        self._diff_view_mode.show()
+        self._diff.show()
+        self._diff_container.show()
+        self._commit_diff_visible = True
+        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
+        self._status_label.setText(
+            f"Showing {value.diff.path} from {value.commit_oid[:8]}"
+        )
 
     def _show_linked_repositories(self, repository: Path) -> None:
         self._workspace_discovery.request_linked_repositories(repository)

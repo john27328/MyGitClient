@@ -89,6 +89,27 @@ class CommitPage:
 
 
 @dataclass(frozen=True, slots=True)
+class CommitFileChange:
+    status: str
+    path: str
+    original_path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CommitFilesSnapshot:
+    repository: Path
+    commit_oid: str
+    files: tuple[CommitFileChange, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CommitDiffSnapshot:
+    repository: Path
+    commit_oid: str
+    diff: UnifiedDiff
+
+
+@dataclass(frozen=True, slots=True)
 class DiffSnapshot:
     repository: Path
     diff: UnifiedDiff

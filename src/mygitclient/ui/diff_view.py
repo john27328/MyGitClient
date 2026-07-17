@@ -37,6 +37,7 @@ class DiffView(QWidget):
         self.current_diff: UnifiedDiff | None = None
         self._current_selection_key: SelectionKey | None = None
         self._saved_selections: dict[SelectionKey, set[LineFingerprint]] = {}
+        self._interactive = True
         self.selection = DiffSelection()
         self.setObjectName("diffContainer")
 
@@ -204,17 +205,25 @@ class DiffView(QWidget):
         self,
         diff: UnifiedDiff,
         *,
-        selection_key: SelectionKey,
+        selection_key: SelectionKey | None,
         preserve_scroll: bool,
         whole_file_staged: bool,
+        interactive: bool = True,
     ) -> None:
         positions = self._scroll_positions()
         self._remember_selection()
         self.current_diff = diff
-        self._current_selection_key = selection_key
-        if whole_file_staged:
+        self._interactive = interactive
+        self.hunk_button.setVisible(interactive)
+        self.selected_lines_button.setVisible(interactive)
+        self.clear_lines_button.setVisible(interactive)
+        self._current_selection_key = selection_key if interactive else None
+        if not interactive:
+            self.selection.clear()
+        elif whole_file_staged:
             self.selection.select_whole_file(diff)
         else:
+            assert selection_key is not None
             self.selection.restore(diff, self._saved_selections.get(selection_key, set()))
         self.diff_highlighter.set_diff(diff)
         self.diff.setPlainText(diff.text or "No textual changes to display.")
@@ -230,6 +239,7 @@ class DiffView(QWidget):
         self._remember_selection()
         self.current_diff = None
         self._current_selection_key = None
+        self._interactive = True
         self.selection.clear()
         self.diff.clear()
         self.gutter.clear()
@@ -253,7 +263,7 @@ class DiffView(QWidget):
             extra.format.setForeground(QColor("#ffffff"))
             selections.append(extra)
         self.diff.setExtraSelections(selections)
-        has_selection = bool(self.selection.selected_lines)
+        has_selection = self._interactive and bool(self.selection.selected_lines)
         self.selected_lines_button.setEnabled(has_selection)
         self.clear_lines_button.setEnabled(has_selection)
         self.selected_lines_button.setText(
@@ -270,7 +280,7 @@ class DiffView(QWidget):
     @Slot(int, bool)
     def _gutter_line_activated(self, line_index: int, extend: bool) -> None:
         diff = self.current_diff
-        if diff is None:
+        if diff is None or not self._interactive:
             return
         if self.selection.toggle(diff, line_index, extend=extend):
             self._remember_selection()
@@ -310,7 +320,9 @@ class DiffView(QWidget):
         hunk_index = None
         if diff is not None:
             hunk_index = diff.hunk_index_for_line(self.diff.textCursor().blockNumber())
-        self.hunk_button.setEnabled(unified and hunk_index is not None)
+        self.hunk_button.setEnabled(
+            self._interactive and unified and hunk_index is not None
+        )
         if diff is not None and diff.staged:
             self.hunk_button.setText("Unstage hunk")
             self.hunk_button.setToolTip("Unstage the hunk under the cursor")
@@ -364,7 +376,7 @@ class DiffView(QWidget):
         )
         numbers: list[str] = []
         for line_index, line in enumerate(diff.lines):
-            marker = selection.marker(diff, line_index)
+            marker = selection.marker(diff, line_index) if self._interactive else " "
             old_number = str(line.old_line) if line.old_line is not None else ""
             new_number = str(line.new_line) if line.new_line is not None else ""
             numbers.append(f"{marker} {old_number:>{old_width}}  {new_number:>{new_width}}")

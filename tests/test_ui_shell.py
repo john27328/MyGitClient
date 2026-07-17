@@ -8,6 +8,8 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QLabel,
+    QPlainTextEdit,
     QPushButton,
     QTabWidget,
     QToolBar,
@@ -199,6 +201,76 @@ def test_open_repositories_are_restored_and_switchable(
 
 def test_invalid_theme_falls_back_to_system() -> None:
     assert Theme.from_value("unknown") is Theme.SYSTEM
+
+
+def test_selected_commit_shows_details_files_and_diff(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "history-details"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    identity = [
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    ]
+    subprocess.run(
+        ["git", *identity, "commit", "-m", "initial"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked.write_text("after\n", encoding="utf-8")
+    subprocess.run(
+        ["git", *identity, "commit", "-am", "Update tracked file"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    settings = QSettings(str(tmp_path / "history-details.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    tabs = window.findChild(QTabWidget, "workspaceTabs")
+    history = window.findChild(QTreeWidget, "historyTree")
+    details = window.findChild(QLabel, "commitDetailsLabel")
+    files = window.findChild(QTreeWidget, "commitFilesTree")
+    diff = window.findChild(QPlainTextEdit, "diffPanel")
+    diff_container = window.findChild(QWidget, "diffContainer")
+    assert tabs is not None
+    assert history is not None
+    assert details is not None
+    assert files is not None
+    assert diff is not None
+    assert diff_container is not None
+    window.resize(1400, 800)
+    window.show()
+    window.open_repository(repository)
+    tabs.setCurrentIndex(1)
+    qtbot.waitUntil(lambda: history.topLevelItemCount() == 2, timeout=5000)
+    commit_item = history.topLevelItem(0)
+    assert commit_item is not None
+
+    history.setCurrentItem(commit_item)
+    qtbot.waitUntil(lambda: files.topLevelItemCount() == 1, timeout=5000)
+    assert "Update tracked file" in details.text()
+    file_item = files.topLevelItem(0)
+    assert file_item is not None
+    assert file_item.text(1) == "tracked.txt"
+
+    files.setCurrentItem(file_item)
+    qtbot.waitUntil(lambda: "+after" in diff.toPlainText(), timeout=5000)
+    assert "-before" in diff.toPlainText()
+    assert not diff_container.isHidden()
+    assert tabs.currentIndex() == 1
+    window.close()
 
 
 def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path: Path) -> None:

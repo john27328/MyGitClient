@@ -6,6 +6,7 @@ from dataclasses import replace
 from mygitclient.git.errors import GitParseError
 from mygitclient.git.models import (
     BranchStatus,
+    CommitFileChange,
     CommitSummary,
     DiffHunk,
     DiffLine,
@@ -14,6 +15,32 @@ from mygitclient.git.models import (
     RepositoryStatus,
     UnifiedDiff,
 )
+
+
+def parse_commit_files(output: bytes) -> tuple[CommitFileChange, ...]:
+    fields = output.rstrip(b"\x00").split(b"\x00") if output else []
+    changes: list[CommitFileChange] = []
+    index = 0
+    while index < len(fields):
+        status = fields[index].decode("ascii", errors="replace")
+        index += 1
+        renamed = status.startswith(("R", "C"))
+        required = 2 if renamed else 1
+        if index + required > len(fields):
+            raise GitParseError("Malformed commit file list")
+        paths = [
+            fields[index + offset].decode("utf-8", errors="surrogateescape")
+            for offset in range(required)
+        ]
+        index += required
+        changes.append(
+            CommitFileChange(
+                status=status,
+                path=paths[-1],
+                original_path=paths[0] if renamed else None,
+            )
+        )
+    return tuple(changes)
 
 
 def parse_commit_log(output: bytes) -> tuple[CommitSummary, ...]:

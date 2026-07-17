@@ -5,7 +5,12 @@ from pathlib import Path
 
 from pytestqt.qtbot import QtBot
 
-from mygitclient.git.models import DiffSnapshot, FileStatus
+from mygitclient.git.models import (
+    CommitDiffSnapshot,
+    CommitFilesSnapshot,
+    DiffSnapshot,
+    FileStatus,
+)
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 
@@ -54,3 +59,57 @@ def test_diff_result_identifies_its_repository(qtbot: QtBot, tmp_path: Path) -> 
     assert isinstance(result, DiffSnapshot)
     assert result.repository == tmp_path
     assert result.diff.path == "tracked.txt"
+
+
+def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    parent = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    tracked.write_text("after\n", encoding="utf-8")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-am",
+        "update",
+    )
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    service = GitService()
+    file_results: list[object] = []
+    diff_results: list[object] = []
+    service.commit_files_ready.connect(file_results.append)
+    service.commit_diff_ready.connect(diff_results.append)
+
+    with qtbot.waitSignal(service.commit_files_ready, timeout=5000):
+        service.request_commit_files(tmp_path, commit)
+    with qtbot.waitSignal(service.commit_diff_ready, timeout=5000):
+        service.request_commit_diff(
+            tmp_path, commit, "tracked.txt", parent_oid=parent
+        )
+
+    files = file_results[0]
+    assert isinstance(files, CommitFilesSnapshot)
+    assert [(file.status, file.path) for file in files.files] == [("M", "tracked.txt")]
+    diff = diff_results[0]
+    assert isinstance(diff, CommitDiffSnapshot)
+    assert "-before" in diff.diff.text
+    assert "+after" in diff.diff.text

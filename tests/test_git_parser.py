@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 from mygitclient.git.parsers import (
+    parse_commit_files,
     parse_commit_log,
     parse_status_porcelain_v2,
     parse_unified_diff,
 )
+
+
+def test_parse_commit_files_supports_renames_and_regular_changes() -> None:
+    files = parse_commit_files(
+        b"M\x00changed.txt\x00R100\x00old name.txt\x00new name.txt\x00D\x00deleted.txt\x00"
+    )
+
+    assert [(file.status, file.path, file.original_path) for file in files] == [
+        ("M", "changed.txt", None),
+        ("R100", "new name.txt", "old name.txt"),
+        ("D", "deleted.txt", None),
+    ]
 
 
 def test_parse_commit_log_preserves_commit_metadata() -> None:

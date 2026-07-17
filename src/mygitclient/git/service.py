@@ -6,6 +6,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from mygitclient.git.models import (
+    CommitDiffSnapshot,
+    CommitFilesSnapshot,
     CommitPage,
     DiffSnapshot,
     FileStatus,
@@ -14,12 +16,19 @@ from mygitclient.git.models import (
     RepositoryStatusSnapshot,
     UnifiedDiff,
 )
-from mygitclient.git.parsers import parse_commit_log, parse_status_porcelain_v2, parse_unified_diff
+from mygitclient.git.parsers import (
+    parse_commit_files,
+    parse_commit_log,
+    parse_status_porcelain_v2,
+    parse_unified_diff,
+)
 from mygitclient.git.runner import GitRunner
 
 
 class GitService(QObject):
     history_ready = Signal(object)
+    commit_files_ready = Signal(object)
+    commit_diff_ready = Signal(object)
     status_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
@@ -37,6 +46,68 @@ class GitService(QObject):
         self._mutation_requests: dict[GitRunner, str] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
+        self._commit_files_requests: dict[GitRunner, tuple[Path, str, int]] = {}
+        self._latest_commit_files_request: dict[Path, int] = {}
+        self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
+        self._latest_commit_diff_request: dict[Path, int] = {}
+
+    def request_commit_files(self, repository: Path, commit_oid: str) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_commit_files_request[repository] = request_id
+        self._commit_files_requests[runner] = (repository, commit_oid, request_id)
+        runner.completed.connect(self._handle_commit_files)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "diff-tree",
+                    "--root",
+                    "--no-commit-id",
+                    "--name-status",
+                    "--find-renames",
+                    "-r",
+                    "-z",
+                    commit_oid,
+                ),
+                repository,
+                "read commit files",
+            )
+        )
+        return runner
+
+    def request_commit_diff(
+        self,
+        repository: Path,
+        commit_oid: str,
+        path: str,
+        *,
+        parent_oid: str | None,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_commit_diff_request[repository] = request_id
+        self._commit_diff_requests[runner] = (repository, commit_oid, path, request_id)
+        runner.completed.connect(self._handle_commit_diff)
+        runner.failed_to_start.connect(self._handle_start_error)
+        arguments = (
+            ("diff", "--no-ext-diff", "--no-color", parent_oid, commit_oid, "--", path)
+            if parent_oid is not None
+            else (
+                "show",
+                "--format=",
+                "--root",
+                "--no-ext-diff",
+                "--no-color",
+                commit_oid,
+                "--",
+                path,
+            )
+        )
+        runner.run(GitCommand(arguments, repository, "read commit diff"))
+        return runner
 
     def request_history(
         self, repository: Path, *, offset: int = 0, limit: int = 100
@@ -295,6 +366,8 @@ class GitService(QObject):
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
+        self._commit_files_requests.pop(runner, None)
+        self._commit_diff_requests.pop(runner, None)
         self.operation_failed.emit(message)
 
     @Slot(object)
@@ -325,6 +398,58 @@ class GitService(QObject):
             return
         page = CommitPage(repository, commits[:limit], offset, len(commits) > limit)
         self.history_ready.emit(page)
+
+    @Slot(object)
+    def _handle_commit_files(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned commit files from an unknown operation")
+            return
+        request = self._commit_files_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected commit file result")
+            return
+        repository, commit_oid, request_id = request
+        if self._latest_commit_files_request.get(repository) != request_id:
+            return
+        self._latest_commit_files_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read commit files")
+            return
+        try:
+            files = parse_commit_files(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.commit_files_ready.emit(CommitFilesSnapshot(repository, commit_oid, files))
+
+    @Slot(object)
+    def _handle_commit_diff(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned a commit diff from an unknown operation")
+            return
+        request = self._commit_diff_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected commit diff result")
+            return
+        repository, commit_oid, path, request_id = request
+        if self._latest_commit_diff_request.get(repository) != request_id:
+            return
+        self._latest_commit_diff_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read commit diff")
+            return
+        diff = parse_unified_diff(result.stdout, path, staged=False)
+        self.commit_diff_ready.emit(CommitDiffSnapshot(repository, commit_oid, diff))
 
     @Slot(object)
     def _handle_diff(self, result: object) -> None:
