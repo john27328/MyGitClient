@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import cast
 
@@ -9,10 +8,6 @@ from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
-    QColor,
-    QFontMetrics,
-    QTextCursor,
-    QTextOption,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -28,7 +23,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QTabWidget,
-    QTextEdit,
     QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
@@ -38,8 +32,6 @@ from PySide6.QtWidgets import (
 
 from mygitclient.git.models import (
     CommitPage,
-    DiffLine,
-    DiffLineKind,
     DiffSnapshot,
     FileStatus,
     RepositoryStatus,
@@ -181,19 +173,15 @@ class MainWindow(QMainWindow):
         self._diff_container = self._diff_view
         self._diff = self._diff_view.diff
         self._diff_gutter = self._diff_view.gutter
-        self._diff_highlighter = self._diff_view.diff_highlighter
         self._diff_version = self._diff_view.version_combo
         self._diff_view_mode = self._diff_view.view_mode_combo
         self._side_old = self._diff_view.side_old
         self._side_new = self._diff_view.side_new
-        self._side_old_highlighter = self._diff_view.side_old_highlighter
-        self._side_new_highlighter = self._diff_view.side_new_highlighter
         self._wrap_button = self._diff_view.wrap_button
         self._whitespace_button = self._diff_view.whitespace_button
         self._hunk_button = self._diff_view.hunk_button
         self._selected_lines_button = self._diff_view.selected_lines_button
         self._clear_lines_button = self._diff_view.clear_lines_button
-        self._diff_stack = self._diff_view.stack
 
         self._diff.cursorPositionChanged.connect(self._update_hunk_button)
         self._diff_gutter.line_activated.connect(self._diff_gutter_line_activated)
@@ -793,13 +781,6 @@ class MainWindow(QMainWindow):
         if self._diff_version.currentData() != diff_value.staged:
             return
         preserve_selection = diff_value == self._current_diff
-        scroll_positions = (
-            self._diff.verticalScrollBar().value(),
-            self._diff.horizontalScrollBar().value(),
-            self._side_old.verticalScrollBar().value(),
-            self._side_old.horizontalScrollBar().value(),
-            self._side_new.horizontalScrollBar().value(),
-        )
         self._current_diff = diff_value
         if not preserve_selection:
             self._diff_selection.clear()
@@ -808,44 +789,13 @@ class MainWindow(QMainWindow):
         )
         if whole_file_staged:
             self._diff_selection.select_whole_file(diff_value)
-        self._diff_highlighter.set_diff(diff_value)
-        self._diff.setPlainText(diff_value.text or "No textual changes to display.")
-        self._show_diff_line_numbers(diff_value)
-        self._show_side_by_side(diff_value)
-        if preserve_selection:
-            diff_vertical, diff_horizontal, side_vertical, old_horizontal, new_horizontal = (
-                scroll_positions
-            )
-            self._diff.verticalScrollBar().setValue(diff_vertical)
-            self._diff.horizontalScrollBar().setValue(diff_horizontal)
-            self._side_old.verticalScrollBar().setValue(side_vertical)
-            self._side_old.horizontalScrollBar().setValue(old_horizontal)
-            self._side_new.horizontalScrollBar().setValue(new_horizontal)
+        self._diff_view.display_diff(
+            diff_value, self._diff_selection, preserve_scroll=preserve_selection
+        )
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
         self._update_hunk_button()
         self._update_line_selection()
-
-    def _show_diff_line_numbers(self, diff: UnifiedDiff) -> None:
-        old_width = max(
-            (len(str(line.old_line)) for line in diff.lines if line.old_line is not None),
-            default=1,
-        )
-        new_width = max(
-            (len(str(line.new_line)) for line in diff.lines if line.new_line is not None),
-            default=1,
-        )
-        numbers: list[str] = []
-        for line in diff.lines:
-            line_index = len(numbers)
-            marker = self._diff_selection.marker(diff, line_index)
-            old_number = str(line.old_line) if line.old_line is not None else ""
-            new_number = str(line.new_line) if line.new_line is not None else ""
-            numbers.append(f"{marker} {old_number:>{old_width}}  {new_number:>{new_width}}")
-        self._diff_gutter.setPlainText("\n".join(numbers))
-        metrics = QFontMetrics(self._diff_gutter.font())
-        sample = "0" * (old_width + new_width + 5)
-        self._diff_gutter.setFixedWidth(metrics.horizontalAdvance(sample) + 12)
 
     @Slot(int, bool)
     def _diff_gutter_line_activated(self, line_index: int, extend: bool) -> None:
@@ -859,26 +809,7 @@ class MainWindow(QMainWindow):
         diff = self._current_diff
         if diff is None:
             return
-        scroll_value = self._diff_gutter.verticalScrollBar().value()
-        self._show_diff_line_numbers(diff)
-        self._diff_gutter.verticalScrollBar().setValue(scroll_value)
-        selections: list[QTextEdit.ExtraSelection] = []
-        for line_index in sorted(self._diff_selection.selected_lines):
-            selection = QTextEdit.ExtraSelection()
-            block = self._diff.document().findBlockByNumber(line_index)
-            cursor = QTextCursor(block)
-            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
-            selection.cursor = cursor
-            selection.format.setBackground(QColor("#2f80ed"))
-            selection.format.setForeground(QColor("#ffffff"))
-            selections.append(selection)
-        self._diff.setExtraSelections(selections)
-        has_selection = bool(self._diff_selection.selected_lines)
-        self._selected_lines_button.setEnabled(has_selection)
-        self._clear_lines_button.setEnabled(has_selection)
-        self._selected_lines_button.setText(
-            "Unstage selected" if diff.staged else "Stage selected"
-        )
+        self._diff_view.render_selection(diff, self._diff_selection)
         self._sync_selected_file_checkbox()
 
     def _sync_selected_file_checkbox(self) -> None:
@@ -925,73 +856,13 @@ class MainWindow(QMainWindow):
             stage=not diff.staged,
         )
 
-    def _show_side_by_side(self, diff: UnifiedDiff) -> None:
-        old_lines: list[str] = []
-        new_lines: list[str] = []
-        old_kinds: list[DiffLineKind] = []
-        new_kinds: list[DiffLineKind] = []
-        old_inline: dict[int, tuple[tuple[int, int], ...]] = {}
-        new_inline: dict[int, tuple[tuple[int, int], ...]] = {}
-        old_width = max(
-            (len(str(line.old_line)) for line in diff.lines if line.old_line is not None),
-            default=1,
-        )
-        new_width = max(
-            (len(str(line.new_line)) for line in diff.lines if line.new_line is not None),
-            default=1,
-        )
-        for row in diff.side_by_side_rows:
-            old_text = self._side_line_text(row.old, old_width, old=True)
-            new_text = self._side_line_text(row.new, new_width, old=False)
-            row_index = len(old_lines)
-            old_lines.append(old_text)
-            new_lines.append(new_text)
-            old_kinds.append(row.old.kind if row.old is not None else "metadata")
-            new_kinds.append(row.new.kind if row.new is not None else "metadata")
-            if (
-                row.old is not None
-                and row.new is not None
-                and row.old.kind == "deletion"
-                and row.new.kind == "addition"
-            ):
-                old_prefix = old_width + 2
-                new_prefix = new_width + 2
-                matcher = SequenceMatcher(None, row.old.text[1:], row.new.text[1:])
-                old_ranges: list[tuple[int, int]] = []
-                new_ranges: list[tuple[int, int]] = []
-                for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
-                    if tag != "equal":
-                        if old_end > old_start:
-                            old_ranges.append((old_prefix + old_start, old_end - old_start))
-                        if new_end > new_start:
-                            new_ranges.append((new_prefix + new_start, new_end - new_start))
-                old_inline[row_index] = tuple(old_ranges)
-                new_inline[row_index] = tuple(new_ranges)
-        self._side_old_highlighter.set_language(diff.path)
-        self._side_new_highlighter.set_language(diff.path)
-        self._side_old_highlighter.set_inline_ranges(old_inline)
-        self._side_new_highlighter.set_inline_ranges(new_inline)
-        self._side_old_highlighter.set_line_kinds(tuple(old_kinds))
-        self._side_new_highlighter.set_line_kinds(tuple(new_kinds))
-        self._side_old.setPlainText("\n".join(old_lines))
-        self._side_new.setPlainText("\n".join(new_lines))
-
-    @staticmethod
-    def _side_line_text(line: DiffLine | None, width: int, *, old: bool) -> str:
-        if line is None:
-            return ""
-        number = line.old_line if old else line.new_line
-        number_text = str(number) if number is not None else ""
-        content = line.text[1:] if line.kind in {"addition", "deletion", "context"} else line.text
-        return f"{number_text:>{width}}  {content}"
-
     @Slot(int)
     def _diff_view_changed(self, _index: int) -> None:
         mode = self._diff_view_mode.currentData()
         if not isinstance(mode, str):
             return
         self._settings.setValue("diff/viewMode", mode)
-        self._diff_stack.setCurrentIndex(1 if mode == "side-by-side" else 0)
+        self._diff_view.set_view_mode(mode)
         self._update_hunk_button()
 
     @Slot()
@@ -1029,22 +900,7 @@ class MainWindow(QMainWindow):
         self._apply_diff_wrap(enabled)
 
     def _apply_diff_wrap(self, enabled: bool) -> None:
-        mode = (
-            QPlainTextEdit.LineWrapMode.WidgetWidth
-            if enabled
-            else QPlainTextEdit.LineWrapMode.NoWrap
-        )
-        for editor in (self._diff, self._side_old, self._side_new):
-            editor.setLineWrapMode(mode)
-        self._diff_gutter.setVisible(not enabled and self._diff_container.isVisible())
-        if enabled:
-            self._selected_lines_button.setToolTip(
-                "Turn off Wrap to select individual lines in the gutter"
-            )
-        else:
-            self._selected_lines_button.setToolTip(
-                "Apply the lines selected with gutter checkboxes"
-            )
+        self._diff_view.set_wrap(enabled)
 
     @Slot(bool)
     def _diff_whitespace_changed(self, enabled: bool) -> None:
@@ -1052,15 +908,7 @@ class MainWindow(QMainWindow):
         self._apply_diff_whitespace(enabled)
 
     def _apply_diff_whitespace(self, enabled: bool) -> None:
-        for editor in (self._diff, self._side_old, self._side_new):
-            option = editor.document().defaultTextOption()
-            flags = option.flags()
-            if enabled:
-                flags |= QTextOption.Flag.ShowTabsAndSpaces
-            else:
-                flags &= ~QTextOption.Flag.ShowTabsAndSpaces
-            option.setFlags(flags)
-            editor.document().setDefaultTextOption(option)
+        self._diff_view.set_whitespace(enabled)
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
@@ -1079,9 +927,7 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if isinstance(app, QApplication):
             apply_theme(app, theme)
-            self._diff_highlighter.rehighlight()
-            self._side_old_highlighter.rehighlight()
-            self._side_new_highlighter.rehighlight()
+            self._diff_view.rehighlight()
 
     def _restore_window_state(self) -> None:
         geometry = self._settings.value("window/geometry")

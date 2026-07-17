@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+from difflib import SequenceMatcher
+
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetrics, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QPlainTextEdit,
     QSplitter,
     QStackedWidget,
+    QTextEdit,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from mygitclient.git.models import DiffLine, DiffLineKind, UnifiedDiff
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_highlighter import DiffHighlighter
+from mygitclient.ui.diff_selection import DiffSelection
 
 
 class DiffView(QWidget):
@@ -160,3 +165,170 @@ class DiffView(QWidget):
         button.setText(text)
         button.setCheckable(True)
         return button
+
+    def display_diff(
+        self, diff: UnifiedDiff, selection: DiffSelection, *, preserve_scroll: bool
+    ) -> None:
+        positions = self._scroll_positions()
+        self.diff_highlighter.set_diff(diff)
+        self.diff.setPlainText(diff.text or "No textual changes to display.")
+        self._render_gutter(diff, selection)
+        self._render_side_by_side(diff)
+        if preserve_scroll:
+            self._restore_scroll_positions(positions)
+        self.render_selection(diff, selection)
+
+    def render_selection(self, diff: UnifiedDiff, selection: DiffSelection) -> None:
+        scroll_value = self.gutter.verticalScrollBar().value()
+        self._render_gutter(diff, selection)
+        self.gutter.verticalScrollBar().setValue(scroll_value)
+        selections: list[QTextEdit.ExtraSelection] = []
+        for line_index in sorted(selection.selected_lines):
+            extra = QTextEdit.ExtraSelection()
+            block = self.diff.document().findBlockByNumber(line_index)
+            cursor = QTextCursor(block)
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            extra.cursor = cursor
+            extra.format.setBackground(QColor("#2f80ed"))
+            extra.format.setForeground(QColor("#ffffff"))
+            selections.append(extra)
+        self.diff.setExtraSelections(selections)
+        has_selection = bool(selection.selected_lines)
+        self.selected_lines_button.setEnabled(has_selection)
+        self.clear_lines_button.setEnabled(has_selection)
+        self.selected_lines_button.setText(
+            "Unstage selected" if diff.staged else "Stage selected"
+        )
+
+    def set_wrap(self, enabled: bool) -> None:
+        mode = (
+            QPlainTextEdit.LineWrapMode.WidgetWidth
+            if enabled
+            else QPlainTextEdit.LineWrapMode.NoWrap
+        )
+        for editor in (self.diff, self.side_old, self.side_new):
+            editor.setLineWrapMode(mode)
+        self.gutter.setVisible(not enabled and self.isVisible())
+        tooltip = (
+            "Turn off Wrap to select individual lines in the gutter"
+            if enabled
+            else "Apply the lines selected with gutter checkboxes"
+        )
+        self.selected_lines_button.setToolTip(tooltip)
+
+    def set_whitespace(self, enabled: bool) -> None:
+        for editor in (self.diff, self.side_old, self.side_new):
+            option = editor.document().defaultTextOption()
+            flags = option.flags()
+            if enabled:
+                flags |= QTextOption.Flag.ShowTabsAndSpaces
+            else:
+                flags &= ~QTextOption.Flag.ShowTabsAndSpaces
+            option.setFlags(flags)
+            editor.document().setDefaultTextOption(option)
+
+    def set_view_mode(self, mode: str) -> None:
+        self.stack.setCurrentIndex(1 if mode == "side-by-side" else 0)
+
+    def rehighlight(self) -> None:
+        self.diff_highlighter.rehighlight()
+        self.side_old_highlighter.rehighlight()
+        self.side_new_highlighter.rehighlight()
+
+    def _render_gutter(self, diff: UnifiedDiff, selection: DiffSelection) -> None:
+        old_width = max(
+            (len(str(line.old_line)) for line in diff.lines if line.old_line is not None),
+            default=1,
+        )
+        new_width = max(
+            (len(str(line.new_line)) for line in diff.lines if line.new_line is not None),
+            default=1,
+        )
+        numbers: list[str] = []
+        for line_index, line in enumerate(diff.lines):
+            marker = selection.marker(diff, line_index)
+            old_number = str(line.old_line) if line.old_line is not None else ""
+            new_number = str(line.new_line) if line.new_line is not None else ""
+            numbers.append(f"{marker} {old_number:>{old_width}}  {new_number:>{new_width}}")
+        self.gutter.setPlainText("\n".join(numbers))
+        metrics = QFontMetrics(self.gutter.font())
+        sample = "0" * (old_width + new_width + 5)
+        self.gutter.setFixedWidth(metrics.horizontalAdvance(sample) + 12)
+
+    def _render_side_by_side(self, diff: UnifiedDiff) -> None:
+        old_width = max(
+            (len(str(line.old_line)) for line in diff.lines if line.old_line is not None),
+            default=1,
+        )
+        new_width = max(
+            (len(str(line.new_line)) for line in diff.lines if line.new_line is not None),
+            default=1,
+        )
+        old_lines: list[str] = []
+        new_lines: list[str] = []
+        old_kinds: list[DiffLineKind] = []
+        new_kinds: list[DiffLineKind] = []
+        old_inline: dict[int, tuple[tuple[int, int], ...]] = {}
+        new_inline: dict[int, tuple[tuple[int, int], ...]] = {}
+        for row_index, row in enumerate(diff.side_by_side_rows):
+            old_text = self._side_line_text(row.old, old_width, old=True)
+            new_text = self._side_line_text(row.new, new_width, old=False)
+            old_lines.append(old_text)
+            new_lines.append(new_text)
+            old_kinds.append(row.old.kind if row.old is not None else "metadata")
+            new_kinds.append(row.new.kind if row.new is not None else "metadata")
+            if (
+                row.old is not None
+                and row.new is not None
+                and row.old.kind == "deletion"
+                and row.new.kind == "addition"
+            ):
+                old_content = row.old.text[1:]
+                new_content = row.new.text[1:]
+                matcher = SequenceMatcher(None, old_content, new_content)
+                old_ranges: list[tuple[int, int]] = []
+                new_ranges: list[tuple[int, int]] = []
+                for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+                    if tag != "equal":
+                        if old_end > old_start:
+                            old_ranges.append((old_width + 2 + old_start, old_end - old_start))
+                        if new_end > new_start:
+                            new_ranges.append((new_width + 2 + new_start, new_end - new_start))
+                if old_ranges:
+                    old_inline[row_index] = tuple(old_ranges)
+                if new_ranges:
+                    new_inline[row_index] = tuple(new_ranges)
+        self.side_old_highlighter.set_language(diff.path)
+        self.side_new_highlighter.set_language(diff.path)
+        self.side_old_highlighter.set_inline_ranges(old_inline)
+        self.side_new_highlighter.set_inline_ranges(new_inline)
+        self.side_old_highlighter.set_line_kinds(tuple(old_kinds))
+        self.side_new_highlighter.set_line_kinds(tuple(new_kinds))
+        self.side_old.setPlainText("\n".join(old_lines))
+        self.side_new.setPlainText("\n".join(new_lines))
+
+    @staticmethod
+    def _side_line_text(line: DiffLine | None, width: int, *, old: bool) -> str:
+        if line is None:
+            return ""
+        number = line.old_line if old else line.new_line
+        number_text = str(number) if number is not None else ""
+        content = line.text[1:] if line.kind in {"addition", "deletion", "context"} else line.text
+        return f"{number_text:>{width}}  {content}"
+
+    def _scroll_positions(self) -> tuple[int, int, int, int, int]:
+        return (
+            self.diff.verticalScrollBar().value(),
+            self.diff.horizontalScrollBar().value(),
+            self.side_old.verticalScrollBar().value(),
+            self.side_old.horizontalScrollBar().value(),
+            self.side_new.horizontalScrollBar().value(),
+        )
+
+    def _restore_scroll_positions(self, positions: tuple[int, int, int, int, int]) -> None:
+        diff_vertical, diff_horizontal, side_vertical, old_horizontal, new_horizontal = positions
+        self.diff.verticalScrollBar().setValue(diff_vertical)
+        self.diff.horizontalScrollBar().setValue(diff_horizontal)
+        self.side_old.verticalScrollBar().setValue(side_vertical)
+        self.side_old.horizontalScrollBar().setValue(old_horizontal)
+        self.side_new.horizontalScrollBar().setValue(new_horizontal)
