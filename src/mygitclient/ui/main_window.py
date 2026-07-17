@@ -11,17 +11,17 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QComboBox,
     QFileDialog,
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QSplitter,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QTreeWidgetItem,
 )
 
@@ -207,27 +207,58 @@ class MainWindow(QMainWindow):
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self._refresh_repository)
         toolbar.addAction(refresh_action)
-        self._fetch_action = QAction("Fetch", self)
+        self._fetch_action = QAction(load_icon("fetch.svg"), "Fetch", self)
         self._fetch_action.setObjectName("fetchAction")
         self._fetch_action.triggered.connect(self._fetch_repository)
         toolbar.addAction(self._fetch_action)
-        self._pull_strategy = QComboBox()
-        self._pull_strategy.setObjectName("pullStrategyCombo")
-        self._pull_strategy.addItem("Pull (merge)", False)
-        self._pull_strategy.addItem("Pull (rebase)", True)
-        toolbar.addWidget(self._pull_strategy)
-        self._pull_autostash = QCheckBox("Auto-stash")
-        self._pull_autostash.setObjectName("pullAutostashCheckBox")
-        toolbar.addWidget(self._pull_autostash)
-        pull_action = QAction("Pull", self)
-        pull_action.setObjectName("pullAction")
-        pull_action.triggered.connect(self._pull_repository)
-        toolbar.addAction(pull_action)
-        self._push_action = QAction("Push", self)
+        self._pull_action = QAction(load_icon("pull.svg"), "Pull", self)
+        self._pull_action.setObjectName("pullAction")
+        self._pull_action.triggered.connect(self._pull_repository)
+        pull_menu = QMenu(self)
+        self._pull_merge_action = pull_menu.addAction(load_icon("pull-merge.svg"), "Merge")
+        self._pull_merge_action.setObjectName("pullMergeAction")
+        self._pull_merge_action.setCheckable(True)
+        self._pull_rebase_action = pull_menu.addAction(
+            load_icon("pull-rebase.svg"), "Rebase"
+        )
+        self._pull_rebase_action.setObjectName("pullRebaseAction")
+        self._pull_rebase_action.setCheckable(True)
+        pull_strategy_group = QActionGroup(self)
+        pull_strategy_group.setExclusive(True)
+        pull_strategy_group.addAction(self._pull_merge_action)
+        pull_strategy_group.addAction(self._pull_rebase_action)
+        self._pull_rebase_action.setChecked(
+            self._read_bool_setting("sync/pullRebase")
+        )
+        self._pull_merge_action.setChecked(not self._pull_rebase_action.isChecked())
+        pull_menu.addSeparator()
+        self._pull_autostash_action = pull_menu.addAction(
+            load_icon("autostash.svg"), "Auto-stash local changes"
+        )
+        self._pull_autostash_action.setObjectName("pullAutostashAction")
+        self._pull_autostash_action.setCheckable(True)
+        self._pull_autostash_action.setChecked(
+            self._read_bool_setting("sync/pullAutostash")
+        )
+        for option in (
+            self._pull_merge_action,
+            self._pull_rebase_action,
+            self._pull_autostash_action,
+        ):
+            option.triggered.connect(self._pull_options_changed)
+        self._pull_button = QToolButton()
+        self._pull_button.setObjectName("pullButton")
+        self._pull_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self._pull_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._pull_button.setDefaultAction(self._pull_action)
+        self._pull_button.setMenu(pull_menu)
+        toolbar.addWidget(self._pull_button)
+        self._update_pull_button()
+        self._push_action = QAction(load_icon("push.svg"), "Push", self)
         self._push_action.setObjectName("pushAction")
         self._push_action.triggered.connect(self._push_repository)
         toolbar.addAction(self._push_action)
-        cancel_action = QAction("Cancel", self)
+        cancel_action = QAction(load_icon("cancel.svg"), "Cancel", self)
         cancel_action.setObjectName("cancelOperationsAction")
         cancel_action.triggered.connect(self._cancel_operations)
         toolbar.addAction(cancel_action)
@@ -605,15 +636,29 @@ class MainWindow(QMainWindow):
     def _pull_repository(self) -> None:
         if self._repository is None:
             return
-        rebase = self._pull_strategy.currentData()
-        if not isinstance(rebase, bool):
-            return
         self._status_label.setText("Pulling changes…")
         self._git.request_pull(
             self._repository,
-            rebase=rebase,
-            autostash=self._pull_autostash.isChecked(),
+            rebase=self._pull_rebase_action.isChecked(),
+            autostash=self._pull_autostash_action.isChecked(),
         )
+
+    @Slot()
+    def _pull_options_changed(self) -> None:
+        self._settings.setValue("sync/pullRebase", self._pull_rebase_action.isChecked())
+        self._settings.setValue(
+            "sync/pullAutostash", self._pull_autostash_action.isChecked()
+        )
+        self._update_pull_button()
+
+    def _update_pull_button(self) -> None:
+        rebase = self._pull_rebase_action.isChecked()
+        strategy = "Rebase" if rebase else "Merge"
+        self._pull_action.setIcon(
+            load_icon("pull-rebase.svg" if rebase else "pull-merge.svg")
+        )
+        suffix = " · Stash" if self._pull_autostash_action.isChecked() else ""
+        self._pull_action.setText(f"Pull · {strategy}{suffix}")
 
     @Slot()
     def _fetch_repository(self) -> None:

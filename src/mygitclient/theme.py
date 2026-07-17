@@ -35,6 +35,7 @@ def apply_theme(app: QApplication, theme: Theme) -> None:
             app.setStyle(_system_style_name)
         if _system_palette is not None:
             app.setPalette(_system_palette)
+        _refresh_widget_palettes(app)
         return
 
     app.setStyle("Fusion")
@@ -43,6 +44,13 @@ def apply_theme(app: QApplication, theme: Theme) -> None:
     elif _system_palette is not None:
         app.setPalette(_system_palette)
     app.setStyleSheet(_dark_stylesheet() if theme is Theme.DARK else _LIGHT_STYLESHEET)
+    _refresh_widget_palettes(app)
+
+
+def _refresh_widget_palettes(app: QApplication) -> None:
+    palette = app.palette()
+    for widget in app.allWidgets():
+        widget.setPalette(palette)
 
 
 def _dark_palette() -> QPalette:

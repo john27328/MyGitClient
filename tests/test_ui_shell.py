@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QTreeWidget,
     QWidget,
 )
@@ -37,10 +38,27 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     refresh_action = window.findChild(QAction, "refreshAction")
     fetch_action = window.findChild(QAction, "fetchAction")
     push_action = window.findChild(QAction, "pushAction")
+    pull_action = window.findChild(QAction, "pullAction")
+    pull_button = window.findChild(QToolButton, "pullButton")
+    pull_rebase = window.findChild(QAction, "pullRebaseAction")
+    pull_autostash = window.findChild(QAction, "pullAutostashAction")
     assert toolbar is not None
     assert refresh_action is not None
     assert fetch_action is not None
     assert push_action is not None
+    assert pull_action is not None
+    assert pull_button is not None
+    assert pull_rebase is not None
+    assert pull_autostash is not None
+    assert not fetch_action.icon().isNull()
+    assert not push_action.icon().isNull()
+    assert not pull_action.icon().isNull()
+    assert pull_button.popupMode() is QToolButton.ToolButtonPopupMode.MenuButtonPopup
+    assert not pull_rebase.icon().isNull()
+    assert not pull_autostash.icon().isNull()
+    pull_rebase.trigger()
+    pull_autostash.trigger()
+    assert pull_action.text() == "Pull · Rebase · Stash"
     assert not refresh_action.icon().isNull()
 
     window.close()
@@ -404,15 +422,19 @@ def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path:
     window = MainWindow(settings, Theme.SYSTEM)
     system_action = window.findChild(QAction, "themeAction_system")
     dark_action = window.findChild(QAction, "themeAction_dark")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    initial_base = qapp.palette().base().color()
 
     assert system_action is not None
     assert dark_action is not None
+    assert diff_panel is not None
     dark_action.trigger()
 
     assert dark_action.isChecked()
     assert not system_action.isChecked()
     assert settings.value("appearance/theme") == Theme.DARK.value
     assert qapp.palette().base().color().lightness() < 128
+    assert diff_panel.palette().base().color().lightness() < 128
     assert qapp.palette().highlight().color().name() == "#2f80ed"
     assert "checkbox-checked.svg" in qapp.styleSheet()
     assert "checkbox-partial.svg" in qapp.styleSheet()
@@ -421,4 +443,6 @@ def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path:
     assert system_action.isChecked()
     assert not dark_action.isChecked()
     assert qapp.styleSheet() == ""
+    assert qapp.palette().base().color() == initial_base
+    assert diff_panel.palette().base().color() == initial_base
     window.close()
