@@ -20,6 +20,8 @@ from mygitclient.git.models import BranchesSnapshot, BranchInfo
 class BranchesPanel(QWidget):
     checkout_requested = Signal(object)
     create_requested = Signal()
+    rename_requested = Signal(object)
+    delete_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -43,6 +45,14 @@ class BranchesPanel(QWidget):
         self.create_button = QPushButton("New branch…")
         self.create_button.setObjectName("createBranchButton")
         self.create_button.clicked.connect(self.create_requested)
+        self.rename_button = QPushButton("Rename…")
+        self.rename_button.setObjectName("renameBranchButton")
+        self.rename_button.setEnabled(False)
+        self.rename_button.clicked.connect(self._rename_selected)
+        self.delete_button = QPushButton("Delete…")
+        self.delete_button.setObjectName("deleteBranchButton")
+        self.delete_button.setEnabled(False)
+        self.delete_button.clicked.connect(self._delete_selected)
         self.autostash = QCheckBox("Stash changes and restore after checkout")
         self.autostash.setObjectName("checkoutAutostashCheckBox")
         self.hint = QLabel("Select a branch, then click Checkout selected — or double-click it.")
@@ -51,6 +61,8 @@ class BranchesPanel(QWidget):
         buttons = QHBoxLayout()
         buttons.addWidget(self.checkout_button)
         buttons.addWidget(self.create_button)
+        buttons.addWidget(self.rename_button)
+        buttons.addWidget(self.delete_button)
         buttons.addWidget(self.autostash)
         buttons.addStretch(1)
         layout = QVBoxLayout(self)
@@ -82,11 +94,16 @@ class BranchesPanel(QWidget):
     def reset(self) -> None:
         self.tree.clear()
         self.checkout_button.setEnabled(False)
+        self.rename_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
 
     @Slot()
     def _selection_changed(self) -> None:
         branch = self._selected_branch()
         self.checkout_button.setEnabled(branch is not None and not branch.current)
+        editable = branch is not None and not branch.remote and not branch.current
+        self.rename_button.setEnabled(editable)
+        self.delete_button.setEnabled(editable)
 
     @Slot(QTreeWidgetItem, int)
     def _item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
@@ -94,6 +111,21 @@ class BranchesPanel(QWidget):
         self.checkout_button.setEnabled(
             isinstance(branch, BranchInfo) and not branch.current
         )
+        editable = isinstance(branch, BranchInfo) and not branch.remote and not branch.current
+        self.rename_button.setEnabled(editable)
+        self.delete_button.setEnabled(editable)
+
+    @Slot()
+    def _rename_selected(self) -> None:
+        branch = self._selected_branch()
+        if branch is not None and not branch.remote and not branch.current:
+            self.rename_requested.emit(branch)
+
+    @Slot()
+    def _delete_selected(self) -> None:
+        branch = self._selected_branch()
+        if branch is not None and not branch.remote and not branch.current:
+            self.delete_requested.emit(branch)
 
     @Slot()
     def _checkout_selected(self) -> None:

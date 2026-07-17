@@ -127,6 +127,8 @@ class MainWindow(QMainWindow):
         self._branches_panel = BranchesPanel()
         self._branches_panel.checkout_requested.connect(self._checkout_branch)
         self._branches_panel.create_requested.connect(self._create_branch)
+        self._branches_panel.rename_requested.connect(self._rename_branch)
+        self._branches_panel.delete_requested.connect(self._delete_branch)
 
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
@@ -491,6 +493,40 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Creating branch {name}…")
         self._git.request_create_branch(self._repository, name)
 
+    @Slot(object)
+    def _rename_branch(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, BranchInfo):
+            return
+        name, accepted = QInputDialog.getText(
+            self, "Rename branch", "New branch name:", text=value.name
+        )
+        name = name.strip()
+        if not accepted or not name or name == value.name:
+            return
+        self._branches_panel.setEnabled(False)
+        self._git.request_rename_branch(self._repository, value, name)
+
+    @Slot(object)
+    def _delete_branch(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, BranchInfo):
+            return
+        force = value.ahead > 0
+        if force:
+            detail = (
+                f"Branch '{value.name}' is {value.ahead} commit(s) ahead of its upstream.\n\n"
+                "Force-delete the local branch? Its remote branch and commits reachable "
+                "from other branches will not be deleted."
+            )
+        else:
+            detail = f"Delete local branch '{value.name}'?"
+        answer = QMessageBox.question(
+            self, "Force delete branch" if force else "Delete branch", detail
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._branches_panel.setEnabled(False)
+        self._git.request_delete_branch(self._repository, value, force=force)
+
     def _show_linked_repositories(self, repository: Path) -> None:
         self._workspace_discovery.request_linked_repositories(repository)
 
@@ -733,6 +769,10 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Commit created")
         elif path.startswith("branch:"):
             self._status_label.setText(f"Checked out {path.removeprefix('branch:')}")
+        elif path == "branches:renamed":
+            self._status_label.setText("Branch renamed")
+        elif path == "branches:deleted":
+            self._status_label.setText("Branch deleted")
         elif path == "pull":
             self._status_label.setText("Pull completed")
         elif path == "stash":

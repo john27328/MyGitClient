@@ -157,6 +157,40 @@ def test_branches_can_be_loaded_checked_out_and_created(
     current = next(branch for branch in refreshed.branches if branch.current)
     assert current.name == "new-branch"
 
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_rename_branch(tmp_path, feature, "renamed-feature")
+    renamed = BranchInfo("refs/heads/renamed-feature", "renamed-feature", "2" * 40, False)
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_delete_branch(tmp_path, renamed)
+    branches = subprocess.check_output(
+        ["git", "branch", "--format=%(refname:short)"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert "renamed-feature" not in branches
+
+
+def test_force_delete_branch_with_unmerged_commit(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(tmp_path, *identity, "commit", "--allow-empty", "-m", "initial")
+    _git(tmp_path, "switch", "-c", "feature")
+    _git(tmp_path, *identity, "commit", "--allow-empty", "-m", "feature")
+    _git(tmp_path, "switch", "main")
+    service = GitService()
+    branch = BranchInfo("refs/heads/feature", "feature", "2" * 40, False, ahead=1)
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_delete_branch(tmp_path, branch, force=True)
+
+    branches = subprocess.check_output(
+        ["git", "branch", "--format=%(refname:short)"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert "feature" not in branches
+
 
 def test_selected_files_can_be_stashed(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")

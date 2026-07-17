@@ -41,3 +41,13 @@ def test_branches_panel_groups_refs_and_emits_checkout(qtbot: QtBot) -> None:
     assert requested == [feature]
     assert panel.autostash.objectName() == "checkoutAutostashCheckBox"
     assert "double-click" in panel.hint.text()
+    assert panel.rename_button.isEnabled()
+    assert panel.delete_button.isEnabled()
+    renamed: list[object] = []
+    deleted: list[object] = []
+    panel.rename_requested.connect(renamed.append)
+    panel.delete_requested.connect(deleted.append)
+    panel.rename_button.click()
+    panel.delete_button.click()
+    assert renamed == [feature]
+    assert deleted == [feature]

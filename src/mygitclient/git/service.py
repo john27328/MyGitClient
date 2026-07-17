@@ -144,6 +144,31 @@ class GitService(QObject):
         runner.run(GitCommand(("switch", "-c", name), repository, "create branch"))
         return runner
 
+    def request_rename_branch(
+        self, repository: Path, branch: BranchInfo, new_name: str
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "branches:renamed"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(("branch", "-m", branch.name, new_name), repository, "rename branch")
+        )
+        return runner
+
+    def request_delete_branch(
+        self, repository: Path, branch: BranchInfo, *, force: bool = False
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "branches:deleted"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        flag = "-D" if force else "-d"
+        runner.run(GitCommand(("branch", flag, branch.name), repository, "delete branch"))
+        return runner
+
     def request_pull(
         self, repository: Path, *, rebase: bool, autostash: bool
     ) -> GitRunner:

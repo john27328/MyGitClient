@@ -68,6 +68,12 @@ def test_linked_repository_is_not_duplicated_at_top_level(
     child = parent / "child"
     panel.set_recent((parent, child))
 
+    assert panel.tree.topLevelItemCount() == 1
+    immediate_parent = panel.tree.topLevelItem(0)
+    assert immediate_parent is not None
+    assert immediate_parent.childCount() == 1
+    assert immediate_parent.child(0).text(0) == "child (nested)"
+
     panel.set_linked(parent, (LinkedRepository(child, "submodule"),))
 
     assert panel.tree.topLevelItemCount() == 1

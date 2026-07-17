@@ -47,11 +47,25 @@ class RepositoriesPanel(QWidget):
             placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
             self.tree.addTopLevelItem(placeholder)
             return
+        items: dict[Path, QTreeWidgetItem] = {}
         for repository in repositories:
             item = QTreeWidgetItem([repository.name])
             item.setToolTip(0, str(repository))
             item.setData(0, Qt.ItemDataRole.UserRole, repository)
-            self.tree.addTopLevelItem(item)
+            items[repository] = item
+        for repository, item in items.items():
+            parents = [
+                candidate
+                for candidate in items
+                if candidate != repository and repository.is_relative_to(candidate)
+            ]
+            if not parents:
+                self.tree.addTopLevelItem(item)
+                continue
+            parent_path = max(parents, key=lambda path: len(path.parts))
+            item.setText(0, f"{repository.name} (nested)")
+            items[parent_path].addChild(item)
+            items[parent_path].setExpanded(True)
 
     def set_open(self, repositories: list[Path], current: Path | None) -> None:
         blocker = QSignalBlocker(self.switcher)
@@ -70,18 +84,40 @@ class RepositoriesPanel(QWidget):
     def set_linked(
         self, repository: Path, linked_repositories: tuple[LinkedRepository, ...]
     ) -> None:
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
-            if item is None or item.data(0, Qt.ItemDataRole.UserRole) != repository:
-                continue
+        item = self._find_item(repository)
+        if item is not None:
             for linked in linked_repositories:
                 self._remove_duplicate_top_level(linked.path, except_item=item)
+                existing = next(
+                    (
+                        item.child(index)
+                        for index in range(item.childCount())
+                        if item.child(index).data(0, Qt.ItemDataRole.UserRole)
+                        == linked.path
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    existing.setText(0, f"{linked.path.name} ({linked.kind})")
+                    continue
                 child = QTreeWidgetItem([f"{linked.path.name} ({linked.kind})"])
                 child.setToolTip(0, str(linked.path))
                 child.setData(0, Qt.ItemDataRole.UserRole, linked.path)
                 item.addChild(child)
             item.setExpanded(True)
-            return
+
+    def _find_item(self, repository: Path) -> QTreeWidgetItem | None:
+        pending = [
+            item
+            for index in range(self.tree.topLevelItemCount())
+            if (item := self.tree.topLevelItem(index)) is not None
+        ]
+        while pending:
+            item = pending.pop()
+            if item.data(0, Qt.ItemDataRole.UserRole) == repository:
+                return item
+            pending.extend(item.child(index) for index in range(item.childCount()))
+        return None
 
     def _remove_duplicate_top_level(
         self, repository: Path, *, except_item: QTreeWidgetItem
