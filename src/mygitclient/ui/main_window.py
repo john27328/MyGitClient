@@ -45,6 +45,7 @@ from mygitclient.git.models import (
     CommitSummary,
     DiffLine,
     DiffLineKind,
+    DiffSnapshot,
     FileStatus,
     RepositoryStatus,
     RepositoryStatusSnapshot,
@@ -57,6 +58,7 @@ from mygitclient.theme import Theme, apply_theme
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_highlighter import DiffHighlighter
+from mygitclient.ui.diff_selection import DiffSelection
 from mygitclient.workspace import (
     WorkspaceManager,
     discover_linked_repositories,
@@ -77,8 +79,7 @@ class MainWindow(QMainWindow):
         self._current_diff: UnifiedDiff | None = None
         self._generated_commit_message = ""
         self._generated_commit_description = ""
-        self._selected_diff_lines: set[int] = set()
-        self._last_selected_diff_line: int | None = None
+        self._diff_selection = DiffSelection()
         self._status_runner: GitRunner | None = None
         self._history_runner: GitRunner | None = None
         self._refresh_timer = QTimer(self)
@@ -430,6 +431,7 @@ class MainWindow(QMainWindow):
         self._git.history_ready.connect(self._show_history)
         self._git.diff_ready.connect(self._show_diff)
         self._git.mutation_ready.connect(self._mutation_finished)
+        self._git.operation_cancelled.connect(self._operation_cancelled)
         self._git.operation_failed.connect(self._show_git_error)
         self._repositories.itemActivated.connect(self._open_recent_item)
         self._changes.itemSelectionChanged.connect(self._selected_file_changed)
@@ -561,6 +563,7 @@ class MainWindow(QMainWindow):
             return
         if self._repository is None or value.repository != self._repository:
             return
+        self._history_runner = None
         if value.offset == 0:
             self._history.clear()
         for commit in value.commits:
@@ -706,12 +709,21 @@ class MainWindow(QMainWindow):
         self._git.cancel_all()
         self._status_label.setText("Cancelling Git operations…")
 
+    @Slot()
+    def _operation_cancelled(self) -> None:
+        self._status_runner = None
+        self._history_runner = None
+        self._changes.setEnabled(True)
+        self._changes_container.setEnabled(True)
+        self._status_label.setText("Operation cancelled")
+
     @Slot(object)
     def _show_status(self, value: object) -> None:
         if not isinstance(value, RepositoryStatusSnapshot):
             return
         if self._repository is None or value.repository != self._repository:
             return
+        self._status_runner = None
         status_value = value.status
         if status_value == self._repository_status:
             self._request_diff(silent=True)
@@ -960,28 +972,30 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _show_diff(self, value: object) -> None:
-        if not isinstance(value, UnifiedDiff):
+        if not isinstance(value, DiffSnapshot):
             return
+        if value.repository != self._repository:
+            return
+        diff_value = value.diff
         selected_items = self._changes.selectedItems()
         if not selected_items:
             return
         current = selected_items[0]
         file = current.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(file, FileStatus) or file.path != value.path:
+        if not isinstance(file, FileStatus) or file.path != diff_value.path:
             return
-        if self._diff_version.currentData() != value.staged:
+        if self._diff_version.currentData() != diff_value.staged:
             return
-        preserve_selection = value == self._current_diff
-        self._current_diff = value
+        preserve_selection = diff_value == self._current_diff
+        self._current_diff = diff_value
         if not preserve_selection:
-            self._selected_diff_lines.clear()
-            self._last_selected_diff_line = None
-        self._diff_highlighter.set_diff(value)
-        self._diff.setPlainText(value.text or "No textual changes to display.")
-        self._show_diff_line_numbers(value)
-        self._show_side_by_side(value)
-        version = "staged" if value.staged else "working tree"
-        self._status_label.setText(f"Showing {version} diff for {value.path}")
+            self._diff_selection.clear()
+        self._diff_highlighter.set_diff(diff_value)
+        self._diff.setPlainText(diff_value.text or "No textual changes to display.")
+        self._show_diff_line_numbers(diff_value)
+        self._show_side_by_side(diff_value)
+        version = "staged" if diff_value.staged else "working tree"
+        self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
         self._update_hunk_button()
         self._update_line_selection()
 
@@ -997,24 +1011,7 @@ class MainWindow(QMainWindow):
         numbers: list[str] = []
         for line in diff.lines:
             line_index = len(numbers)
-            marker = " "
-            if line.kind in {"addition", "deletion"}:
-                marker = "✓" if line_index in self._selected_diff_lines else "□"
-            elif line.kind == "hunk":
-                hunk_index = diff.hunk_index_for_line(line_index)
-                hunk_lines = {
-                    index
-                    for index, candidate in enumerate(diff.lines)
-                    if diff.hunk_index_for_line(index) == hunk_index
-                    and candidate.kind in {"addition", "deletion"}
-                }
-                selected_count = len(hunk_lines & self._selected_diff_lines)
-                if hunk_lines and selected_count == len(hunk_lines):
-                    marker = "■"
-                elif selected_count:
-                    marker = "◩"
-                else:
-                    marker = "□"
+            marker = self._diff_selection.marker(diff, line_index)
             old_number = str(line.old_line) if line.old_line is not None else ""
             new_number = str(line.new_line) if line.new_line is not None else ""
             numbers.append(f"{marker} {old_number:>{old_width}}  {new_number:>{new_width}}")
@@ -1028,33 +1025,8 @@ class MainWindow(QMainWindow):
         diff = self._current_diff
         if diff is None or line_index < 0 or line_index >= len(diff.lines):
             return
-        line = diff.lines[line_index]
-        selectable: set[int]
-        if line.kind == "hunk":
-            hunk_index = diff.hunk_index_for_line(line_index)
-            selectable = {
-                index
-                for index, candidate in enumerate(diff.lines)
-                if diff.hunk_index_for_line(index) == hunk_index
-                and candidate.kind in {"addition", "deletion"}
-            }
-        elif line.kind in {"addition", "deletion"}:
-            selectable = {line_index}
-            if extend and self._last_selected_diff_line is not None:
-                start, end = sorted((self._last_selected_diff_line, line_index))
-                selectable = {
-                    index
-                    for index in range(start, end + 1)
-                    if diff.lines[index].kind in {"addition", "deletion"}
-                }
-        else:
-            return
-        if selectable and selectable.issubset(self._selected_diff_lines):
-            self._selected_diff_lines.difference_update(selectable)
-        else:
-            self._selected_diff_lines.update(selectable)
-        self._last_selected_diff_line = line_index
-        self._update_line_selection()
+        if self._diff_selection.toggle(diff, line_index, extend=extend):
+            self._update_line_selection()
 
     def _update_line_selection(self) -> None:
         diff = self._current_diff
@@ -1064,7 +1036,7 @@ class MainWindow(QMainWindow):
         self._show_diff_line_numbers(diff)
         self._diff_gutter.verticalScrollBar().setValue(scroll_value)
         selections: list[QTextEdit.ExtraSelection] = []
-        for line_index in sorted(self._selected_diff_lines):
+        for line_index in sorted(self._diff_selection.selected_lines):
             selection = QTextEdit.ExtraSelection()
             block = self._diff.document().findBlockByNumber(line_index)
             cursor = QTextCursor(block)
@@ -1074,7 +1046,7 @@ class MainWindow(QMainWindow):
             selection.format.setForeground(QColor("#ffffff"))
             selections.append(selection)
         self._diff.setExtraSelections(selections)
-        has_selection = bool(self._selected_diff_lines)
+        has_selection = bool(self._diff_selection.selected_lines)
         self._selected_lines_button.setEnabled(has_selection)
         self._clear_lines_button.setEnabled(has_selection)
         self._selected_lines_button.setText(
@@ -1083,15 +1055,14 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _clear_selected_lines(self) -> None:
-        self._selected_diff_lines.clear()
-        self._last_selected_diff_line = None
+        self._diff_selection.clear()
         self._update_line_selection()
 
     @Slot()
     def _apply_selected_lines(self) -> None:
         repository = self._repository
         diff = self._current_diff
-        if repository is None or diff is None or not self._selected_diff_lines:
+        if repository is None or diff is None or not self._diff_selection.selected_lines:
             return
         self._changes_container.setEnabled(False)
         action = "Unstaging" if diff.staged else "Staging"
@@ -1099,7 +1070,7 @@ class MainWindow(QMainWindow):
         self._git.request_lines(
             repository,
             diff,
-            set(self._selected_diff_lines),
+            set(self._diff_selection.selected_lines),
             stage=not diff.staged,
         )
 
@@ -1242,6 +1213,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
+        self._status_runner = None
+        self._history_runner = None
         self._changes.setEnabled(True)
         self._changes_container.setEnabled(True)
         self._status_label.setText("Git operation failed")

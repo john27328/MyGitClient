@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from itertools import count
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from mygitclient.git.models import (
     CommitPage,
+    DiffSnapshot,
     FileStatus,
     GitCommand,
     GitResult,
@@ -21,22 +23,29 @@ class GitService(QObject):
     status_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
+    operation_cancelled = Signal()
     operation_failed = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._runners: set[GitRunner] = set()
-        self._status_requests: dict[GitRunner, Path] = {}
-        self._diff_requests: dict[GitRunner, tuple[str, bool, bool]] = {}
+        self._request_ids = count(1)
+        self._status_requests: dict[GitRunner, tuple[Path, int]] = {}
+        self._latest_status_request: dict[Path, int] = {}
+        self._diff_requests: dict[GitRunner, tuple[Path, str, bool, bool, int]] = {}
+        self._latest_diff_request: dict[tuple[Path, str, bool], int] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
-        self._history_requests: dict[GitRunner, tuple[Path, int, int]] = {}
+        self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
+        self._latest_history_request: dict[Path, int] = {}
 
     def request_history(
         self, repository: Path, *, offset: int = 0, limit: int = 100
     ) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
-        self._history_requests[runner] = (repository, offset, limit)
+        request_id = next(self._request_ids)
+        self._latest_history_request[repository] = request_id
+        self._history_requests[runner] = (repository, offset, limit, request_id)
         runner.completed.connect(self._handle_history)
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(
@@ -58,7 +67,9 @@ class GitService(QObject):
     def request_status(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
-        self._status_requests[runner] = repository
+        request_id = next(self._request_ids)
+        self._latest_status_request[repository] = request_id
+        self._status_requests[runner] = (repository, request_id)
         runner.completed.connect(self._handle_status)
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(
@@ -88,7 +99,16 @@ class GitService(QObject):
 
         runner = GitRunner(parent=self)
         self._runners.add(runner)
-        self._diff_requests[runner] = (file.path, staged, untracked)
+        request_id = next(self._request_ids)
+        key = (repository, file.path, staged)
+        self._latest_diff_request[key] = request_id
+        self._diff_requests[runner] = (
+            repository,
+            file.path,
+            staged,
+            untracked,
+            request_id,
+        )
         runner.completed.connect(self._handle_diff)
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(
@@ -230,16 +250,30 @@ class GitService(QObject):
         for runner in tuple(self._runners):
             runner.cancel()
 
+    def _release_runner(self, runner: GitRunner) -> None:
+        self._runners.discard(runner)
+        runner.deleteLater()
+
     @Slot(object)
     def _handle_status(self, result: object) -> None:
         runner = self.sender()
         if not isinstance(runner, GitRunner):
             self.operation_failed.emit("Git returned a result from an unknown operation")
             return
-        self._runners.discard(runner)
-        repository = self._status_requests.pop(runner, None)
+        request = self._status_requests.pop(runner, None)
+        self._release_runner(runner)
         if not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected result")
+            return
+        if request is None:
+            self.operation_failed.emit("Git returned status without a repository")
+            return
+        repository, request_id = request
+        if self._latest_status_request.get(repository) != request_id:
+            return
+        self._latest_status_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
             return
         if not result.succeeded:
             self.operation_failed.emit(result.error_text or "Could not read repository status")
@@ -249,9 +283,6 @@ class GitService(QObject):
         except (ValueError, RuntimeError) as error:
             self.operation_failed.emit(str(error))
             return
-        if repository is None:
-            self.operation_failed.emit("Git returned status without a repository")
-            return
         self.status_ready.emit(RepositoryStatusSnapshot(repository, status))
 
     @Slot(str)
@@ -259,7 +290,7 @@ class GitService(QObject):
         runner = self.sender()
         if not isinstance(runner, GitRunner):
             return
-        self._runners.discard(runner)
+        self._release_runner(runner)
         self._status_requests.pop(runner, None)
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
@@ -272,12 +303,18 @@ class GitService(QObject):
         if not isinstance(runner, GitRunner):
             self.operation_failed.emit("Git returned history from an unknown operation")
             return
-        self._runners.discard(runner)
         request = self._history_requests.pop(runner, None)
+        self._release_runner(runner)
         if request is None or not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected history result")
             return
-        repository, offset, limit = request
+        repository, offset, limit, request_id = request
+        if self._latest_history_request.get(repository) != request_id:
+            return
+        self._latest_history_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
         if not result.succeeded:
             self.operation_failed.emit(result.error_text or "Could not read commit history")
             return
@@ -295,16 +332,24 @@ class GitService(QObject):
         if not isinstance(runner, GitRunner):
             self.operation_failed.emit("Git returned a diff from an unknown operation")
             return
-        self._runners.discard(runner)
         request = self._diff_requests.pop(runner, None)
+        self._release_runner(runner)
         if request is None or not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected diff result")
             return
-        path, staged, accepts_difference = request
+        repository, path, staged, accepts_difference, request_id = request
+        key = (repository, path, staged)
+        if self._latest_diff_request.get(key) != request_id:
+            return
+        self._latest_diff_request.pop(key, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
         if not result.succeeded and not (accepts_difference and result.exit_code == 1):
             self.operation_failed.emit(result.error_text or "Could not read file diff")
             return
-        self.diff_ready.emit(parse_unified_diff(result.stdout, path, staged=staged))
+        diff = parse_unified_diff(result.stdout, path, staged=staged)
+        self.diff_ready.emit(DiffSnapshot(repository, diff))
 
     @Slot(object)
     def _handle_mutation(self, result: object) -> None:
@@ -312,10 +357,13 @@ class GitService(QObject):
         if not isinstance(runner, GitRunner):
             self.operation_failed.emit("Git returned a result from an unknown mutation")
             return
-        self._runners.discard(runner)
         path = self._mutation_requests.pop(runner, None)
+        self._release_runner(runner)
         if path is None or not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected mutation result")
+            return
+        if result.cancelled:
+            self.operation_cancelled.emit()
             return
         if not result.succeeded:
             self.operation_failed.emit(result.error_text or "Could not update staging area")

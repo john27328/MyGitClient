@@ -19,6 +19,7 @@ class GitResult:
     exit_code: int
     stdout: bytes
     stderr: bytes
+    cancelled: bool = False
 
     @property
     def succeeded(self) -> bool:
@@ -85,6 +86,12 @@ class CommitPage:
     commits: tuple[CommitSummary, ...]
     offset: int
     has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DiffSnapshot:
+    repository: Path
+    diff: UnifiedDiff
 
 
 DiffLineKind = Literal["header", "hunk", "addition", "deletion", "context", "metadata"]

@@ -26,6 +26,7 @@ class GitRunner(QObject):
         self._command: GitCommand | None = None
         self._stdout = bytearray()
         self._stderr = bytearray()
+        self._cancel_requested = False
 
         self._process.readyReadStandardOutput.connect(self._read_stdout)
         self._process.readyReadStandardError.connect(self._read_stderr)
@@ -43,6 +44,7 @@ class GitRunner(QObject):
         self._command = command
         self._stdout.clear()
         self._stderr.clear()
+        self._cancel_requested = False
         if command.working_directory is not None:
             self._process.setWorkingDirectory(str(command.working_directory))
 
@@ -62,6 +64,7 @@ class GitRunner(QObject):
         if not self.is_running:
             return
         logger.info("Cancelling git operation")
+        self._cancel_requested = True
         self._process.terminate()
         QTimer.singleShot(1500, self._kill_if_running)
 
@@ -85,9 +88,16 @@ class GitRunner(QObject):
         command = self._command
         if command is None:
             return
-        result = GitResult(command, exit_code, bytes(self._stdout), bytes(self._stderr))
+        result = GitResult(
+            command,
+            exit_code,
+            bytes(self._stdout),
+            bytes(self._stderr),
+            cancelled=self._cancel_requested,
+        )
         logger.info("Git operation %s finished with code %d", command.operation, exit_code)
         self._command = None
+        self._cancel_requested = False
         self.completed.emit(result)
 
     def _on_error(self, error: QProcess.ProcessError) -> None:

@@ -62,3 +62,20 @@ def test_runner_reads_status_from_real_repository(qtbot: QtBot, tmp_path: Path) 
         ("tracked.txt", "M"),
         ("new file.txt", "?"),
     }
+
+
+def test_runner_reports_user_cancellation(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    runner = GitRunner()
+    results: list[object] = []
+    runner.completed.connect(results.append)
+
+    runner.run(GitCommand(("cat-file", "--batch"), tmp_path, "wait for objects"))
+    qtbot.waitUntil(lambda: runner.is_running, timeout=5000)
+    with qtbot.waitSignal(runner.completed, timeout=5000):
+        runner.cancel()
+
+    assert len(results) == 1
+    result = results[0]
+    assert isinstance(result, GitResult)
+    assert result.cancelled
