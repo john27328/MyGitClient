@@ -747,7 +747,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer is QMessageBox.StandardButton.Yes:
+        if answer == QMessageBox.StandardButton.Yes:
             self._start_push(force_with_lease=True)
 
     def _start_push(self, *, force_with_lease: bool) -> None:

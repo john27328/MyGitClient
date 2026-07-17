@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QInputDialog,
     QLabel,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTabWidget,
@@ -88,6 +89,31 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     )
     assert not refresh_action.icon().isNull()
 
+    window.close()
+
+
+def test_force_push_menu_confirmation_starts_force_with_lease(
+    qapp: QApplication, monkeypatch: MonkeyPatch
+) -> None:
+    requested: list[bool] = []
+
+    def confirm(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
+        return QMessageBox.StandardButton.Yes
+
+    def record_push(_window: MainWindow, *, force_with_lease: bool) -> None:
+        requested.append(force_with_lease)
+
+    monkeypatch.setattr(QMessageBox, "warning", confirm)
+    monkeypatch.setattr(MainWindow, "_start_push", record_push)
+    settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "test", "push")
+    settings.clear()
+    window = MainWindow(settings, Theme.SYSTEM)
+    force_push = window.findChild(QAction, "forcePushAction")
+    assert force_push is not None
+
+    force_push.trigger()
+
+    assert requested == [True]
     window.close()
 
 
