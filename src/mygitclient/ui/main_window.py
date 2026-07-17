@@ -691,6 +691,9 @@ class MainWindow(QMainWindow):
         )
         self._pull_action.setText(pull_text)
         self._push_action.setText(push_text)
+        self._push_action.setIcon(
+            load_icon("force-push.svg" if push_requires_rewrite(status) else "push.svg")
+        )
         if status is None or status.branch.head is None:
             self._push_action.setToolTip("No checked-out branch to push")
             return
@@ -698,6 +701,12 @@ class MainWindow(QMainWindow):
         if branch.upstream is None:
             self._push_action.setToolTip(
                 f"Publish {branch.head} to origin and configure its upstream"
+            )
+        elif push_requires_rewrite(status):
+            self._push_action.setToolTip(
+                f"A normal push to {branch.upstream} will be rejected: the branches "
+                f"have diverged ({branch.ahead} ahead, {branch.behind} behind). "
+                "Pull/Rebase first, or use Force push with lease from the arrow menu."
             )
         else:
             self._push_action.setToolTip(
@@ -717,6 +726,16 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _push_repository(self) -> None:
+        if push_requires_rewrite(self._repository_status):
+            QMessageBox.information(
+                self,
+                "Normal push unavailable",
+                "The local and remote branches have diverged, so a normal push would "
+                "be rejected.\n\nPull with Rebase to preserve both histories, or choose "
+                "Force push with lease from the Push arrow menu to replace the remote "
+                "history safely.",
+            )
+            return
         self._start_push(force_with_lease=False)
 
     @Slot()
@@ -1257,10 +1276,19 @@ def sync_action_labels(
         push = "Push"
     elif branch.upstream is None:
         push = "Push · Publish"
+    elif branch.ahead and branch.behind:
+        push = f"Push ⚠ ↑{branch.ahead}"
     else:
         outgoing = f" ↑{branch.ahead}" if branch.ahead else ""
         push = f"Push{outgoing}"
     return pull, push
+
+
+def push_requires_rewrite(status: RepositoryStatus | None) -> bool:
+    if status is None:
+        return False
+    branch = status.branch
+    return branch.upstream is not None and branch.ahead > 0 and branch.behind > 0
 
 
 def _status_label(code: str) -> str:

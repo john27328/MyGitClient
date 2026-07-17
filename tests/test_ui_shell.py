@@ -24,7 +24,7 @@ from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import BranchStatus, RepositoryStatus
 from mygitclient.theme import Theme
-from mygitclient.ui.main_window import MainWindow, sync_action_labels
+from mygitclient.ui.main_window import MainWindow, push_requires_rewrite, sync_action_labels
 
 
 def test_main_window_is_created(qapp: QApplication) -> None:
@@ -71,7 +71,21 @@ def test_main_window_is_created(qapp: QApplication) -> None:
         autostash=True,
     )
     assert pull_label == "Pull ↓2 · Rebase · Stash"
-    assert push_label == "Push ↑3"
+    assert push_label == "Push ⚠ ↑3"
+    assert push_requires_rewrite(
+        RepositoryStatus(
+            branch=BranchStatus(
+                head="feature", upstream="origin/feature", ahead=3, behind=2
+            )
+        )
+    )
+    assert not push_requires_rewrite(
+        RepositoryStatus(
+            branch=BranchStatus(
+                head="feature", upstream="origin/feature", ahead=3, behind=0
+            )
+        )
+    )
     assert not refresh_action.icon().isNull()
 
     window.close()

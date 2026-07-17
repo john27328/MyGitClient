@@ -126,6 +126,7 @@
 - [x] Реализовать pull с явным выбором merge/rebase и опциональным autostash.
 - [x] Реализовать push и настройку upstream через origin.
 - [x] Показывать ahead/behind.
+- [x] Предупреждать о divergence, когда обычный push будет отклонён, и предлагать rebase или force-with-lease.
 - [x] Показывать текущую сетевую Git-операцию, блокировать дубли и давать Cancel.
 - [ ] Поддержать SSH, HTTPS, credential helpers, hooks и Git LFS через системный Git.
 - [x] Поддержать только безопасный `--force-with-lease` в основном UI.
