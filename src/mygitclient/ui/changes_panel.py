@@ -3,6 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QHBoxLayout,
     QLabel,
@@ -27,6 +28,7 @@ class ChangesPanel(QWidget):
         self.tree.setRootIsDecorated(False)
         self.tree.setMinimumWidth(280)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
 
         self.discard_action = QAction("Discard changes…", self.tree)
         self.discard_action.setObjectName("discardChangesAction")
@@ -34,7 +36,11 @@ class ChangesPanel(QWidget):
         self.ignore_action = QAction("Add to .gitignore", self.tree)
         self.ignore_action.setObjectName("ignoreFileAction")
         self.ignore_action.setEnabled(False)
+        self.stash_action = QAction("Stash selected changes", self.tree)
+        self.stash_action.setObjectName("stashSelectedAction")
+        self.stash_action.setEnabled(False)
         self.tree.addAction(self.discard_action)
+        self.tree.addAction(self.stash_action)
         self.tree.addAction(self.ignore_action)
 
         self.stage_all = QCheckBox("Stage all changes")

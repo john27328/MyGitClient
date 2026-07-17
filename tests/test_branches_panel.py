@@ -34,6 +34,10 @@ def test_branches_panel_groups_refs_and_emits_checkout(qtbot: QtBot) -> None:
     panel.checkout_requested.connect(requested.append)
 
     panel.tree.setCurrentItem(feature_item)
+    panel.tree.itemClicked.emit(feature_item, 0)
+    assert panel.checkout_button.isEnabled()
     panel.checkout_button.click()
 
     assert requested == [feature]
+    assert panel.autostash.objectName() == "checkoutAutostashCheckBox"
+    assert "double-click" in panel.hint.text()

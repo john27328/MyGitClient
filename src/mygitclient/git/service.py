@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from mygitclient.git.errors import format_git_error
 from mygitclient.git.models import (
     BranchInfo,
     CommitDiffSnapshot,
@@ -25,6 +27,15 @@ from mygitclient.git.parsers import (
     parse_unified_diff,
 )
 from mygitclient.git.runner import GitRunner
+
+
+@dataclass(slots=True)
+class _CheckoutWorkflow:
+    repository: Path
+    branch: BranchInfo
+    step: str
+    stashed: bool = False
+    pending_error: str | None = None
 
 
 class GitService(QObject):
@@ -55,6 +66,7 @@ class GitService(QObject):
         self._latest_commit_files_request: dict[Path, int] = {}
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_commit_diff_request: dict[Path, int] = {}
+        self._checkout_workflows: dict[GitRunner, _CheckoutWorkflow] = {}
 
     def request_branches(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
@@ -80,7 +92,22 @@ class GitService(QObject):
         )
         return runner
 
-    def request_checkout(self, repository: Path, branch: BranchInfo) -> GitRunner:
+    def request_checkout(
+        self, repository: Path, branch: BranchInfo, *, autostash: bool = False
+    ) -> GitRunner:
+        if autostash:
+            workflow = _CheckoutWorkflow(repository, branch, "stash")
+            return self._run_checkout_workflow(
+                workflow,
+                (
+                    "stash",
+                    "push",
+                    "-u",
+                    "-m",
+                    f"MyGitClient automatic stash before checkout {branch.name}",
+                ),
+                "stash changes before checkout",
+            )
         arguments = (
             ("switch", "--track", branch.name)
             if branch.remote
@@ -94,6 +121,20 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, repository, "checkout branch"))
         return runner
 
+    def _run_checkout_workflow(
+        self,
+        workflow: _CheckoutWorkflow,
+        arguments: tuple[str, ...],
+        operation: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._checkout_workflows[runner] = workflow
+        runner.completed.connect(self._handle_checkout_workflow)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, workflow.repository, operation))
+        return runner
+
     def request_create_branch(self, repository: Path, name: str) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
@@ -101,6 +142,20 @@ class GitService(QObject):
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(GitCommand(("switch", "-c", name), repository, "create branch"))
+        return runner
+
+    def request_pull(
+        self, repository: Path, *, rebase: bool, autostash: bool
+    ) -> GitRunner:
+        arguments = ["pull", "--rebase" if rebase else "--no-rebase"]
+        if autostash:
+            arguments.append("--autostash")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "pull"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(tuple(arguments), repository, "pull changes"))
         return runner
 
     def request_commit_files(self, repository: Path, commit_oid: str) -> GitRunner:
@@ -349,6 +404,31 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, repository, "discard file changes"))
         return runner
 
+    def request_stash_files(
+        self, repository: Path, files: tuple[FileStatus, ...]
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "stash"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "stash",
+                    "push",
+                    "-u",
+                    "-m",
+                    "MyGitClient selected files",
+                    "--",
+                    *(file.path for file in files),
+                ),
+                repository,
+                "stash selected files",
+            )
+        )
+        return runner
+
     def ignore_path(self, repository: Path, path: str) -> None:
         if "\n" in path or "\r" in path:
             self.operation_failed.emit("Paths containing newlines cannot be added to .gitignore")
@@ -419,8 +499,14 @@ class GitService(QObject):
         self._mutation_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
         self._branch_requests.pop(runner, None)
+        checkout = self._checkout_workflows.pop(runner, None)
         self._commit_files_requests.pop(runner, None)
         self._commit_diff_requests.pop(runner, None)
+        if checkout is not None:
+            self.operation_failed.emit(
+                f"Could not {checkout.step} during checkout: {message}"
+            )
+            return
         self.operation_failed.emit(message)
 
     @Slot(object)
@@ -479,6 +565,103 @@ class GitService(QObject):
             self.operation_failed.emit(str(error))
             return
         self.branches_ready.emit(snapshot)
+
+    @Slot(object)
+    def _handle_checkout_workflow(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown checkout workflow result")
+            return
+        workflow = self._checkout_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected checkout workflow result")
+            return
+        if result.cancelled:
+            if workflow.stashed:
+                self.operation_failed.emit(
+                    "Checkout was cancelled. The automatic stash was kept so no local "
+                    "changes are lost."
+                )
+            else:
+                self.operation_cancelled.emit()
+            return
+        if workflow.step == "stash":
+            if not result.succeeded:
+                self.operation_failed.emit(
+                    format_git_error(
+                        result.error_text, operation="stash local changes"
+                    )
+                )
+                return
+            workflow.stashed = b"No local changes to save" not in result.stdout
+            workflow.step = "verify-stash"
+            self._run_checkout_workflow(
+                workflow,
+                ("status", "--porcelain=v2", "-z"),
+                "verify automatic stash",
+            )
+            return
+        if workflow.step == "verify-stash":
+            if not result.succeeded:
+                self.operation_failed.emit(
+                    format_git_error(
+                        result.error_text, operation="verify automatic stash"
+                    )
+                )
+                return
+            if result.stdout:
+                stash_note = (
+                    " The automatic stash was kept so no local changes are lost."
+                    if workflow.stashed
+                    else ""
+                )
+                self.operation_failed.emit(
+                    "Checkout was not started because the working tree still contains "
+                    "changes after stashing. This can happen when .gitattributes or Git "
+                    "line-ending settings rewrite a file. Fix the repository attributes, "
+                    f"then refresh and try again.{stash_note}"
+                )
+                return
+            workflow.step = "checkout"
+            arguments = (
+                ("switch", "--track", workflow.branch.name)
+                if workflow.branch.remote
+                else ("switch", workflow.branch.name)
+            )
+            self._run_checkout_workflow(workflow, arguments, "checkout branch")
+            return
+        if workflow.step == "checkout":
+            if not result.succeeded:
+                workflow.pending_error = format_git_error(
+                    result.error_text, operation="checkout branch"
+                )
+            if workflow.stashed:
+                workflow.step = "restore"
+                self._run_checkout_workflow(
+                    workflow, ("stash", "pop"), "restore automatic stash"
+                )
+                return
+            if workflow.pending_error is not None:
+                self.operation_failed.emit(workflow.pending_error)
+            else:
+                self.mutation_ready.emit(f"branch:{workflow.branch.name}")
+            return
+        if not result.succeeded:
+            restore_error = format_git_error(
+                result.error_text, operation="restore automatic stash"
+            )
+            prefix = (
+                f"{workflow.pending_error}\n\n" if workflow.pending_error is not None else ""
+            )
+            self.operation_failed.emit(
+                f"{prefix}The automatic stash was kept because it could not be restored:\n"
+                f"{restore_error}"
+            )
+        elif workflow.pending_error is not None:
+            self.operation_failed.emit(workflow.pending_error)
+        else:
+            self.mutation_ready.emit(f"branch:{workflow.branch.name}")
 
     @Slot(object)
     def _handle_commit_files(self, result: object) -> None:
@@ -572,6 +755,10 @@ class GitService(QObject):
             self.operation_cancelled.emit()
             return
         if not result.succeeded:
-            self.operation_failed.emit(result.error_text or "Could not update staging area")
+            self.operation_failed.emit(
+                format_git_error(
+                    result.error_text, operation=result.command.operation
+                )
+            )
             return
         self.mutation_ready.emit(path)

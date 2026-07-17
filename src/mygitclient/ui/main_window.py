@@ -11,6 +11,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QComboBox,
     QFileDialog,
     QInputDialog,
     QLabel,
@@ -99,6 +101,7 @@ class MainWindow(QMainWindow):
         self._changes_container = self._changes_panel
         self._changes = self._changes_panel.tree
         self._discard_action = self._changes_panel.discard_action
+        self._stash_action = self._changes_panel.stash_action
         self._ignore_action = self._changes_panel.ignore_action
         self._stage_all = self._changes_panel.stage_all
         self._commit_message = self._changes_panel.commit_message
@@ -108,6 +111,7 @@ class MainWindow(QMainWindow):
         self._commit_error = self._changes_panel.commit_error
 
         self._discard_action.triggered.connect(self._discard_selected_file)
+        self._stash_action.triggered.connect(self._stash_selected_files)
         self._ignore_action.triggered.connect(self._ignore_selected_file)
         self._stage_all.stateChanged.connect(self._stage_all_changed)
         self._commit_message.textChanged.connect(self._update_commit_controls)
@@ -201,6 +205,18 @@ class MainWindow(QMainWindow):
         refresh_action.setShortcut("F5")
         refresh_action.triggered.connect(self._refresh_repository)
         toolbar.addAction(refresh_action)
+        self._pull_strategy = QComboBox()
+        self._pull_strategy.setObjectName("pullStrategyCombo")
+        self._pull_strategy.addItem("Pull (merge)", False)
+        self._pull_strategy.addItem("Pull (rebase)", True)
+        toolbar.addWidget(self._pull_strategy)
+        self._pull_autostash = QCheckBox("Auto-stash")
+        self._pull_autostash.setObjectName("pullAutostashCheckBox")
+        toolbar.addWidget(self._pull_autostash)
+        pull_action = QAction("Pull", self)
+        pull_action.setObjectName("pullAction")
+        pull_action.triggered.connect(self._pull_repository)
+        toolbar.addAction(pull_action)
         cancel_action = QAction("Cancel", self)
         cancel_action.setObjectName("cancelOperationsAction")
         cancel_action.triggered.connect(self._cancel_operations)
@@ -459,7 +475,9 @@ class MainWindow(QMainWindow):
             return
         self._branches_panel.setEnabled(False)
         self._status_label.setText(f"Checking out {value.name}…")
-        self._git.request_checkout(self._repository, value)
+        self._git.request_checkout(
+            self._repository, value, autostash=self._branches_panel.autostash.isChecked()
+        )
 
     @Slot()
     def _create_branch(self) -> None:
@@ -538,6 +556,20 @@ class MainWindow(QMainWindow):
             return
         self._status_label.setText(f"Refreshing {self._repository.name}…")
         self._status_runner = self._git.request_status(self._repository)
+
+    @Slot()
+    def _pull_repository(self) -> None:
+        if self._repository is None:
+            return
+        rebase = self._pull_strategy.currentData()
+        if not isinstance(rebase, bool):
+            return
+        self._status_label.setText("Pulling changes…")
+        self._git.request_pull(
+            self._repository,
+            rebase=rebase,
+            autostash=self._pull_autostash.isChecked(),
+        )
 
     @Slot()
     def _poll_repository(self) -> None:
@@ -701,6 +733,10 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Commit created")
         elif path.startswith("branch:"):
             self._status_label.setText(f"Checked out {path.removeprefix('branch:')}")
+        elif path == "pull":
+            self._status_label.setText("Pull completed")
+        elif path == "stash":
+            self._status_label.setText("Selected changes stashed")
         else:
             self._status_label.setText(f"Updated staging area for {path}")
         if self._repository is not None:
@@ -751,14 +787,20 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _update_file_actions(self) -> None:
-        selected_items = self._changes.selectedItems()
-        file: FileStatus | None = None
-        if selected_items:
-            value = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(value, FileStatus):
-                file = value
-        self._discard_action.setEnabled(file is not None and not file.unmerged)
+        files = self._selected_files()
+        file = files[0] if len(files) == 1 else None
+        safe_files = bool(files) and all(not selected.unmerged for selected in files)
+        self._discard_action.setEnabled(safe_files)
+        self._stash_action.setEnabled(safe_files)
         self._ignore_action.setEnabled(file is not None and file.index_status == "?")
+
+    def _selected_files(self) -> tuple[FileStatus, ...]:
+        files: list[FileStatus] = []
+        for item in self._changes.selectedItems():
+            value = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(value, FileStatus):
+                files.append(value)
+        return tuple(files)
 
     def _selected_file(self) -> FileStatus | None:
         selected_items = self._changes.selectedItems()
@@ -769,22 +811,34 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _discard_selected_file(self) -> None:
-        file = self._selected_file()
+        files = self._selected_files()
         repository = self._repository
-        if file is None or repository is None:
+        if repository is None or not files or any(file.unmerged for file in files):
             return
+        target = files[0].path if len(files) == 1 else f"{len(files)} selected files"
         answer = QMessageBox.question(
             self,
             "Discard changes",
-            f"Permanently discard all changes to {file.path}?",
+            f"Permanently discard all changes to {target}?",
             QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
         if answer is not QMessageBox.StandardButton.Discard:
             return
         self._changes_container.setEnabled(False)
-        self._status_label.setText(f"Discarding changes to {file.path}…")
-        self._git.request_discard(repository, file)
+        self._status_label.setText(f"Discarding changes to {target}…")
+        for file in files:
+            self._git.request_discard(repository, file)
+
+    @Slot()
+    def _stash_selected_files(self) -> None:
+        files = self._selected_files()
+        repository = self._repository
+        if repository is None or not files or any(file.unmerged for file in files):
+            return
+        self._changes_container.setEnabled(False)
+        self._status_label.setText(f"Stashing {len(files)} selected file(s)…")
+        self._git.request_stash_files(repository, files)
 
     @Slot()
     def _ignore_selected_file(self) -> None:

@@ -4,7 +4,9 @@ from typing import cast
 
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QCheckBox,
     QHBoxLayout,
+    QLabel,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -28,23 +30,33 @@ class BranchesPanel(QWidget):
         self.tree.setColumnWidth(1, 220)
         self.tree.setColumnWidth(2, 140)
         self.tree.currentItemChanged.connect(self._selection_changed)
+        self.tree.itemClicked.connect(self._item_clicked)
         self.tree.itemDoubleClicked.connect(self._item_activated)
 
-        self.checkout_button = QPushButton("Checkout")
+        self.checkout_button = QPushButton("Checkout selected")
         self.checkout_button.setObjectName("checkoutBranchButton")
         self.checkout_button.setEnabled(False)
+        self.checkout_button.setToolTip(
+            "Switch to the selected branch. You can also double-click a branch."
+        )
         self.checkout_button.clicked.connect(self._checkout_selected)
         self.create_button = QPushButton("New branch…")
         self.create_button.setObjectName("createBranchButton")
         self.create_button.clicked.connect(self.create_requested)
+        self.autostash = QCheckBox("Stash changes and restore after checkout")
+        self.autostash.setObjectName("checkoutAutostashCheckBox")
+        self.hint = QLabel("Select a branch, then click Checkout selected — or double-click it.")
+        self.hint.setObjectName("branchCheckoutHint")
 
         buttons = QHBoxLayout()
         buttons.addWidget(self.checkout_button)
         buttons.addWidget(self.create_button)
+        buttons.addWidget(self.autostash)
         buttons.addStretch(1)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addLayout(buttons)
+        layout.addWidget(self.hint)
         layout.addWidget(self.tree)
 
     def show_branches(self, snapshot: BranchesSnapshot) -> None:
@@ -75,6 +87,13 @@ class BranchesPanel(QWidget):
     def _selection_changed(self) -> None:
         branch = self._selected_branch()
         self.checkout_button.setEnabled(branch is not None and not branch.current)
+
+    @Slot(QTreeWidgetItem, int)
+    def _item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        branch = item.data(0, Qt.ItemDataRole.UserRole)
+        self.checkout_button.setEnabled(
+            isinstance(branch, BranchInfo) and not branch.current
+        )
 
     @Slot()
     def _checkout_selected(self) -> None:

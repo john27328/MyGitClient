@@ -199,15 +199,17 @@ def test_commit_and_amend_from_commit_panel(
     window.close()
 
 
-def test_discard_requires_confirmation_and_restores_file(
+def test_discard_requires_confirmation_and_restores_selected_files(
     qapp: QApplication, qtbot: QtBot, monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
     tracked = repository / "tracked.txt"
+    second = repository / "second.txt"
     tracked.write_text("before\n", encoding="utf-8")
-    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    second.write_text("second before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt", "second.txt"], cwd=repository, check=True)
     subprocess.run(
         [
             "git",
@@ -224,6 +226,7 @@ def test_discard_requires_confirmation_and_restores_file(
         capture_output=True,
     )
     tracked.write_text("after\n", encoding="utf-8")
+    second.write_text("second after\n", encoding="utf-8")
     settings = QSettings(str(tmp_path / "discard.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
@@ -231,10 +234,13 @@ def test_discard_requires_confirmation_and_restores_file(
     assert changes is not None
     assert discard is not None
     window.open_repository(repository)
-    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
-    item = changes.topLevelItem(0)
-    assert item is not None
-    changes.setCurrentItem(item)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 2, timeout=5000)
+    first_item = changes.topLevelItem(0)
+    second_item = changes.topLevelItem(1)
+    assert first_item is not None
+    assert second_item is not None
+    changes.setCurrentItem(first_item)
+    second_item.setSelected(True)
 
     def confirm_discard(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
         return QMessageBox.StandardButton.Discard
@@ -243,6 +249,11 @@ def test_discard_requires_confirmation_and_restores_file(
     discard.trigger()
     qtbot.waitUntil(
         lambda: tracked.exists() and tracked.read_text(encoding="utf-8") == "before\n",
+        timeout=5000,
+    )
+    qtbot.waitUntil(
+        lambda: second.exists()
+        and second.read_text(encoding="utf-8") == "second before\n",
         timeout=5000,
     )
     window.close()
