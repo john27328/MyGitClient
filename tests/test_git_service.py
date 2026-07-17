@@ -6,6 +6,7 @@ from pathlib import Path
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
+    AmendPreview,
     BranchesSnapshot,
     BranchInfo,
     CommitDiffSnapshot,
@@ -142,6 +143,44 @@ def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
     assert isinstance(diff, CommitDiffSnapshot)
     assert "-before" in diff.diff.text
     assert "+after" in diff.diff.text
+
+
+def test_amend_preview_includes_message_body_and_full_diff(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("content\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "Initial subject",
+        "-m",
+        "Initial description",
+    )
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    service = GitService()
+    results: list[object] = []
+    service.amend_preview_ready.connect(results.append)
+
+    with qtbot.waitSignal(service.amend_preview_ready, timeout=5000):
+        service.request_amend_preview(tmp_path, commit)
+
+    preview = results[0]
+    assert isinstance(preview, AmendPreview)
+    assert preview.commit_oid == commit
+    assert preview.subject == "Initial subject"
+    assert preview.description == "Initial description"
+    assert "diff --git a/tracked.txt b/tracked.txt" in preview.diff.text
+    assert "+content" in preview.diff.text
 
 
 def test_branches_can_be_loaded_checked_out_and_created(

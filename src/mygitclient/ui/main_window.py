@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient.git.models import (
+    AmendDiffSnapshot,
+    AmendPreview,
     BranchesSnapshot,
     BranchInfo,
     CommitDiffSnapshot,
@@ -70,6 +72,14 @@ class MainWindow(QMainWindow):
         self._commit_diff_visible = False
         self._generated_commit_message = ""
         self._generated_commit_description = ""
+        self._pre_amend_message = ""
+        self._pre_amend_description = ""
+        self._amend_commit_files: tuple[CommitFileChange, ...] = ()
+        self._amend_included_paths: frozenset[str] = frozenset()
+        self._amend_parent_oid: str | None = None
+        self._amend_render_pending = False
+        self._amend_files_loaded = False
+        self._amend_diff_loaded = False
         self._status_runner: GitRunner | None = None
         self._history_runner: GitRunner | None = None
         self._refresh_timer = QTimer(self)
@@ -115,7 +125,7 @@ class MainWindow(QMainWindow):
         self._ignore_action.triggered.connect(self._ignore_selected_file)
         self._stage_all.stateChanged.connect(self._stage_all_changed)
         self._commit_message.textChanged.connect(self._update_commit_controls)
-        self._amend.toggled.connect(self._update_commit_controls)
+        self._amend.toggled.connect(self._amend_toggled)
         self._commit_button.clicked.connect(self._create_commit)
         self._update_commit_controls()
 
@@ -300,6 +310,8 @@ class MainWindow(QMainWindow):
         self._theme_actions.triggered.connect(self._theme_selected)
 
     def _connect_services(self) -> None:
+        self._git.amend_diff_ready.connect(self._show_amend_diff)
+        self._git.amend_preview_ready.connect(self._show_amend_preview)
         self._git.status_ready.connect(self._show_status)
         self._git.history_ready.connect(self._show_history)
         self._git.branches_ready.connect(self._show_branches)
@@ -459,6 +471,16 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _show_commit_files(self, value: object) -> None:
         if not isinstance(value, CommitFilesSnapshot) or value.repository != self._repository:
+            return
+        status = self._repository_status
+        if (
+            self._amend.isChecked()
+            and status is not None
+            and status.branch.oid == value.commit_oid
+        ):
+            self._amend_commit_files = value.files
+            self._amend_files_loaded = True
+            self._refresh_amend_tree_if_ready(value.repository)
             return
         commit = self._history_panel.selected_commit
         if commit is None or commit.oid != value.commit_oid:
@@ -816,7 +838,9 @@ class MainWindow(QMainWindow):
             return
         self._status_runner = None
         status_value = value.status
-        if status_value == self._repository_status:
+        if status_value == self._repository_status and (
+            not self._amend.isChecked() or not self._amend_render_pending
+        ):
             self._request_diff(silent=True)
             return
         selected_path: str | None = None
@@ -833,7 +857,13 @@ class MainWindow(QMainWindow):
         stage_all_blocker = QSignalBlocker(self._stage_all)
         item_to_restore: QTreeWidgetItem | None = None
         self._changes.clear()
-        for file in status_value.files:
+        files_to_show = list(status_value.files)
+        if self._amend.isChecked():
+            visible_paths = {file.path for file in files_to_show}
+            for change in self._amend_commit_files:
+                if change.path not in visible_paths:
+                    files_to_show.append(FileStatus(change.path, ".", "."))
+        for file in files_to_show:
             index_label = "" if file.index_status == "?" else _status_label(file.index_status)
             item = QTreeWidgetItem(
                 [file.path, index_label, _status_label(file.worktree_status)]
@@ -846,7 +876,16 @@ class MainWindow(QMainWindow):
                 has_saved_selection = self._diff_view.has_saved_selection(
                     value.repository, file.path
                 )
-                if has_saved_selection or (file.is_staged and file.has_worktree_change):
+                if self._amend.isChecked():
+                    included = file.path in self._amend_included_paths
+                    if included and file.has_worktree_change:
+                        state = Qt.CheckState.PartiallyChecked
+                    elif included:
+                        state = Qt.CheckState.Checked
+                    else:
+                        state = Qt.CheckState.Unchecked
+                    item.setCheckState(0, state)
+                elif has_saved_selection or (file.is_staged and file.has_worktree_change):
                     item.setCheckState(0, Qt.CheckState.PartiallyChecked)
                 elif file.is_staged:
                     item.setCheckState(0, Qt.CheckState.Checked)
@@ -869,11 +908,13 @@ class MainWindow(QMainWindow):
         if item_to_restore is not None:
             self._changes.setCurrentItem(item_to_restore)
         elif (
-            self._diff_view.current_diff is not None
+            not self._amend.isChecked()
+            and self._diff_view.current_diff is not None
             and self._diff_view.current_diff.path not in changed_paths
         ):
             self._diff_view.reset()
         self._changes.resizeColumnToContents(0)
+        self._amend_render_pending = False
 
         branch = status_value.branch.head or "detached HEAD"
         repository_name = self._repository.name
@@ -917,8 +958,19 @@ class MainWindow(QMainWindow):
         file = item.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus) or file.unmerged:
             return
-        should_stage = item.checkState(0) is not Qt.CheckState.Unchecked
+        should_stage = item.checkState(0) != Qt.CheckState.Unchecked
         self._changes.setEnabled(False)
+        if self._amend.isChecked() and self._repository_status is not None:
+            commit_oid = self._repository_status.branch.oid
+            if commit_oid is not None:
+                self._git.request_amend_file(
+                    self._repository,
+                    commit_oid,
+                    self._amend_parent_oid,
+                    file.path,
+                    included=should_stage,
+                )
+                return
         action = "Staging" if should_stage else "Unstaging"
         self._status_label.setText(f"{action} {file.path}…")
         self._git.request_stage(self._repository, file, staged=should_stage)
@@ -929,7 +981,7 @@ class MainWindow(QMainWindow):
         status = self._repository_status
         if repository is None or status is None:
             return
-        should_stage = Qt.CheckState(state) is not Qt.CheckState.Unchecked
+        should_stage = Qt.CheckState(state) != Qt.CheckState.Unchecked
         self._changes_container.setEnabled(False)
         action = "Staging" if should_stage else "Unstaging"
         self._status_label.setText(f"{action} all changes…")
@@ -951,6 +1003,8 @@ class MainWindow(QMainWindow):
             self._commit_description.clear()
             self._generated_commit_message = ""
             self._generated_commit_description = ""
+            self._pre_amend_message = ""
+            self._pre_amend_description = ""
             self._amend.setChecked(False)
             self._status_label.setText("Commit created")
         elif path.startswith("branch:"):
@@ -970,6 +1024,13 @@ class MainWindow(QMainWindow):
         else:
             self._status_label.setText(f"Updated staging area for {path}")
         if self._repository is not None:
+            status = self._repository_status
+            if self._amend.isChecked() and status is not None and status.branch.oid:
+                self._git.request_amend_diff(
+                    self._repository,
+                    status.branch.oid,
+                    parent_oid=self._amend_parent_oid,
+                )
             self._status_runner = self._git.request_status(self._repository)
             self._git.request_branches(self._repository)
 
@@ -991,6 +1052,97 @@ class MainWindow(QMainWindow):
         else:
             self._commit_error.clear()
 
+    @Slot(bool)
+    def _amend_toggled(self, checked: bool) -> None:
+        self._update_commit_controls()
+        repository = self._repository
+        status = self._repository_status
+        if checked:
+            if repository is None or status is None or status.branch.oid is None:
+                return
+            self._pre_amend_message = self._commit_message.toPlainText()
+            self._pre_amend_description = self._commit_description.toPlainText()
+            self._status_label.setText("Loading the last commit for amend…")
+            self._git.request_amend_preview(repository, status.branch.oid)
+            self._amend_files_loaded = False
+            self._amend_diff_loaded = False
+            self._git.request_commit_files(repository, status.branch.oid)
+            return
+        message_blocker = QSignalBlocker(self._commit_message)
+        description_blocker = QSignalBlocker(self._commit_description)
+        self._commit_message.setPlainText(self._pre_amend_message)
+        self._commit_description.setPlainText(self._pre_amend_description)
+        del message_blocker, description_blocker
+        self._request_selected_diff()
+        self._amend_commit_files = ()
+        self._amend_included_paths = frozenset()
+        self._amend_parent_oid = None
+        self._amend_render_pending = False
+        self._amend_files_loaded = False
+        self._amend_diff_loaded = False
+        self._update_commit_controls()
+
+    @Slot(object)
+    def _show_amend_preview(self, value: object) -> None:
+        status = self._repository_status
+        if (
+            not isinstance(value, AmendPreview)
+            or value.repository != self._repository
+            or not self._amend.isChecked()
+            or status is None
+            or status.branch.oid != value.commit_oid
+        ):
+            return
+        message_blocker = QSignalBlocker(self._commit_message)
+        description_blocker = QSignalBlocker(self._commit_description)
+        self._commit_message.setPlainText(value.subject)
+        self._commit_description.setPlainText(value.description)
+        del message_blocker, description_blocker
+        self._amend_parent_oid = value.parent_oid
+        self._git.request_amend_diff(
+            value.repository, value.commit_oid, parent_oid=value.parent_oid
+        )
+        self._update_commit_controls()
+
+    @Slot(object)
+    def _show_amend_diff(self, value: object) -> None:
+        status = self._repository_status
+        if (
+            not isinstance(value, AmendDiffSnapshot)
+            or value.repository != self._repository
+            or not self._amend.isChecked()
+            or status is None
+            or status.branch.oid != value.commit_oid
+        ):
+            return
+        if value.path is None:
+            self._amend_included_paths = value.included_paths
+            self._amend_diff_loaded = True
+        version_blocker = QSignalBlocker(self._diff_version)
+        self._diff_version.clear()
+        label = f"Amend {value.commit_oid[:8]}"
+        if value.path is not None:
+            label = f"{label} В· {value.path}"
+        self._diff_version.addItem(label, None)
+        del version_blocker
+        self._diff_view.display_diff(
+            value.diff,
+            selection_key=None,
+            preserve_scroll=False,
+            whole_file_staged=False,
+            interactive=False,
+        )
+        self._status_label.setText(f"Showing commit {value.commit_oid[:8]} to amend")
+        if value.path is None:
+            self._refresh_amend_tree_if_ready(value.repository)
+
+    def _refresh_amend_tree_if_ready(self, repository: Path) -> None:
+        if not self._amend_files_loaded or not self._amend_diff_loaded:
+            return
+        self._amend_diff_loaded = False
+        self._amend_render_pending = True
+        self._status_runner = self._git.request_status(repository)
+
     @Slot()
     def _create_commit(self) -> None:
         repository = self._repository
@@ -1006,6 +1158,27 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _selected_file_changed(self) -> None:
+        if self._amend.isChecked():
+            selected_items = self._changes.selectedItems()
+            status = self._repository_status
+            if (
+                not selected_items
+                or self._repository is None
+                or status is None
+                or status.branch.oid is None
+            ):
+                return
+            file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
+            if not isinstance(file, FileStatus):
+                return
+            self._diff.setPlainText("Loading amend diffвЂ¦")
+            self._git.request_amend_diff(
+                self._repository,
+                status.branch.oid,
+                parent_oid=self._amend_parent_oid,
+                path=file.path,
+            )
+            return
         selected_items = self._changes.selectedItems()
         if not selected_items:
             return
@@ -1053,7 +1226,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )
-        if answer is not QMessageBox.StandardButton.Discard:
+        if answer != QMessageBox.StandardButton.Discard:
             return
         self._changes_container.setEnabled(False)
         self._status_label.setText(f"Discarding changes to {target}…")
@@ -1111,6 +1284,8 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _show_diff(self, value: object) -> None:
         if not isinstance(value, DiffSnapshot):
+            return
+        if self._amend.isChecked():
             return
         if value.repository != self._repository:
             return

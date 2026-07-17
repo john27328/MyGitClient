@@ -190,8 +190,51 @@ def test_commit_and_amend_from_commit_panel(
     )
     assert body.stdout.strip() == "- Add tracked.txt"
 
-    message.setPlainText("amended commit")
+    def first_item_has(*, working_status: str | None = None, partial: bool = False) -> bool:
+        item = changes.topLevelItem(0)
+        if changes.topLevelItemCount() != 1 or item is None:
+            return False
+        if working_status is not None and item.text(2) != working_status:
+            return False
+        return not partial or item.checkState(0) is Qt.CheckState.PartiallyChecked
+
+    tracked.write_text("content plus unstaged\n", encoding="utf-8")
+    qtbot.waitUntil(
+        lambda: first_item_has(working_status="Modified"),
+        timeout=5000,
+    )
     amend.setChecked(True)
+    qtbot.waitUntil(lambda: message.toPlainText() == "initial commit", timeout=5000)
+    assert description.toPlainText() == "- Add tracked.txt"
+    qtbot.waitUntil(lambda: "tracked.txt" in diff_panel.toPlainText(), timeout=5000)
+    assert "diff --git a/tracked.txt b/tracked.txt" in diff_panel.toPlainText()
+    assert "+content" in diff_panel.toPlainText()
+    qtbot.waitUntil(
+        lambda: first_item_has(partial=True),
+        timeout=5000,
+    )
+    amend_item = changes.topLevelItem(0)
+    assert amend_item is not None
+    assert amend_item.checkState(0) is Qt.CheckState.PartiallyChecked
+    assert diff_panel.toPlainText() != "Loading diff…"
+
+    assert changes.isEnabled()
+    amend_item.setCheckState(0, Qt.CheckState.Unchecked)
+    qtbot.waitUntil(
+        lambda: diff_panel.toPlainText() == "No textual changes to display.", timeout=5000
+    )
+    assert tracked.read_text(encoding="utf-8") == "content plus unstaged\n"
+
+    amend_item = changes.topLevelItem(0)
+    assert amend_item is not None
+    amend_item.setCheckState(0, Qt.CheckState.Checked)
+    qtbot.waitUntil(lambda: "+content plus unstaged" in diff_panel.toPlainText(), timeout=5000)
+    amend_item = changes.topLevelItem(0)
+    assert amend_item is not None
+    changes.setCurrentItem(amend_item)
+    qtbot.waitUntil(lambda: not diff_panel.toPlainText().startswith("Loading"), timeout=5000)
+    assert "diff --git a/tracked.txt b/tracked.txt" in diff_panel.toPlainText()
+    message.setPlainText("amended commit")
     assert commit_button.isEnabled()
     commit_button.click()
     qtbot.waitUntil(lambda: message.toPlainText() == "", timeout=5000)

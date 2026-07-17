@@ -128,6 +128,25 @@ class CommitDiffSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class AmendPreview:
+    repository: Path
+    commit_oid: str
+    parent_oid: str | None
+    subject: str
+    description: str
+    diff: UnifiedDiff
+
+
+@dataclass(frozen=True, slots=True)
+class AmendDiffSnapshot:
+    repository: Path
+    commit_oid: str
+    path: str | None
+    diff: UnifiedDiff
+    included_paths: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class DiffSnapshot:
     repository: Path
     diff: UnifiedDiff

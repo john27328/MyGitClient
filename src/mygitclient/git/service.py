@@ -8,6 +8,8 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from mygitclient.git.errors import format_git_error
 from mygitclient.git.models import (
+    AmendDiffSnapshot,
+    AmendPreview,
     BranchInfo,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
@@ -20,6 +22,8 @@ from mygitclient.git.models import (
     UnifiedDiff,
 )
 from mygitclient.git.parsers import (
+    diff_paths,
+    parse_amend_preview,
     parse_branches,
     parse_commit_files,
     parse_commit_log,
@@ -39,6 +43,8 @@ class _CheckoutWorkflow:
 
 
 class GitService(QObject):
+    amend_diff_ready = Signal(object)
+    amend_preview_ready = Signal(object)
     history_ready = Signal(object)
     branches_ready = Signal(object)
     commit_files_ready = Signal(object)
@@ -48,6 +54,8 @@ class GitService(QObject):
     mutation_ready = Signal(str)
     operation_cancelled = Signal()
     operation_failed = Signal(str)
+
+    _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -66,6 +74,12 @@ class GitService(QObject):
         self._latest_commit_files_request: dict[Path, int] = {}
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_commit_diff_request: dict[Path, int] = {}
+        self._amend_preview_requests: dict[GitRunner, tuple[Path, str, int]] = {}
+        self._latest_amend_preview_request: dict[Path, int] = {}
+        self._amend_diff_requests: dict[
+            GitRunner, tuple[Path, str, str | None, int]
+        ] = {}
+        self._latest_amend_diff_request: dict[tuple[Path, str | None], int] = {}
         self._checkout_workflows: dict[GitRunner, _CheckoutWorkflow] = {}
 
     def request_branches(self, repository: Path) -> GitRunner:
@@ -237,6 +251,87 @@ class GitService(QObject):
                 "read commit files",
             )
         )
+        return runner
+
+    def request_amend_preview(self, repository: Path, commit_oid: str) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_amend_preview_request[repository] = request_id
+        self._amend_preview_requests[runner] = (repository, commit_oid, request_id)
+        runner.completed.connect(self._handle_amend_preview)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "show",
+                    "--format=%B%x00%P%x00",
+                    "--root",
+                    "--no-ext-diff",
+                    "--no-color",
+                    commit_oid,
+                ),
+                repository,
+                "read amend preview",
+            )
+        )
+        return runner
+
+    def request_amend_diff(
+        self,
+        repository: Path,
+        commit_oid: str,
+        *,
+        parent_oid: str | None,
+        path: str | None = None,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        key = (repository, path)
+        self._latest_amend_diff_request[key] = request_id
+        self._amend_diff_requests[runner] = (repository, commit_oid, path, request_id)
+        runner.completed.connect(self._handle_amend_diff)
+        runner.failed_to_start.connect(self._handle_start_error)
+        arguments = [
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-color",
+            parent_oid or self._EMPTY_TREE,
+        ]
+        if path is not None:
+            arguments.extend(("--", path))
+        runner.run(
+            GitCommand(
+                tuple(arguments),
+                repository,
+                "read amended commit diff",
+            )
+        )
+        return runner
+
+    def request_amend_file(
+        self,
+        repository: Path,
+        commit_oid: str,
+        parent_oid: str | None,
+        path: str,
+        *,
+        included: bool,
+    ) -> GitRunner:
+        if included:
+            arguments = ("add", "-A", "--", path)
+            operation = "include file in amended commit"
+        else:
+            arguments = ("reset", "-q", parent_oid or self._EMPTY_TREE, "--", path)
+            operation = "exclude file from amended commit"
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, repository, operation))
         return runner
 
     def request_commit_diff(
@@ -747,6 +842,63 @@ class GitService(QObject):
             self.operation_failed.emit(str(error))
             return
         self.commit_files_ready.emit(CommitFilesSnapshot(repository, commit_oid, files))
+
+    @Slot(object)
+    def _handle_amend_preview(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an amend preview from an unknown operation")
+            return
+        request = self._amend_preview_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected amend preview result")
+            return
+        repository, commit_oid, request_id = request
+        if self._latest_amend_preview_request.get(repository) != request_id:
+            return
+        self._latest_amend_preview_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read amend preview")
+            return
+        try:
+            subject, parent_oid, description, diff = parse_amend_preview(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.amend_preview_ready.emit(
+            AmendPreview(repository, commit_oid, parent_oid, subject, description, diff)
+        )
+
+    @Slot(object)
+    def _handle_amend_diff(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an amend diff from an unknown operation")
+            return
+        request = self._amend_diff_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected amend diff result")
+            return
+        repository, commit_oid, path, request_id = request
+        key = (repository, path)
+        if self._latest_amend_diff_request.get(key) != request_id:
+            return
+        self._latest_amend_diff_request.pop(key, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read amend diff")
+            return
+        diff = parse_unified_diff(result.stdout, path or "HEAD", staged=True)
+        self.amend_diff_ready.emit(
+            AmendDiffSnapshot(repository, commit_oid, path, diff, diff_paths(diff))
+        )
 
     @Slot(object)
     def _handle_commit_diff(self, result: object) -> None:

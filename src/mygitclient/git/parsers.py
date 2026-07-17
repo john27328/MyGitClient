@@ -176,6 +176,40 @@ def parse_unified_diff(
     )
 
 
+def parse_amend_preview(
+    output: bytes, path: str = "HEAD"
+) -> tuple[str, str | None, str, UnifiedDiff]:
+    message_bytes, separator, remainder = output.partition(b"\x00")
+    parent_bytes, parent_separator, diff_bytes = remainder.partition(b"\x00")
+    if not separator or not parent_separator:
+        raise GitParseError("Malformed amend preview: missing metadata separator")
+    message = message_bytes.decode("utf-8", errors="replace").strip("\r\n")
+    subject, newline, description = message.partition("\n")
+    parent_text = parent_bytes.decode("ascii", errors="replace").strip()
+    parent_oid = parent_text.split()[0] if parent_text else None
+    diff = parse_unified_diff(diff_bytes.lstrip(b"\r\n"), path, staged=True)
+    return subject, parent_oid, description.strip("\r\n") if newline else "", diff
+
+
+def diff_paths(diff: UnifiedDiff) -> frozenset[str]:
+    paths: set[str] = set()
+    old_path: str | None = None
+    for line in diff.lines:
+        if line.text.startswith("--- "):
+            old_path = _diff_header_path(line.text[4:], "a/")
+        elif line.text.startswith("+++ "):
+            new_path = _diff_header_path(line.text[4:], "b/")
+            path = new_path if new_path != "/dev/null" else old_path
+            if path is not None and path != "/dev/null":
+                paths.add(path)
+    return frozenset(paths)
+
+
+def _diff_header_path(value: str, prefix: str) -> str:
+    path = value.split("\t", 1)[0]
+    return path.removeprefix(prefix)
+
+
 def _next_line(value: int | None) -> int | None:
     return None if value is None else value + 1
 

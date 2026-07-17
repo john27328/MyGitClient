@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -17,12 +18,47 @@ from PySide6.QtWidgets import (
 from mygitclient.resources import load_icon
 
 
+class ChangesTreeWidget(QTreeWidget):
+    """Keeps row selection separate from clicking a staging checkbox."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._suppressed_check_item: QTreeWidgetItem | None = None
+        self._suppressed_check_flags: Qt.ItemFlag | None = None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        item = self.itemAt(event.position().toPoint())
+        if item is not None and not self._checkbox_indicator_hit(item, event):
+            self._suppressed_check_item = item
+            self._suppressed_check_flags = item.flags()
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        try:
+            super().mouseReleaseEvent(event)
+        finally:
+            item = self._suppressed_check_item
+            flags = self._suppressed_check_flags
+            self._suppressed_check_item = None
+            self._suppressed_check_flags = None
+            if item is not None and flags is not None:
+                item.setFlags(flags)
+
+    def _checkbox_indicator_hit(
+        self, item: QTreeWidgetItem, event: QMouseEvent
+    ) -> bool:
+        if event.position().toPoint().x() > self.columnViewportPosition(0) + 28:
+            return False
+        return bool(item.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+
+
 class ChangesPanel(QWidget):
     """Owns the changed-files tree and commit form widgets."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.tree = QTreeWidget()
+        self.tree = ChangesTreeWidget()
         self.tree.setObjectName("changesTree")
         self.tree.setHeaderLabels(["File", "Index", "Working tree"])
         self.tree.setRootIsDecorated(False)
