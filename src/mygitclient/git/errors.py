@@ -17,6 +17,22 @@ def format_git_error(message: str, *, operation: str) -> str:
     ]
     errors = [line for line in lines if line not in attribute_warnings]
     text = "\n".join(errors) or f"Could not {operation}"
+    lowered = text.casefold()
+    if "non-fast-forward" in lowered or "fetch first" in lowered:
+        text = (
+            "Push was rejected because the remote branch contains changes you do not "
+            "have locally. Fetch, then Pull or Rebase, and push again."
+        )
+    elif "authentication failed" in lowered or "could not read username" in lowered:
+        text = (
+            "Authentication failed. Check the remote URL and your system Git credential "
+            "helper, then try again."
+        )
+    elif any(
+        marker in lowered
+        for marker in ("could not resolve host", "failed to connect", "network is unreachable")
+    ):
+        text = "Could not reach the remote. Check your network connection and remote URL."
     if "local changes to the following files would be overwritten by checkout" in text:
         marker = (
             "error: Your local changes to the following files would be overwritten "

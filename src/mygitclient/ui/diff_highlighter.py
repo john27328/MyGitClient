@@ -52,6 +52,8 @@ class DiffHighlighter(QSyntaxHighlighter):
         if self._python and kind in {"addition", "deletion", "context"}:
             keyword_format = QTextCharFormat()
             keyword_format.setForeground(colors["syntax"])
+            if background is not None:
+                keyword_format.setBackground(background)
             for match in re.finditer(
                 r"\b(?:as|class|def|else|except|False|for|from|if|import|None|return|True|try|with)\b",
                 text,

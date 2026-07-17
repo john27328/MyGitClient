@@ -16,3 +16,23 @@ def test_checkout_error_separates_local_changes_from_attribute_warning() -> None
     assert "• notes/manifest.json" in formatted
     assert "Repository warning" in formatted
     assert ".gitattributes:20" in formatted
+
+
+def test_push_rejection_suggests_fetch_and_pull() -> None:
+    formatted = format_git_error(
+        "! [rejected] main -> main (fetch first)\nerror: failed to push some refs",
+        operation="push changes",
+    )
+
+    assert "Fetch, then Pull or Rebase" in formatted
+
+
+def test_network_and_authentication_errors_are_understandable() -> None:
+    auth = format_git_error("fatal: Authentication failed", operation="fetch changes")
+    network = format_git_error(
+        "fatal: unable to access remote: Could not resolve host: example.invalid",
+        operation="fetch changes",
+    )
+
+    assert "credential helper" in auth
+    assert "Check your network connection" in network

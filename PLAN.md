@@ -126,9 +126,9 @@
 - [x] Реализовать pull с явным выбором merge/rebase и опциональным autostash.
 - [x] Реализовать push и настройку upstream через origin.
 - [x] Показывать ahead/behind.
-- [ ] Показывать прогресс сетевых Git-операций.
+- [x] Показывать текущую сетевую Git-операцию, блокировать дубли и давать Cancel.
 - [ ] Поддержать SSH, HTTPS, credential helpers, hooks и Git LFS через системный Git.
-- [ ] Поддержать только безопасный `--force-with-lease` в основном UI.
+- [x] Поддержать только безопасный `--force-with-lease` в основном UI.
 
 ## 6. Merge workspace — v0.3
 

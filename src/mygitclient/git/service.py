@@ -193,19 +193,24 @@ class GitService(QObject):
         return runner
 
     def request_push(
-        self, repository: Path, *, branch: str, set_upstream: bool
+        self,
+        repository: Path,
+        *,
+        branch: str,
+        set_upstream: bool,
+        force_with_lease: bool = False,
     ) -> GitRunner:
-        arguments = (
-            ("push", "--set-upstream", "origin", branch)
-            if set_upstream
-            else ("push",)
-        )
+        arguments = ["push"]
+        if force_with_lease:
+            arguments.append("--force-with-lease")
+        if set_upstream:
+            arguments.extend(("--set-upstream", "origin", branch))
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "push"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(arguments, repository, "push changes"))
+        runner.run(GitCommand(tuple(arguments), repository, "push changes"))
         return runner
 
     def request_commit_files(self, repository: Path, commit_oid: str) -> GitRunner:

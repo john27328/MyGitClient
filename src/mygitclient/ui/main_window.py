@@ -257,12 +257,25 @@ class MainWindow(QMainWindow):
         self._push_action = QAction(load_icon("push.svg"), "Push", self)
         self._push_action.setObjectName("pushAction")
         self._push_action.triggered.connect(self._push_repository)
-        toolbar.addAction(self._push_action)
+        push_menu = QMenu(self)
+        self._force_push_action = push_menu.addAction(
+            load_icon("force-push.svg"), "Force push with lease…"
+        )
+        self._force_push_action.setObjectName("forcePushAction")
+        self._force_push_action.triggered.connect(self._force_push_repository)
+        self._push_button = QToolButton()
+        self._push_button.setObjectName("pushButton")
+        self._push_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self._push_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._push_button.setDefaultAction(self._push_action)
+        self._push_button.setMenu(push_menu)
+        toolbar.addWidget(self._push_button)
         self._update_sync_indicators()
-        cancel_action = QAction(load_icon("cancel.svg"), "Cancel", self)
-        cancel_action.setObjectName("cancelOperationsAction")
-        cancel_action.triggered.connect(self._cancel_operations)
-        toolbar.addAction(cancel_action)
+        self._cancel_action = QAction(load_icon("cancel.svg"), "Cancel", self)
+        self._cancel_action.setObjectName("cancelOperationsAction")
+        self._cancel_action.triggered.connect(self._cancel_operations)
+        self._cancel_action.setEnabled(False)
+        toolbar.addAction(self._cancel_action)
         self.addToolBar(toolbar)
 
         workspace_menu = self.menuBar().addMenu("&Workspace")
@@ -638,6 +651,7 @@ class MainWindow(QMainWindow):
         if self._repository is None:
             return
         self._status_label.setText("Pulling changes…")
+        self._set_network_busy("Pull")
         self._git.request_pull(
             self._repository,
             rebase=self._pull_rebase_action.isChecked(),
@@ -698,10 +712,26 @@ class MainWindow(QMainWindow):
         if self._repository is None:
             return
         self._status_label.setText("Fetching changes…")
+        self._set_network_busy("Fetch")
         self._git.request_fetch(self._repository)
 
     @Slot()
     def _push_repository(self) -> None:
+        self._start_push(force_with_lease=False)
+
+    @Slot()
+    def _force_push_repository(self) -> None:
+        answer = QMessageBox.warning(
+            self,
+            "Force push with lease",
+            "Rewrite the remote branch only if it has not changed since the last fetch?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer is QMessageBox.StandardButton.Yes:
+            self._start_push(force_with_lease=True)
+
+    def _start_push(self, *, force_with_lease: bool) -> None:
         if self._repository is None or self._repository_status is None:
             return
         branch = self._repository_status.branch
@@ -718,9 +748,23 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         self._status_label.setText(f"Pushing {branch.head}…")
+        self._set_network_busy("Force push" if force_with_lease else "Push")
         self._git.request_push(
-            self._repository, branch=branch.head, set_upstream=set_upstream
+            self._repository,
+            branch=branch.head,
+            set_upstream=set_upstream,
+            force_with_lease=force_with_lease,
         )
+
+    def _set_network_busy(self, operation: str | None) -> None:
+        busy = operation is not None
+        self._fetch_action.setEnabled(not busy)
+        self._pull_action.setEnabled(not busy)
+        self._push_action.setEnabled(not busy)
+        self._force_push_action.setEnabled(not busy)
+        self._cancel_action.setEnabled(busy)
+        if operation is not None:
+            self._cancel_action.setToolTip(f"Cancel {operation}")
 
     @Slot()
     def _poll_repository(self) -> None:
@@ -738,6 +782,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _operation_cancelled(self) -> None:
+        self._set_network_busy(None)
         self._status_runner = None
         self._history_runner = None
         self._changes.setEnabled(True)
@@ -877,6 +922,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _mutation_finished(self, path: str) -> None:
+        if path in {"fetch", "pull", "push"}:
+            self._set_network_busy(None)
         self._changes.setEnabled(True)
         self._changes_container.setEnabled(True)
         self._branches_panel.setEnabled(True)
@@ -1151,6 +1198,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
+        self._set_network_busy(None)
         self._status_runner = None
         self._history_runner = None
         self._changes.setEnabled(True)
