@@ -10,8 +10,6 @@ from PySide6.QtGui import (
     QActionGroup,
     QCloseEvent,
     QColor,
-    QFont,
-    QFontDatabase,
     QFontMetrics,
     QTextCursor,
     QTextOption,
@@ -29,11 +27,9 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
-    QStackedWidget,
     QTabWidget,
     QTextEdit,
     QToolBar,
-    QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -54,9 +50,8 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
-from mygitclient.ui.diff_gutter import DiffGutter
-from mygitclient.ui.diff_highlighter import DiffHighlighter
 from mygitclient.ui.diff_selection import DiffSelection
+from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.workspace import (
     WorkspaceManager,
@@ -182,140 +177,37 @@ class MainWindow(QMainWindow):
         self._workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
         self._workspace_tabs.hide()
 
-        self._diff = QPlainTextEdit()
-        self._diff.setObjectName("diffPanel")
-        self._diff.setReadOnly(True)
-        self._diff.setPlaceholderText("Select a changed file to view its diff.")
-        self._diff.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self._diff.setMinimumWidth(400)
-        diff_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        diff_font.setStyleHint(QFont.StyleHint.Monospace)
-        diff_font.setFixedPitch(True)
-        self._diff.setFont(diff_font)
-        self._diff.hide()
-        self._diff_highlighter = DiffHighlighter(self._diff)
+        self._diff_view = DiffView(self._settings)
+        self._diff_container = self._diff_view
+        self._diff = self._diff_view.diff
+        self._diff_gutter = self._diff_view.gutter
+        self._diff_highlighter = self._diff_view.diff_highlighter
+        self._diff_version = self._diff_view.version_combo
+        self._diff_view_mode = self._diff_view.view_mode_combo
+        self._side_old = self._diff_view.side_old
+        self._side_new = self._diff_view.side_new
+        self._side_old_highlighter = self._diff_view.side_old_highlighter
+        self._side_new_highlighter = self._diff_view.side_new_highlighter
+        self._wrap_button = self._diff_view.wrap_button
+        self._whitespace_button = self._diff_view.whitespace_button
+        self._hunk_button = self._diff_view.hunk_button
+        self._selected_lines_button = self._diff_view.selected_lines_button
+        self._clear_lines_button = self._diff_view.clear_lines_button
+        self._diff_stack = self._diff_view.stack
+
         self._diff.cursorPositionChanged.connect(self._update_hunk_button)
-
-        self._diff_gutter = DiffGutter()
-        self._diff_gutter.setObjectName("diffGutter")
-        self._diff_gutter.setReadOnly(True)
-        self._diff_gutter.setFont(diff_font)
-        self._diff_gutter.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self._diff_gutter.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._diff_gutter.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._diff_gutter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self._diff_gutter.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._diff_gutter.setToolTip(
-            "Click a checkbox to select a changed line. "
-            "Click a hunk checkbox to select the whole block."
-        )
-        self._diff_gutter.setStyleSheet(
-            "QPlainTextEdit { background: palette(alternate-base); "
-            "color: palette(mid); border: 0; border-right: 1px solid palette(midlight); }"
-        )
-        self._diff_gutter.hide()
         self._diff_gutter.line_activated.connect(self._diff_gutter_line_activated)
-        self._diff.verticalScrollBar().valueChanged.connect(
-            self._diff_gutter.verticalScrollBar().setValue
-        )
-        self._diff_gutter.verticalScrollBar().valueChanged.connect(
-            self._diff.verticalScrollBar().setValue
-        )
-
-        self._diff_version = QComboBox()
-        self._diff_version.setObjectName("diffVersionCombo")
-        self._diff_version.setToolTip("Choose which version of the selected file to compare")
         self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
-        self._diff_version.hide()
-
-        self._diff_view_mode = QComboBox()
-        self._diff_view_mode.setObjectName("diffViewModeCombo")
-        self._diff_view_mode.addItem("Unified", "unified")
-        self._diff_view_mode.addItem("Side-by-side", "side-by-side")
-        saved_view = self._settings.value("diff/viewMode", "unified")
-        saved_index = self._diff_view_mode.findData(saved_view)
-        self._diff_view_mode.setCurrentIndex(max(saved_index, 0))
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
-        self._diff_view_mode.hide()
-
-        self._diff_container = QWidget()
-        self._diff_container.setObjectName("diffContainer")
-        diff_layout = QVBoxLayout(self._diff_container)
-        diff_layout.setContentsMargins(0, 0, 0, 0)
-        diff_body = QWidget()
-        diff_body_layout = QHBoxLayout(diff_body)
-        diff_body_layout.setContentsMargins(0, 0, 0, 0)
-        diff_body_layout.setSpacing(0)
-        diff_body_layout.addWidget(self._diff_gutter)
-        diff_body_layout.addWidget(self._diff, 1)
-
-        self._side_old = self._make_side_diff_editor("sideBySideOld")
-        self._side_new = self._make_side_diff_editor("sideBySideNew")
-        self._side_old_highlighter = DiffHighlighter(self._side_old)
-        self._side_new_highlighter = DiffHighlighter(self._side_new)
-        self._side_old.verticalScrollBar().valueChanged.connect(
-            self._side_new.verticalScrollBar().setValue
-        )
-        self._side_new.verticalScrollBar().valueChanged.connect(
-            self._side_old.verticalScrollBar().setValue
-        )
-        side_splitter = QSplitter(Qt.Orientation.Horizontal)
-        side_splitter.addWidget(self._side_old)
-        side_splitter.addWidget(self._side_new)
-        side_splitter.setSizes([500, 500])
-
-        self._wrap_button = QToolButton()
-        self._wrap_button.setObjectName("diffWrapButton")
-        self._wrap_button.setText("Wrap")
-        self._wrap_button.setCheckable(True)
-        self._wrap_button.setToolTip("Wrap long diff lines")
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
         self._wrap_button.toggled.connect(self._diff_wrap_changed)
-
-        self._whitespace_button = QToolButton()
-        self._whitespace_button.setObjectName("diffWhitespaceButton")
-        self._whitespace_button.setText("Whitespace")
-        self._whitespace_button.setCheckable(True)
-        self._whitespace_button.setToolTip("Show spaces and tab characters")
-        self._whitespace_button.setChecked(self._read_bool_setting("diff/showWhitespace"))
+        self._whitespace_button.setChecked(
+            self._read_bool_setting("diff/showWhitespace")
+        )
         self._whitespace_button.toggled.connect(self._diff_whitespace_changed)
-
-        self._hunk_button = QToolButton()
-        self._hunk_button.setObjectName("diffHunkButton")
-        self._hunk_button.setText("Stage hunk")
-        self._hunk_button.setToolTip("Stage the hunk under the cursor")
-        self._hunk_button.setEnabled(False)
         self._hunk_button.clicked.connect(self._apply_selected_hunk)
-
-        self._selected_lines_button = QToolButton()
-        self._selected_lines_button.setObjectName("diffSelectedLinesButton")
-        self._selected_lines_button.setText("Stage selected")
-        self._selected_lines_button.setEnabled(False)
         self._selected_lines_button.clicked.connect(self._apply_selected_lines)
-        self._clear_lines_button = QToolButton()
-        self._clear_lines_button.setObjectName("diffClearSelectionButton")
-        self._clear_lines_button.setText("Clear")
-        self._clear_lines_button.setEnabled(False)
         self._clear_lines_button.clicked.connect(self._clear_selected_lines)
-
-        toolbar = QWidget()
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        toolbar_layout.addWidget(self._diff_version, 1)
-        toolbar_layout.addWidget(self._wrap_button)
-        toolbar_layout.addWidget(self._whitespace_button)
-        toolbar_layout.addWidget(self._hunk_button)
-        toolbar_layout.addWidget(self._selected_lines_button)
-        toolbar_layout.addWidget(self._clear_lines_button)
-        toolbar_layout.addWidget(self._diff_view_mode)
-        diff_layout.insertWidget(0, toolbar)
-
-        self._diff_stack = QStackedWidget()
-        self._diff_stack.addWidget(diff_body)
-        self._diff_stack.addWidget(side_splitter)
-        self._diff_stack.setCurrentIndex(max(saved_index, 0))
-        diff_layout.addWidget(self._diff_stack)
-        self._diff_container.hide()
         self._apply_diff_wrap(self._wrap_button.isChecked())
         self._apply_diff_whitespace(self._whitespace_button.isChecked())
 
@@ -334,18 +226,6 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
         self.statusBar().addWidget(self._status_label)
-
-    @staticmethod
-    def _make_side_diff_editor(object_name: str) -> QPlainTextEdit:
-        editor = QPlainTextEdit()
-        editor.setObjectName(object_name)
-        editor.setReadOnly(True)
-        editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
-        font.setStyleHint(QFont.StyleHint.Monospace)
-        font.setFixedPitch(True)
-        editor.setFont(font)
-        return editor
 
     def _read_bool_setting(self, key: str) -> bool:
         value = self._settings.value(key, False)
