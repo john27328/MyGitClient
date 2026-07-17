@@ -20,6 +20,9 @@ dev = [
     "pytest-qt>=4.4",
     "ruff>=0.11",
 ]
+build = [
+    "pyinstaller>=6.16",
+]
 
 [project.scripts]
 mygitclient = "mygitclient.__main__:main"
@@ -42,4 +45,3 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 include = ["src", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-
