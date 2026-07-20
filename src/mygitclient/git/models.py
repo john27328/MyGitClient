@@ -58,6 +58,21 @@ class BranchesSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TagInfo:
+    name: str
+    object_oid: str
+    commit_oid: str
+    annotated: bool
+    subject: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TagsSnapshot:
+    repository: Path
+    tags: tuple[TagInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FileStatus:
     path: str
     index_status: str

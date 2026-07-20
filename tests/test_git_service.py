@@ -14,6 +14,7 @@ from mygitclient.git.models import (
     CommitPage,
     DiffSnapshot,
     FileStatus,
+    TagsSnapshot,
 )
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
@@ -232,6 +233,57 @@ def test_branches_can_be_loaded_checked_out_and_created(
         ["git", "branch", "--format=%(refname:short)"], cwd=tmp_path, text=True
     ).splitlines()
     assert "renamed-feature" not in branches
+
+
+def test_tags_can_be_loaded_created_and_deleted(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _git(tmp_path, "config", "user.name", "MyGitClient Test")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    )
+    _git(tmp_path, "tag", "lightweight")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "tag",
+        "-a",
+        "annotated",
+        "-m",
+        "Release notes",
+    )
+    service = GitService()
+    results: list[object] = []
+    service.tags_ready.connect(results.append)
+
+    with qtbot.waitSignal(service.tags_ready, timeout=5000):
+        service.request_tags(tmp_path)
+    snapshot = results[-1]
+    assert isinstance(snapshot, TagsSnapshot)
+    assert {tag.name: tag.annotated for tag in snapshot.tags} == {
+        "annotated": True,
+        "lightweight": False,
+    }
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_create_tag(tmp_path, "new-tag", "HEAD", "New release")
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_delete_tag(tmp_path, "new-tag")
+    tags = subprocess.check_output(
+        ["git", "tag", "--list"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert "new-tag" not in tags
 
 
 def test_force_delete_branch_with_unmerged_commit(qtbot: QtBot, tmp_path: Path) -> None:

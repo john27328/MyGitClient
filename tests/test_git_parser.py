@@ -7,8 +7,23 @@ from mygitclient.git.parsers import (
     parse_commit_files,
     parse_commit_log,
     parse_status_porcelain_v2,
+    parse_tags,
     parse_unified_diff,
 )
+
+
+def test_parse_tags_distinguishes_annotated_and_lightweight_tags() -> None:
+    snapshot = parse_tags(
+        Path("repository"),
+        b"v1.0\x00tag-object\x00tag\x00commit-one\x00Release 1.0\x1e\n"
+        b"snapshot\x00commit-two\x00commit\x00\x00Snapshot\x1e\n",
+    )
+
+    assert [(tag.name, tag.annotated, tag.commit_oid) for tag in snapshot.tags] == [
+        ("v1.0", True, "commit-one"),
+        ("snapshot", False, "commit-two"),
+    ]
+    assert snapshot.tags[0].subject == "Release 1.0"
 
 
 def test_parse_branches_includes_tracking_and_remote_refs() -> None:

@@ -19,6 +19,7 @@ from mygitclient.git.models import (
     GitCommand,
     GitResult,
     RepositoryStatusSnapshot,
+    TagsSnapshot,
     UnifiedDiff,
 )
 from mygitclient.git.operation_queue import GitOperationQueue
@@ -29,6 +30,7 @@ from mygitclient.git.parsers import (
     parse_commit_files,
     parse_commit_log,
     parse_status_porcelain_v2,
+    parse_tags,
     parse_unified_diff,
 )
 from mygitclient.git.runner import GitRunner
@@ -56,6 +58,7 @@ class GitService(QObject):
     operation_cancelled = Signal()
     operation_failed = Signal(str)
     queue_changed = Signal(object)
+    tags_ready = Signal(object)
 
     _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -72,6 +75,8 @@ class GitService(QObject):
         self._latest_history_request: dict[Path, int] = {}
         self._branch_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_branch_request: dict[Path, int] = {}
+        self._tag_requests: dict[GitRunner, tuple[Path, int]] = {}
+        self._latest_tag_request: dict[Path, int] = {}
         self._commit_files_requests: dict[GitRunner, tuple[Path, str, int]] = {}
         self._latest_commit_files_request: dict[Path, int] = {}
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
@@ -108,6 +113,69 @@ class GitService(QObject):
                 "read branches",
             )
         )
+        return runner
+
+    def request_tags(self, repository: Path) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_tag_request[repository] = request_id
+        self._tag_requests[runner] = (repository, request_id)
+        runner.completed.connect(self._handle_tags)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "for-each-ref",
+                    "--sort=-creatordate",
+                    "--format=%(refname:short)%00%(objectname)%00%(objecttype)%00"
+                    "%(*objectname)%00%(subject)%1e",
+                    "refs/tags",
+                ),
+                repository,
+                "read tags",
+            )
+        )
+        return runner
+
+    def request_create_tag(
+        self, repository: Path, name: str, target: str, message: str = ""
+    ) -> GitRunner:
+        arguments = (
+            ("tag", "-a", name, target, "-m", message)
+            if message
+            else ("tag", name, target)
+        )
+        return self._request_simple_mutation(
+            repository, arguments, "tags:changed", "create tag"
+        )
+
+    def request_delete_tag(self, repository: Path, name: str) -> GitRunner:
+        return self._request_simple_mutation(
+            repository, ("tag", "-d", name), "tags:changed", "delete tag"
+        )
+
+    def request_push_tag(self, repository: Path, name: str) -> GitRunner:
+        return self._request_simple_mutation(
+            repository,
+            ("push", "--progress", "origin", f"refs/tags/{name}"),
+            "tags:changed",
+            "push tag",
+        )
+
+    def _request_simple_mutation(
+        self,
+        repository: Path,
+        arguments: tuple[str, ...],
+        result: str,
+        operation: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = result
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
     def request_checkout(
@@ -681,6 +749,7 @@ class GitService(QObject):
         self._mutation_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
         self._branch_requests.pop(runner, None)
+        self._tag_requests.pop(runner, None)
         checkout = self._checkout_workflows.pop(runner, None)
         self._commit_files_requests.pop(runner, None)
         self._commit_diff_requests.pop(runner, None)
@@ -747,6 +816,34 @@ class GitService(QObject):
             self.operation_failed.emit(str(error))
             return
         self.branches_ready.emit(snapshot)
+
+    @Slot(object)
+    def _handle_tags(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned tags from an unknown operation")
+            return
+        request = self._tag_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected tag result")
+            return
+        repository, request_id = request
+        if self._latest_tag_request.get(repository) != request_id:
+            return
+        self._latest_tag_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read tags")
+            return
+        try:
+            snapshot: TagsSnapshot = parse_tags(repository, result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.tags_ready.emit(snapshot)
 
     @Slot(object)
     def _handle_checkout_workflow(self, result: object) -> None:

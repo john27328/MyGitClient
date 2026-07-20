@@ -16,6 +16,8 @@ from mygitclient.git.models import (
     DiffLineKind,
     FileStatus,
     RepositoryStatus,
+    TagInfo,
+    TagsSnapshot,
     UnifiedDiff,
 )
 
@@ -53,6 +55,31 @@ def parse_branches(repository: Path, output: bytes) -> BranchesSnapshot:
             )
         )
     return BranchesSnapshot(repository, tuple(branches))
+
+
+def parse_tags(repository: Path, output: bytes) -> TagsSnapshot:
+    tags: list[TagInfo] = []
+    for raw_record in output.split(b"\x1e"):
+        raw_record = raw_record.strip(b"\r\n")
+        if not raw_record:
+            continue
+        fields = raw_record.split(b"\x00")
+        if len(fields) != 5:
+            raise GitParseError("Malformed tag record")
+        name, object_oid, object_type, peeled_oid, subject = (
+            field.decode("utf-8", errors="surrogateescape") for field in fields
+        )
+        annotated = object_type == "tag"
+        tags.append(
+            TagInfo(
+                name=name,
+                object_oid=object_oid,
+                commit_oid=peeled_oid or object_oid,
+                annotated=annotated,
+                subject=subject,
+            )
+        )
+    return TagsSnapshot(repository, tuple(tags))
 
 
 def parse_commit_files(output: bytes) -> tuple[CommitFileChange, ...]:
