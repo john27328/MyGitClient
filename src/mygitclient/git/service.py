@@ -494,15 +494,17 @@ class GitService(QObject):
         arguments = ["commit"]
         if amend:
             arguments.append("--amend")
-        arguments.extend(("-m", message))
-        if description:
-            arguments.extend(("-m", description))
+        arguments.extend(("-F", "-"))
+        commit_text = message if not description else f"{message}\n\n{description}"
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "commit"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(tuple(arguments), repository, "create commit"))
+        runner.run(
+            GitCommand(tuple(arguments), repository, "create commit"),
+            f"{commit_text}\n".encode("utf-8", errors="surrogateescape"),
+        )
         return runner
 
     def request_hunk(

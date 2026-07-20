@@ -46,3 +46,7 @@ installed:
 The extracted archive can be started with `MyGitClient.exe` or
 `Launch MyGitClient.cmd`. Git itself is not bundled and must be installed on the target
 computer.
+
+The build script extracts the finished ZIP into a clean temporary build directory and
+starts that copy in smoke-test mode. It also writes a matching `.zip.sha256` checksum
+file into `artifacts/`.

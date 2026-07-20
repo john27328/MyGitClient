@@ -12,6 +12,7 @@ $workRoot = Join-Path $buildRoot "work"
 $specRoot = Join-Path $buildRoot "spec"
 $artifactsRoot = Join-Path $root "artifacts"
 $packageRoot = Join-Path $distRoot "MyGitClient"
+$smokeRoot = Join-Path $buildRoot "smoke"
 
 function Assert-ProjectPath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
@@ -80,7 +81,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $launcher = @'
 @echo off
-start "" "%~dp0MyGitClient.exe"
+start "" "%~dp0MyGitClient.exe" %*
 '@
 Set-Content -LiteralPath (Join-Path $packageRoot "Launch MyGitClient.cmd") `
     -Value $launcher -Encoding Ascii
@@ -103,5 +104,29 @@ if ($LASTEXITCODE -ne 0) {
     throw "Creating the portable ZIP archive failed."
 }
 
+New-Item -ItemType Directory -Force $smokeRoot | Out-Null
+Expand-Archive -LiteralPath $archivePath -DestinationPath $smokeRoot -Force
+$smokeExecutable = Join-Path $smokeRoot "MyGitClient\MyGitClient.exe"
+if (-not (Test-Path -LiteralPath $smokeExecutable)) {
+    throw "The portable archive does not contain MyGitClient.exe."
+}
+$smokeProcess = Start-Process -FilePath $smokeExecutable `
+    -ArgumentList "--smoke-test" `
+    -WorkingDirectory (Split-Path -Parent $smokeExecutable) `
+    -WindowStyle Hidden `
+    -PassThru
+if (-not $smokeProcess.WaitForExit(15000)) {
+    Stop-Process -Id $smokeProcess.Id -Force
+    throw "The extracted portable application did not finish its smoke test in 15 seconds."
+}
+if ($smokeProcess.ExitCode -ne 0) {
+    throw "The extracted portable application failed its smoke test with exit code $($smokeProcess.ExitCode)."
+}
+
+$hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+$hashPath = "$archivePath.sha256"
+Set-Content -LiteralPath $hashPath -Value "$hash  $archiveName" -Encoding Ascii
+
 $sizeMb = [math]::Round((Get-Item -LiteralPath $archivePath).Length / 1MB, 1)
-Write-Host "Built $archivePath ($sizeMb MB)"
+Write-Host "Built and smoke-tested $archivePath ($sizeMb MB)"
+Write-Host "SHA-256: $hash"

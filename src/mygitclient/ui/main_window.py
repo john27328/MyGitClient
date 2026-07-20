@@ -47,6 +47,7 @@ from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
 from mygitclient.ui.branches_panel import BranchesPanel
 from mygitclient.ui.changes_panel import ChangesPanel
+from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.repositories_panel import RepositoriesPanel
@@ -927,16 +928,7 @@ class MainWindow(QMainWindow):
     def _update_generated_commit_text(self, status: RepositoryStatus) -> None:
         staged = [file for file in status.files if file.is_staged]
         changes = [(_commit_change_label(file), file.path) for file in staged]
-        if len(changes) == 1:
-            action, path = changes[0]
-            message = f"{action} {path}"
-        elif changes:
-            actions = {action for action, _path in changes}
-            action = actions.pop() if len(actions) == 1 else "Update"
-            message = f"{action} {len(changes)} files"
-        else:
-            message = ""
-        description = "\n".join(f"- {action} {path}" for action, path in changes)
+        message, description = generated_commit_text(changes)
 
         current_message = self._commit_message.toPlainText()
         if not current_message or current_message == self._generated_commit_message:
