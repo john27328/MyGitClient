@@ -23,6 +23,14 @@ pytest
 ```
 # MyGitClient
 
+## Branches
+
+- `develop` is the working branch for ongoing development.
+- `master` contains release-ready code only. Changes reach it through a reviewed merge
+  from `develop`.
+- Version tags such as `v0.1.0` are created from `master` and trigger the portable
+  Windows build.
+
 ## Portable Windows build
 
 Run from PowerShell:
@@ -50,3 +58,10 @@ computer.
 The build script extracts the finished ZIP into a clean temporary build directory and
 starts that copy in smoke-test mode. It also writes a matching `.zip.sha256` checksum
 file into `artifacts/`.
+
+### GitHub Actions
+
+The `Windows portable` workflow builds and smoke-tests the same archive on a clean
+Windows runner. Run it manually from the Actions page, or push a tag whose name starts
+with `v` (for example, `v0.1.0`). The workflow stores the ZIP and its SHA-256 checksum
+as the `MyGitClient-windows-portable` workflow artifact.

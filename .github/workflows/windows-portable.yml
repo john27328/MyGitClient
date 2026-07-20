@@ -1,0 +1,32 @@
+name: Windows portable
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build and smoke-test portable archive
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Python python
+      - name: Upload portable archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyGitClient-windows-portable
+          path: |
+            artifacts/*.zip
+            artifacts/*.zip.sha256
+          if-no-files-found: error
+          compression-level: 0

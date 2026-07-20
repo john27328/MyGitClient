@@ -1,7 +1,9 @@
 name: CI
 
 on:
-  # Automatic push and pull_request runs are temporarily disabled.
+  push:
+    branches: [master, develop]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -14,8 +16,8 @@ jobs:
     env:
       QT_QPA_PLATFORM: ${{ startsWith(matrix.os, 'ubuntu') && 'offscreen' || '' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
