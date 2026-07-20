@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import (
     QCheckBox,
     QPlainTextEdit,
@@ -36,12 +36,14 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
 def test_clicking_file_text_does_not_toggle_checkbox(qtbot: QtBot) -> None:
     tree = ChangesTreeWidget()
     tree.setHeaderLabels(["File", "Index", "Working tree"])
+    tree.setRootIsDecorated(False)
     tree.resize(500, 200)
     item = QTreeWidgetItem(["src/example.py", "", "Modified"])
     item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
     item.setCheckState(0, Qt.CheckState.PartiallyChecked)
     tree.addTopLevelItem(item)
     tree.show()
+    item_changed = QSignalSpy(tree.itemChanged)
 
     rect = tree.visualItemRect(item)
     QTest.mouseClick(
@@ -52,4 +54,15 @@ def test_clicking_file_text_does_not_toggle_checkbox(qtbot: QtBot) -> None:
 
     assert tree.currentItem() is item
     assert item.checkState(0) is Qt.CheckState.PartiallyChecked
+    assert item_changed.count() == 0
+
+    indicator = tree.indicator_rect(item)
+    QTest.mouseClick(
+        tree.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=indicator.center(),
+    )
+
+    assert item.checkState(0) is Qt.CheckState.Checked
+    assert item_changed.count() == 1
     tree.close()

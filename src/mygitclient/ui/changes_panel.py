@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QAction, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QStyle,
+    QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -23,34 +25,42 @@ class ChangesTreeWidget(QTreeWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._suppressed_check_item: QTreeWidgetItem | None = None
-        self._suppressed_check_flags: Qt.ItemFlag | None = None
+        self._checkbox_pressed = False
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         item = self.itemAt(event.position().toPoint())
-        if item is not None and not self._checkbox_indicator_hit(item, event):
-            self._suppressed_check_item = item
-            self._suppressed_check_flags = item.flags()
-            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+        if item is not None and self.indicator_rect(item).contains(
+            event.position().toPoint()
+        ):
+            current = item.checkState(0)
+            item.setCheckState(
+                0,
+                Qt.CheckState.Unchecked
+                if current == Qt.CheckState.Checked
+                else Qt.CheckState.Checked,
+            )
+            self._checkbox_pressed = True
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        try:
-            super().mouseReleaseEvent(event)
-        finally:
-            item = self._suppressed_check_item
-            flags = self._suppressed_check_flags
-            self._suppressed_check_item = None
-            self._suppressed_check_flags = None
-            if item is not None and flags is not None:
-                item.setFlags(flags)
+        if self._checkbox_pressed:
+            self._checkbox_pressed = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
-    def _checkbox_indicator_hit(
-        self, item: QTreeWidgetItem, event: QMouseEvent
-    ) -> bool:
-        if event.position().toPoint().x() > self.columnViewportPosition(0) + 28:
-            return False
-        return bool(item.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    def indicator_rect(self, item: QTreeWidgetItem) -> QRect:
+        option = QStyleOptionViewItem()
+        option.initFrom(self)
+        option.rect = self.visualItemRect(item)
+        option.features |= QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        return self.style().subElementRect(
+            QStyle.SubElement.SE_ItemViewItemCheckIndicator,
+            option,
+            self,
+        )
 
 
 class ChangesPanel(QWidget):
