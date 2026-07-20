@@ -6,7 +6,12 @@ from pathlib import Path
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import GitCommand
-from mygitclient.git.operation_queue import GitOperationQueue, OperationQueueSnapshot
+from mygitclient.git.operation_queue import (
+    GitOperationQueue,
+    OperationQueueSnapshot,
+    QueuedOperation,
+    sanitize_operation_output,
+)
 from mygitclient.git.runner import GitRunner
 
 
@@ -66,3 +71,20 @@ def test_workflow_continuation_runs_before_other_pending_mutations(
 
     qtbot.waitUntil(lambda: len(started) == 3, timeout=5000)
     assert started == ["workflow start", "workflow continuation", "ordinary mutation"]
+
+
+def test_operation_output_is_sanitized_and_preview_uses_latest_progress_line(
+    tmp_path: Path,
+) -> None:
+    output = sanitize_operation_output(
+        "Authorization: Bearer secret\n"
+        "Fetching https://user:token@example.com/repository\n"
+        "Writing objects: 42%\rWriting objects: 87%"
+    )
+    operation = QueuedOperation(1, "push changes", tmp_path, output)
+
+    assert "secret" not in output
+    assert "token" not in output
+    assert "Authorization: ***" in output
+    assert "https://***@example.com/repository" in output
+    assert operation.output_preview == "Writing objects: 87%"

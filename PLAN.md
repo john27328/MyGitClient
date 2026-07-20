@@ -134,7 +134,8 @@
 - [x] Показывать ahead/behind.
 - [x] Предупреждать о divergence, когда обычный push будет отклонён, и предлагать rebase или force-with-lease.
 - [x] Показывать текущую сетевую Git-операцию, блокировать дубли и давать Cancel.
-- [ ] Показывать фазу и длительность долгой сетевой операции в toolbar/status bar.
+- [x] Показывать фазу и длительность долгой Git-операции в toolbar/status bar.
+- [x] Показывать очищенный от credentials живой stdout/stderr для операций очереди.
 - [ ] Поддержать SSH, HTTPS, credential helpers, hooks и Git LFS через системный Git.
 - [x] Поддержать только безопасный `--force-with-lease` в основном UI.
 

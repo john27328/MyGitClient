@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import deque
 from dataclasses import dataclass
 from itertools import count
@@ -16,6 +17,12 @@ class QueuedOperation:
     operation_id: int
     operation: str
     repository: Path
+    output: str = ""
+
+    @property
+    def output_preview(self) -> str:
+        lines = [line.strip() for line in self.output.replace("\r", "\n").splitlines()]
+        return next((line for line in reversed(lines) if line), "Waiting for output…")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,11 +37,14 @@ class _QueueEntry:
     runner: GitRunner
     command: GitCommand
     input_data: bytes | None
+    output: str = ""
 
     @property
     def operation(self) -> QueuedOperation:
         repository = self.command.working_directory or Path()
-        return QueuedOperation(self.operation_id, self.command.operation, repository)
+        return QueuedOperation(
+            self.operation_id, self.command.operation, repository, self.output
+        )
 
 
 class GitOperationQueue(QObject):
@@ -57,6 +67,7 @@ class GitOperationQueue(QObject):
         entry = _QueueEntry(next(self._operation_ids), runner, command, input_data)
         runner.completed.connect(self._operation_finished)
         runner.failed_to_start.connect(self._operation_failed_to_start)
+        runner.output_available.connect(self._output_available)
         if continuation:
             self._pending.appendleft(entry)
         else:
@@ -94,6 +105,17 @@ class GitOperationQueue(QObject):
     def _operation_failed_to_start(self, _message: str) -> None:
         self._finish_sender()
 
+    @Slot(bytes, bytes)
+    def _output_available(self, stdout: bytes, stderr: bytes) -> None:
+        sender = self.sender()
+        if self._active is None or sender is not self._active.runner:
+            return
+        chunk = (stdout + stderr).decode("utf-8", errors="replace")
+        self._active.output = sanitize_operation_output(
+            f"{self._active.output}{chunk}"[-32_768:]
+        )
+        self._publish()
+
     def _finish_sender(self) -> None:
         sender = self.sender()
         if self._active is None or sender is not self._active.runner:
@@ -109,3 +131,12 @@ class GitOperationQueue(QObject):
                 tuple(entry.operation for entry in self._pending),
             )
         )
+
+
+_URL_CREDENTIALS = re.compile(r"(?i)(https?://)[^/@\s]+@")
+_AUTHORIZATION = re.compile(r"(?im)^(authorization:\s*).+$")
+
+
+def sanitize_operation_output(value: str) -> str:
+    value = _URL_CREDENTIALS.sub(r"\1***@", value)
+    return _AUTHORIZATION.sub(r"\1***", value)

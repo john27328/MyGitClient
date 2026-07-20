@@ -3,7 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QByteArray, QSettings, QSignalBlocker, Qt, QTimer, Slot
+from PySide6.QtCore import (
+    QByteArray,
+    QElapsedTimer,
+    QSettings,
+    QSignalBlocker,
+    Qt,
+    QTimer,
+    Slot,
+)
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -41,7 +49,7 @@ from mygitclient.git.models import (
     RepositoryStatusSnapshot,
     UnifiedDiff,
 )
-from mygitclient.git.operation_queue import OperationQueueSnapshot
+from mygitclient.git.operation_queue import OperationQueueSnapshot, QueuedOperation
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
@@ -51,6 +59,7 @@ from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
+from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
 from mygitclient.workspace import (
     LinkedRepositoriesSnapshot,
@@ -84,6 +93,14 @@ class MainWindow(QMainWindow):
         self._amend_diff_loaded = False
         self._status_runner: GitRunner | None = None
         self._history_runner: GitRunner | None = None
+        self._active_queue_operation: QueuedOperation | None = None
+        self._queued_operation_count = 0
+        self._queue_elapsed = QElapsedTimer()
+        self._known_queue_operations: dict[int, QueuedOperation] = {}
+        self._operation_output_dialogs: dict[int, OperationOutputDialog] = {}
+        self._queue_duration_timer = QTimer(self)
+        self._queue_duration_timer.setInterval(1000)
+        self._queue_duration_timer.timeout.connect(self._update_queue_duration)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(1500)
         self._refresh_timer.timeout.connect(self._poll_repository)
@@ -818,26 +835,63 @@ class MainWindow(QMainWindow):
         if not isinstance(value, OperationQueueSnapshot):
             return
         operations = (() if value.active is None else (value.active,)) + value.pending
+        previous_id = (
+            self._active_queue_operation.operation_id
+            if self._active_queue_operation is not None
+            else None
+        )
+        self._active_queue_operation = value.active
+        self._queued_operation_count = len(value.pending)
+        if value.active is None:
+            self._queue_duration_timer.stop()
+            self._queue_elapsed.invalidate()
+        elif value.active.operation_id != previous_id:
+            self._queue_elapsed.start()
+            self._queue_duration_timer.start()
         self._operation_queue_menu.clear()
         for index, operation in enumerate(operations):
+            self._known_queue_operations[operation.operation_id] = operation
             prefix = (
-                "Cancel running"
+                "Running"
                 if index == 0 and value.active is not None
-                else "Remove queued"
+                else "Queued"
             )
-            action = self._operation_queue_menu.addAction(
-                f"{prefix}: {operation.operation} — {operation.repository.name}"
+            operation_menu = self._operation_queue_menu.addMenu(
+                load_icon(_queue_operation_icon(operation.operation)),
+                f"{prefix}: {operation.operation} — {operation.repository.name}",
             )
-            action.setIcon(load_icon(_queue_operation_icon(operation.operation)))
-            action.setData(operation.operation_id)
-            action.triggered.connect(self._cancel_queue_action)
-        count = len(operations)
-        self._cancel_action.setText(f"Queue {count}" if count else "Queue")
+            preview = operation_menu.addAction(operation.output_preview)
+            preview.setEnabled(False)
+            output_action = operation_menu.addAction("Show output…")
+            output_action.setData(operation.operation_id)
+            output_action.triggered.connect(self._show_queue_output)
+            cancel_action = operation_menu.addAction(
+                "Cancel operation"
+                if index == 0 and value.active is not None
+                else "Remove from queue"
+            )
+            cancel_action.setIcon(load_icon("cancel.svg"))
+            cancel_action.setData(operation.operation_id)
+            cancel_action.triggered.connect(self._cancel_queue_action)
+            dialog = self._operation_output_dialogs.get(operation.operation_id)
+            if dialog is not None:
+                dialog.update_output(operation.output_preview, operation.output)
         self._cancel_action.setEnabled(bool(operations))
-        if value.active is not None:
-            self._status_label.setText(
-                f"{value.active.operation.title()} · {len(value.pending)} queued"
-            )
+        self._update_queue_duration()
+
+    @Slot()
+    def _update_queue_duration(self) -> None:
+        operation = self._active_queue_operation
+        if operation is None or not self._queue_elapsed.isValid():
+            self._cancel_action.setText("Queue")
+            return
+        duration = format_operation_duration(self._queue_elapsed.elapsed())
+        total = self._queued_operation_count + 1
+        self._cancel_action.setText(f"Queue {total} · {duration}")
+        self._status_label.setText(
+            f"{operation.operation.title()} · {duration} · "
+            f"{self._queued_operation_count} queued"
+        )
 
     @Slot()
     def _cancel_queue_action(self) -> None:
@@ -847,6 +901,39 @@ class MainWindow(QMainWindow):
         operation_id = action.data()
         if isinstance(operation_id, int):
             self._git.cancel_operation(operation_id)
+
+    @Slot()
+    def _show_queue_output(self) -> None:
+        action = self.sender()
+        if not isinstance(action, QAction):
+            return
+        operation_id = action.data()
+        if not isinstance(operation_id, int):
+            return
+        operation = self._known_queue_operations.get(operation_id)
+        if operation is None:
+            return
+        dialog = self._operation_output_dialogs.get(operation_id)
+        if dialog is None:
+            dialog = OperationOutputDialog(
+                f"{operation.operation.title()} — {operation.repository.name}", self
+            )
+            dialog.setProperty("operationId", operation_id)
+            dialog.finished.connect(self._operation_output_closed)
+            self._operation_output_dialogs[operation_id] = dialog
+        dialog.update_output(operation.output_preview, operation.output)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    @Slot(int)
+    def _operation_output_closed(self, _result: int) -> None:
+        dialog = self.sender()
+        if not isinstance(dialog, OperationOutputDialog):
+            return
+        operation_id = dialog.property("operationId")
+        if isinstance(operation_id, int):
+            self._operation_output_dialogs.pop(operation_id, None)
 
     @Slot()
     def _operation_cancelled(self) -> None:
@@ -1505,6 +1592,15 @@ def _queue_operation_icon(operation: str) -> str:
     if "stash" in lowered:
         return "autostash.svg"
     return "refresh.svg"
+
+
+def format_operation_duration(milliseconds: int) -> str:
+    seconds = max(0, milliseconds // 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
 
 
 def _status_label(code: str) -> str:

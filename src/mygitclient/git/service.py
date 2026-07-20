@@ -202,7 +202,7 @@ class GitService(QObject):
     def request_pull(
         self, repository: Path, *, rebase: bool, autostash: bool
     ) -> GitRunner:
-        arguments = ["pull", "--rebase" if rebase else "--no-rebase"]
+        arguments = ["pull", "--progress", "--rebase" if rebase else "--no-rebase"]
         if autostash:
             arguments.append("--autostash")
         runner = GitRunner(parent=self)
@@ -222,7 +222,8 @@ class GitService(QObject):
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
-            runner, GitCommand(("fetch", "--prune"), repository, "fetch changes")
+            runner,
+            GitCommand(("fetch", "--progress", "--prune"), repository, "fetch changes"),
         )
         return runner
 
@@ -234,7 +235,7 @@ class GitService(QObject):
         set_upstream: bool,
         force_with_lease: bool = False,
     ) -> GitRunner:
-        arguments = ["push"]
+        arguments = ["push", "--progress"]
         if force_with_lease:
             arguments.append("--force-with-lease")
         if set_upstream:
