@@ -34,3 +34,35 @@ def test_network_operations_run_in_order_and_pending_operation_can_be_removed(
     assert snapshots[-1].pending == ()
     assert len(second_results) == 1
     qtbot.waitUntil(lambda: snapshots[-1].active is None, timeout=5000)
+
+
+def test_workflow_continuation_runs_before_other_pending_mutations(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    queue = GitOperationQueue()
+    first = GitRunner()
+    second = GitRunner()
+    continuation = GitRunner()
+    started: list[str] = []
+
+    def record_started(command: object) -> None:
+        assert isinstance(command, GitCommand)
+        started.append(command.operation)
+
+    for runner in (first, second, continuation):
+        runner.started.connect(record_started)
+
+    def enqueue_continuation(_result: object) -> None:
+        queue.enqueue(
+            continuation,
+            GitCommand(("status",), tmp_path, "workflow continuation"),
+            continuation=True,
+        )
+
+    first.completed.connect(enqueue_continuation)
+    queue.enqueue(first, GitCommand(("status",), tmp_path, "workflow start"))
+    queue.enqueue(second, GitCommand(("status",), tmp_path, "ordinary mutation"))
+
+    qtbot.waitUntil(lambda: len(started) == 3, timeout=5000)
+    assert started == ["workflow start", "workflow continuation", "ordinary mutation"]

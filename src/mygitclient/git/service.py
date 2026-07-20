@@ -83,8 +83,8 @@ class GitService(QObject):
         ] = {}
         self._latest_amend_diff_request: dict[tuple[Path, str | None], int] = {}
         self._checkout_workflows: dict[GitRunner, _CheckoutWorkflow] = {}
-        self._network_queue = GitOperationQueue(self)
-        self._network_queue.changed.connect(self.queue_changed)
+        self._operation_queue = GitOperationQueue(self)
+        self._operation_queue.changed.connect(self.queue_changed)
 
     def request_branches(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
@@ -136,7 +136,9 @@ class GitService(QObject):
         self._mutation_requests[runner] = f"branch:{branch.name}"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(arguments, repository, "checkout branch"))
+        self._operation_queue.enqueue(
+            runner, GitCommand(arguments, repository, "checkout branch")
+        )
         return runner
 
     def _run_checkout_workflow(
@@ -150,7 +152,11 @@ class GitService(QObject):
         self._checkout_workflows[runner] = workflow
         runner.completed.connect(self._handle_checkout_workflow)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(arguments, workflow.repository, operation))
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(arguments, workflow.repository, operation),
+            continuation=workflow.step != "stash",
+        )
         return runner
 
     def request_create_branch(self, repository: Path, name: str) -> GitRunner:
@@ -159,7 +165,9 @@ class GitService(QObject):
         self._mutation_requests[runner] = f"branch:{name}"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(("switch", "-c", name), repository, "create branch"))
+        self._operation_queue.enqueue(
+            runner, GitCommand(("switch", "-c", name), repository, "create branch")
+        )
         return runner
 
     def request_rename_branch(
@@ -170,7 +178,8 @@ class GitService(QObject):
         self._mutation_requests[runner] = "branches:renamed"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
+        self._operation_queue.enqueue(
+            runner,
             GitCommand(("branch", "-m", branch.name, new_name), repository, "rename branch")
         )
         return runner
@@ -184,7 +193,10 @@ class GitService(QObject):
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
         flag = "-D" if force else "-d"
-        runner.run(GitCommand(("branch", flag, branch.name), repository, "delete branch"))
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(("branch", flag, branch.name), repository, "delete branch"),
+        )
         return runner
 
     def request_pull(
@@ -198,7 +210,7 @@ class GitService(QObject):
         self._mutation_requests[runner] = "pull"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        self._network_queue.enqueue(
+        self._operation_queue.enqueue(
             runner, GitCommand(tuple(arguments), repository, "pull changes")
         )
         return runner
@@ -209,7 +221,7 @@ class GitService(QObject):
         self._mutation_requests[runner] = "fetch"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        self._network_queue.enqueue(
+        self._operation_queue.enqueue(
             runner, GitCommand(("fetch", "--prune"), repository, "fetch changes")
         )
         return runner
@@ -232,7 +244,7 @@ class GitService(QObject):
         self._mutation_requests[runner] = "push"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        self._network_queue.enqueue(
+        self._operation_queue.enqueue(
             runner, GitCommand(tuple(arguments), repository, "push changes")
         )
         return runner
@@ -341,7 +353,7 @@ class GitService(QObject):
         self._mutation_requests[runner] = path
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(arguments, repository, operation))
+        self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
     def request_commit_diff(
@@ -475,7 +487,7 @@ class GitService(QObject):
         self._mutation_requests[runner] = file.path
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(arguments, repository, operation))
+        self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
     def request_stage_all(
@@ -495,7 +507,7 @@ class GitService(QObject):
         self._mutation_requests[runner] = "."
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(arguments, repository, operation))
+        self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
     def request_commit(
@@ -511,7 +523,8 @@ class GitService(QObject):
         self._mutation_requests[runner] = "commit"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
+        self._operation_queue.enqueue(
+            runner,
             GitCommand(tuple(arguments), repository, "create commit"),
             f"{commit_text}\n".encode("utf-8", errors="surrogateescape"),
         )
@@ -528,7 +541,8 @@ class GitService(QObject):
         self._mutation_requests[runner] = diff.path
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
+        self._operation_queue.enqueue(
+            runner,
             GitCommand(tuple(arguments), repository, "update staged hunk"),
             diff.patch_for_hunk(hunk_index),
         )
@@ -545,7 +559,8 @@ class GitService(QObject):
         self._mutation_requests[runner] = diff.path
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
+        self._operation_queue.enqueue(
+            runner,
             GitCommand(tuple(arguments), repository, "update selected diff lines"),
             diff.patch_for_lines(selected_lines),
         )
@@ -565,7 +580,9 @@ class GitService(QObject):
         self._mutation_requests[runner] = file.path
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(arguments, repository, "discard file changes"))
+        self._operation_queue.enqueue(
+            runner, GitCommand(arguments, repository, "discard file changes")
+        )
         return runner
 
     def request_stash_files(
@@ -576,7 +593,8 @@ class GitService(QObject):
         self._mutation_requests[runner] = "stash"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
+        self._operation_queue.enqueue(
+            runner,
             GitCommand(
                 (
                     "stash",
@@ -614,7 +632,7 @@ class GitService(QObject):
         self.mutation_ready.emit(path)
 
     def cancel_operation(self, operation_id: int) -> None:
-        self._network_queue.cancel(operation_id)
+        self._operation_queue.cancel(operation_id)
 
     def _release_runner(self, runner: GitRunner) -> None:
         self._runners.discard(runner)

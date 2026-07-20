@@ -47,12 +47,20 @@ class GitOperationQueue(QObject):
         self._operation_ids = count(1)
 
     def enqueue(
-        self, runner: GitRunner, command: GitCommand, input_data: bytes | None = None
+        self,
+        runner: GitRunner,
+        command: GitCommand,
+        input_data: bytes | None = None,
+        *,
+        continuation: bool = False,
     ) -> None:
         entry = _QueueEntry(next(self._operation_ids), runner, command, input_data)
         runner.completed.connect(self._operation_finished)
         runner.failed_to_start.connect(self._operation_failed_to_start)
-        self._pending.append(entry)
+        if continuation:
+            self._pending.appendleft(entry)
+        else:
+            self._pending.append(entry)
         self._publish()
         if self._active is None:
             self._start_next()

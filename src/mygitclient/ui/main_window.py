@@ -828,6 +828,7 @@ class MainWindow(QMainWindow):
             action = self._operation_queue_menu.addAction(
                 f"{prefix}: {operation.operation} — {operation.repository.name}"
             )
+            action.setIcon(load_icon(_queue_operation_icon(operation.operation)))
             action.setData(operation.operation_id)
             action.triggered.connect(self._cancel_queue_action)
         count = len(operations)
@@ -1481,6 +1482,29 @@ def push_requires_rewrite(status: RepositoryStatus | None) -> bool:
         return False
     branch = status.branch
     return branch.upstream is not None and branch.ahead > 0 and branch.behind > 0
+
+
+def _queue_operation_icon(operation: str) -> str:
+    lowered = operation.casefold()
+    if "push" in lowered:
+        return "push.svg"
+    if "pull" in lowered:
+        return "pull.svg"
+    if "fetch" in lowered:
+        return "fetch.svg"
+    if "commit" in lowered:
+        return "commit.svg"
+    if "unstage" in lowered or "exclude" in lowered:
+        return "unstage.svg"
+    if "stage" in lowered or "include" in lowered or "apply" in lowered:
+        return "stage.svg"
+    if "discard" in lowered or "delete" in lowered:
+        return "remove.svg"
+    if "checkout" in lowered or "branch" in lowered:
+        return "open.svg"
+    if "stash" in lowered:
+        return "autostash.svg"
+    return "refresh.svg"
 
 
 def _status_label(code: str) -> str:
