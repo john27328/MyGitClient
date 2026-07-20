@@ -441,15 +441,17 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _workspace_tab_changed(self, index: int) -> None:
+        repository = getattr(self, "_repository", None)
+        commit_diff_visible = getattr(self, "_commit_diff_visible", False)
         showing_history = index == 1
         showing_branches = index == 2
         showing_tags = index == 3
-        show_diff = self._repository is not None and (
-            not showing_history or self._commit_diff_visible
+        show_diff = repository is not None and (
+            not showing_history or commit_diff_visible
         ) and not showing_branches and not showing_tags
         self._diff_container.setVisible(show_diff)
         if showing_history:
-            if self._commit_diff_visible:
+            if commit_diff_visible:
                 self._splitter.setSizes([220, 0, 560, 840])
                 self._history_panel.set_expanded_layout(False)
             else:
@@ -464,7 +466,7 @@ class MainWindow(QMainWindow):
             )
             self._splitter.setSizes([220, 0, available, 0])
             self._history_panel.set_expanded_layout(False)
-        elif self._repository is not None:
+        elif repository is not None:
             self._commit_diff_visible = False
             self._history_panel.set_expanded_layout(False)
             self._restore_workspace_splitter_sizes()

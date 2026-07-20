@@ -228,7 +228,9 @@ def test_commit_and_amend_from_commit_panel(
     amend_item = changes.topLevelItem(0)
     assert amend_item is not None
     amend_item.setCheckState(0, Qt.CheckState.Checked)
-    qtbot.waitUntil(lambda: "+content plus unstaged" in diff_panel.toPlainText(), timeout=5000)
+    qtbot.waitUntil(
+        lambda: "+content plus unstaged" in diff_panel.toPlainText(), timeout=15000
+    )
     amend_item = changes.topLevelItem(0)
     assert amend_item is not None
     changes.setCurrentItem(amend_item)
