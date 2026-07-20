@@ -41,6 +41,7 @@ from mygitclient.git.models import (
     RepositoryStatusSnapshot,
     UnifiedDiff,
 )
+from mygitclient.git.operation_queue import OperationQueueSnapshot
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
@@ -284,7 +285,8 @@ class MainWindow(QMainWindow):
         self._update_sync_indicators()
         self._cancel_action = QAction(load_icon("cancel.svg"), "Cancel", self)
         self._cancel_action.setObjectName("cancelOperationsAction")
-        self._cancel_action.triggered.connect(self._cancel_operations)
+        self._operation_queue_menu = QMenu(self)
+        self._cancel_action.setMenu(self._operation_queue_menu)
         self._cancel_action.setEnabled(False)
         toolbar.addAction(self._cancel_action)
         self.addToolBar(toolbar)
@@ -322,6 +324,7 @@ class MainWindow(QMainWindow):
         self._git.mutation_ready.connect(self._mutation_finished)
         self._git.operation_cancelled.connect(self._operation_cancelled)
         self._git.operation_failed.connect(self._show_git_error)
+        self._git.queue_changed.connect(self._show_operation_queue)
         self._workspace_discovery.linked_repositories_ready.connect(
             self._linked_repositories_ready
         )
@@ -799,14 +802,8 @@ class MainWindow(QMainWindow):
         )
 
     def _set_network_busy(self, operation: str | None) -> None:
-        busy = operation is not None
-        self._fetch_action.setEnabled(not busy)
-        self._pull_action.setEnabled(not busy)
-        self._push_action.setEnabled(not busy)
-        self._force_push_action.setEnabled(not busy)
-        self._cancel_action.setEnabled(busy)
         if operation is not None:
-            self._cancel_action.setToolTip(f"Cancel {operation}")
+            self._status_label.setText(f"Queueing {operation.lower()}…")
 
     @Slot()
     def _poll_repository(self) -> None:
@@ -816,11 +813,39 @@ class MainWindow(QMainWindow):
             return
         self._status_runner = self._git.request_status(self._repository)
 
+    @Slot(object)
+    def _show_operation_queue(self, value: object) -> None:
+        if not isinstance(value, OperationQueueSnapshot):
+            return
+        operations = (() if value.active is None else (value.active,)) + value.pending
+        self._operation_queue_menu.clear()
+        for index, operation in enumerate(operations):
+            prefix = (
+                "Cancel running"
+                if index == 0 and value.active is not None
+                else "Remove queued"
+            )
+            action = self._operation_queue_menu.addAction(
+                f"{prefix}: {operation.operation} — {operation.repository.name}"
+            )
+            action.setData(operation.operation_id)
+            action.triggered.connect(self._cancel_queue_action)
+        count = len(operations)
+        self._cancel_action.setText(f"Queue {count}" if count else "Queue")
+        self._cancel_action.setEnabled(bool(operations))
+        if value.active is not None:
+            self._status_label.setText(
+                f"{value.active.operation.title()} · {len(value.pending)} queued"
+            )
+
     @Slot()
-    def _cancel_operations(self) -> None:
-        self._git.cancel_all()
-        self._workspace_discovery.cancel_all()
-        self._status_label.setText("Cancelling operations…")
+    def _cancel_queue_action(self) -> None:
+        action = self.sender()
+        if not isinstance(action, QAction):
+            return
+        operation_id = action.data()
+        if isinstance(operation_id, int):
+            self._git.cancel_operation(operation_id)
 
     @Slot()
     def _operation_cancelled(self) -> None:

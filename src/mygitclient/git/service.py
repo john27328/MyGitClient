@@ -21,6 +21,7 @@ from mygitclient.git.models import (
     RepositoryStatusSnapshot,
     UnifiedDiff,
 )
+from mygitclient.git.operation_queue import GitOperationQueue
 from mygitclient.git.parsers import (
     diff_paths,
     parse_amend_preview,
@@ -54,6 +55,7 @@ class GitService(QObject):
     mutation_ready = Signal(str)
     operation_cancelled = Signal()
     operation_failed = Signal(str)
+    queue_changed = Signal(object)
 
     _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -81,6 +83,8 @@ class GitService(QObject):
         ] = {}
         self._latest_amend_diff_request: dict[tuple[Path, str | None], int] = {}
         self._checkout_workflows: dict[GitRunner, _CheckoutWorkflow] = {}
+        self._network_queue = GitOperationQueue(self)
+        self._network_queue.changed.connect(self.queue_changed)
 
     def request_branches(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
@@ -194,7 +198,9 @@ class GitService(QObject):
         self._mutation_requests[runner] = "pull"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(tuple(arguments), repository, "pull changes"))
+        self._network_queue.enqueue(
+            runner, GitCommand(tuple(arguments), repository, "pull changes")
+        )
         return runner
 
     def request_fetch(self, repository: Path) -> GitRunner:
@@ -203,7 +209,9 @@ class GitService(QObject):
         self._mutation_requests[runner] = "fetch"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(("fetch", "--prune"), repository, "fetch changes"))
+        self._network_queue.enqueue(
+            runner, GitCommand(("fetch", "--prune"), repository, "fetch changes")
+        )
         return runner
 
     def request_push(
@@ -224,7 +232,9 @@ class GitService(QObject):
         self._mutation_requests[runner] = "push"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(tuple(arguments), repository, "push changes"))
+        self._network_queue.enqueue(
+            runner, GitCommand(tuple(arguments), repository, "push changes")
+        )
         return runner
 
     def request_commit_files(self, repository: Path, commit_oid: str) -> GitRunner:
@@ -603,9 +613,8 @@ class GitService(QObject):
             )
         self.mutation_ready.emit(path)
 
-    def cancel_all(self) -> None:
-        for runner in tuple(self._runners):
-            runner.cancel()
+    def cancel_operation(self, operation_id: int) -> None:
+        self._network_queue.cancel(operation_id)
 
     def _release_runner(self, runner: GitRunner) -> None:
         self._runners.discard(runner)

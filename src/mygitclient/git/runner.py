@@ -68,6 +68,11 @@ class GitRunner(QObject):
         self._process.terminate()
         QTimer.singleShot(1500, self._kill_if_running)
 
+    def cancel_queued(self, command: GitCommand) -> None:
+        if self.is_running:
+            raise RuntimeError("Cannot cancel a queued command after it has started")
+        self.completed.emit(GitResult(command, -1, b"", b"", cancelled=True))
+
     def _kill_if_running(self) -> None:
         if self.is_running:
             self._process.kill()
