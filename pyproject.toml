@@ -5,13 +5,32 @@ build-backend = "hatchling.build"
 [project]
 name = "mygitclient"
 version = "0.1.0"
-description = "A cross-platform Git client built with Python and Qt"
+description = "A focused desktop Git client with visual diffs and precise staging"
 readme = "README.md"
+license = "GPL-3.0-or-later"
 requires-python = ">=3.12"
+keywords = ["git", "desktop", "qt", "pyside6", "diff"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Version Control :: Git",
+]
 dependencies = [
     "platformdirs>=4.3",
     "PySide6>=6.8",
 ]
+
+[project.urls]
+Homepage = "https://github.com/john27328/MyGitClient"
+Issues = "https://github.com/john27328/MyGitClient/issues"
+Releases = "https://github.com/john27328/MyGitClient/releases"
 
 [project.optional-dependencies]
 dev = [
