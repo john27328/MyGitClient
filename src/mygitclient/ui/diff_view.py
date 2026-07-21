@@ -304,8 +304,16 @@ class DiffView(QWidget):
         self.selection.clear()
         self.diff.clear()
         self.gutter.clear()
+        self.side_old.clear()
+        self.side_new.clear()
         self.side_old_gutter.clear()
         self.side_new_gutter.clear()
+        self._side_old_line_indexes = []
+        self._side_new_line_indexes = []
+        self.side_old_highlighter.set_inline_ranges({})
+        self.side_new_highlighter.set_inline_ranges({})
+        self.side_old_highlighter.set_line_kinds(())
+        self.side_new_highlighter.set_line_kinds(())
         self.diff.setExtraSelections([])
         self.side_old.setExtraSelections([])
         self.side_new.setExtraSelections([])

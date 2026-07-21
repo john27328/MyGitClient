@@ -58,6 +58,40 @@ def test_diff_view_restores_and_updates_font_size(qtbot: QtBot, tmp_path: Path) 
     assert view.side_new_gutter.font().pointSize() == 16
 
 
+def test_diff_view_reset_clears_both_presentations(qtbot: QtBot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "diff-reset.ini"), QSettings.Format.IniFormat)
+    settings.setValue("diff/viewMode", "side-by-side")
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    diff = parse_unified_diff(
+        b"diff --git a/file.txt b/file.txt\n"
+        b"--- a/file.txt\n"
+        b"+++ b/file.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-before\n"
+        b"+after\n",
+        "file.txt",
+        staged=False,
+    )
+    view.display_diff(
+        diff,
+        selection_key=(tmp_path, diff.path, False),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+    assert "before" in view.side_old.toPlainText()
+    assert "after" in view.side_new.toPlainText()
+
+    view.reset()
+
+    assert view.current_diff is None
+    assert view.diff.toPlainText() == ""
+    assert view.side_old.toPlainText() == ""
+    assert view.side_new.toPlainText() == ""
+    assert view.side_old_gutter.toPlainText() == ""
+    assert view.side_new_gutter.toPlainText() == ""
+
+
 def test_diff_view_owns_line_selection_and_emits_request(
     qtbot: QtBot, tmp_path: Path
 ) -> None:

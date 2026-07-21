@@ -27,6 +27,32 @@ def test_recent_repository_activation_emits_path(qtbot: QtBot, tmp_path: Path) -
     assert received == [(repository, True)]
 
 
+def test_recent_repository_menu_opens_and_removes_entries(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    panel = RepositoriesPanel()
+    qtbot.addWidget(panel)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    panel.set_recent((first, second))
+    opened: list[tuple[object, bool]] = []
+    removed: list[object] = []
+
+    def capture_activation(path: object, remember: bool) -> None:
+        opened.append((path, remember))
+
+    panel.repository_activated.connect(capture_activation)
+    panel.remove_requested.connect(removed.append)
+    actions = [action for action in panel.recent_menu.actions() if not action.isSeparator()]
+
+    actions[0].trigger()
+    panel.remove_menu.actions()[1].trigger()
+
+    assert panel.recent_button.isEnabled()
+    assert opened == [(first, True)]
+    assert removed == [second]
+
+
 def test_remove_selected_repository_emits_path(qtbot: QtBot, tmp_path: Path) -> None:
     panel = RepositoriesPanel()
     qtbot.addWidget(panel)
@@ -103,3 +129,4 @@ def test_empty_recent_list_has_disabled_placeholder(qtbot: QtBot) -> None:
     assert placeholder is not None
     assert placeholder.text(0) == "No recent repositories"
     assert placeholder.flags() == Qt.ItemFlag.NoItemFlags
+    assert not panel.recent_button.isEnabled()

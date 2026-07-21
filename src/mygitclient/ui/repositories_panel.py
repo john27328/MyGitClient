@@ -5,7 +5,15 @@ from typing import cast
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QComboBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QMenu,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from mygitclient.resources import load_icon
 from mygitclient.workspace import LinkedRepository
@@ -18,6 +26,7 @@ class RepositoriesPanel(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("repositoriesPanel")
         self.setMinimumWidth(180)
         self.tree = QTreeWidget()
         self.tree.setObjectName("repositoriesTree")
@@ -31,6 +40,20 @@ class RepositoriesPanel(QWidget):
         self.switcher = QComboBox()
         self.switcher.setObjectName("repositorySwitcher")
         self.switcher.setMinimumWidth(180)
+
+        self.recent_menu = QMenu(self)
+        self.recent_menu.setObjectName("recentRepositoriesMenu")
+        self.recent_menu.triggered.connect(self._recent_action_triggered)
+        self.remove_menu = QMenu("Remove from recent", self.recent_menu)
+        self.remove_menu.setIcon(load_icon("remove.svg"))
+        self.remove_menu.triggered.connect(self._remove_action_triggered)
+        self.recent_button = QToolButton()
+        self.recent_button.setObjectName("recentRepositoriesButton")
+        self.recent_button.setText("Recent")
+        self.recent_button.setIcon(load_icon("open.svg"))
+        self.recent_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.recent_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.recent_button.setMenu(self.recent_menu)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -46,6 +69,7 @@ class RepositoriesPanel(QWidget):
             placeholder = QTreeWidgetItem(["No recent repositories"])
             placeholder.setFlags(Qt.ItemFlag.NoItemFlags)
             self.tree.addTopLevelItem(placeholder)
+            self._rebuild_recent_menu()
             return
         items: dict[Path, QTreeWidgetItem] = {}
         for repository in repositories:
@@ -66,6 +90,7 @@ class RepositoriesPanel(QWidget):
             item.setText(0, f"{repository.name} (nested)")
             items[parent_path].addChild(item)
             items[parent_path].setExpanded(True)
+        self._rebuild_recent_menu()
 
     def set_open(self, repositories: list[Path], current: Path | None) -> None:
         blocker = QSignalBlocker(self.switcher)
@@ -105,6 +130,50 @@ class RepositoriesPanel(QWidget):
                 child.setData(0, Qt.ItemDataRole.UserRole, linked.path)
                 item.addChild(child)
             item.setExpanded(True)
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        items = self._repository_items()
+        if not items:
+            placeholder = self.recent_menu.addAction("No recent repositories")
+            placeholder.setEnabled(False)
+            self.recent_button.setEnabled(False)
+            return
+        self.recent_button.setEnabled(True)
+        for item in items:
+            repository = item.data(0, Qt.ItemDataRole.UserRole)
+            if not isinstance(repository, Path):
+                continue
+            action = self.recent_menu.addAction(item.text(0))
+            action.setToolTip(str(repository))
+            action.setProperty("repositoryPath", str(repository))
+            parent = cast(QTreeWidgetItem | None, item.parent())
+            action.setProperty("rememberRepository", parent is None)
+        self.recent_menu.addSeparator()
+        self.remove_menu.clear()
+        for item in items:
+            repository = item.data(0, Qt.ItemDataRole.UserRole)
+            if not isinstance(repository, Path):
+                continue
+            action = self.remove_menu.addAction(item.text(0))
+            action.setToolTip(str(repository))
+            action.setProperty("repositoryPath", str(repository))
+        self.recent_menu.addMenu(self.remove_menu)
+
+    def _repository_items(self) -> list[QTreeWidgetItem]:
+        pending = [
+            item
+            for index in range(self.tree.topLevelItemCount())
+            if (item := self.tree.topLevelItem(index)) is not None
+        ]
+        result: list[QTreeWidgetItem] = []
+        while pending:
+            item = pending.pop(0)
+            if isinstance(item.data(0, Qt.ItemDataRole.UserRole), Path):
+                result.append(item)
+            pending[0:0] = [item.child(index) for index in range(item.childCount())]
+        return result
 
     def _find_item(self, repository: Path) -> QTreeWidgetItem | None:
         pending = [
@@ -146,6 +215,19 @@ class RepositoriesPanel(QWidget):
         repository = selected[0].data(0, Qt.ItemDataRole.UserRole)
         if isinstance(repository, Path):
             self.remove_requested.emit(repository)
+
+    @Slot(QAction)
+    def _recent_action_triggered(self, action: QAction) -> None:
+        value = action.property("repositoryPath")
+        remember = action.property("rememberRepository")
+        if isinstance(value, str) and isinstance(remember, bool):
+            self.repository_activated.emit(Path(value), remember)
+
+    @Slot(QAction)
+    def _remove_action_triggered(self, action: QAction) -> None:
+        value = action.property("repositoryPath")
+        if isinstance(value, str):
+            self.remove_requested.emit(Path(value))
 
     @Slot(int)
     def _switcher_changed(self, index: int) -> None:

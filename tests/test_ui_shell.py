@@ -186,11 +186,18 @@ def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> N
 
     window = MainWindow(settings, Theme.SYSTEM)
     repositories = window.findChild(QTreeWidget, "repositoriesTree")
+    repositories_panel = window.findChild(QWidget, "repositoriesPanel")
+    recent_button = window.findChild(QToolButton, "recentRepositoriesButton")
 
     assert repositories is not None
+    assert repositories_panel is not None
+    assert recent_button is not None
     item = repositories.topLevelItem(0)
     assert item is not None
     assert item.text(0) == "project"
+    assert repositories_panel.isHidden()
+    assert recent_button.menu() is not None
+    assert recent_button.menu().actions()[0].text() == "project"
     window.close()
 
 

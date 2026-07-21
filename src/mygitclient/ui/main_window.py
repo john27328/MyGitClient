@@ -248,7 +248,8 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setStretchFactor(2, 0)
         self._splitter.setStretchFactor(3, 1)
-        self._splitter.setSizes([260, 920, 0, 0])
+        self._repositories_panel.hide()
+        self._splitter.setSizes([0, 920, 0, 0])
         self.setCentralWidget(self._splitter)
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
@@ -277,6 +278,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toolbar.addAction(open_action)
+        toolbar.addWidget(self._repositories_panel.recent_button)
         self._repository_switcher = self._repositories_panel.switcher
         toolbar.addWidget(self._repository_switcher)
         refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
