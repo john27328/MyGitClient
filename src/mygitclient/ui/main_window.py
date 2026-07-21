@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QToolBar,
     QToolButton,
     QTreeWidgetItem,
+    QWidget,
 )
 
 from mygitclient import __version__
@@ -666,11 +667,14 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _workspace_tab_changed(self, index: int) -> None:
+        diff_container = cast(QWidget | None, getattr(self, "_diff_container", None))
+        if diff_container is None:
+            return
         repository = getattr(self, "_repository", None)
         commit_diff_visible = getattr(self, "_commit_diff_visible", False)
         showing_history = index == 1
         show_diff = repository is not None and (not showing_history or commit_diff_visible)
-        self._diff_container.setVisible(show_diff)
+        diff_container.setVisible(show_diff)
         if showing_history:
             if commit_diff_visible:
                 self._splitter.setSizes([220, 0, 560, 840])

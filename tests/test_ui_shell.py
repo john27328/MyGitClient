@@ -201,6 +201,20 @@ def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> N
     window.close()
 
 
+def test_early_workspace_tab_signal_is_ignored_during_window_construction(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    class EarlySignalWindow(MainWindow):
+        def _build_ui(self) -> None:
+            self._workspace_tab_changed(0)
+            super()._build_ui()
+
+    settings = QSettings(str(tmp_path / "early-tab.ini"), QSettings.Format.IniFormat)
+    window = EarlySignalWindow(settings, Theme.SYSTEM)
+
+    window.close()
+
+
 def test_commit_history_is_loaded_asynchronously(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
