@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mygitclient"
-version = "0.2.2"
+version = "0.2.3"
 description = "A focused desktop Git client with visual diffs and precise staging"
 readme = "README.md"
 license = "GPL-3.0-or-later"
