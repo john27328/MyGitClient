@@ -62,6 +62,34 @@ def test_history_excludes_stash_commits(qtbot: QtBot, tmp_path: Path) -> None:
     assert [commit.subject for commit in page.commits] == ["initial"]
 
 
+def test_history_can_be_limited_to_one_branch(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    tracked.write_text("main\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "main commit")
+    _git(tmp_path, "switch", "-c", "feature")
+    tracked.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "feature commit")
+    service = GitService()
+    pages: list[object] = []
+    service.history_ready.connect(pages.append)
+
+    with qtbot.waitSignal(service.history_ready, timeout=5000):
+        service.request_history(tmp_path, refs=("refs/heads/main",))
+
+    page = pages[-1]
+    assert isinstance(page, CommitPage)
+    assert [commit.subject for commit in page.commits] == ["main commit"]
+
+
 def test_diff_result_identifies_its_repository(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     tracked = tmp_path / "tracked.txt"

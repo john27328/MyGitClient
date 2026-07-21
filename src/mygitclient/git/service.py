@@ -458,7 +458,12 @@ class GitService(QObject):
         return runner
 
     def request_history(
-        self, repository: Path, *, offset: int = 0, limit: int = 100
+        self,
+        repository: Path,
+        *,
+        offset: int = 0,
+        limit: int = 100,
+        refs: tuple[str, ...] = (),
     ) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
@@ -467,22 +472,16 @@ class GitService(QObject):
         self._history_requests[runner] = (repository, offset, limit, request_id)
         runner.completed.connect(self._handle_history)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
-            GitCommand(
-                (
-                    "log",
-                    "--branches",
-                    "--remotes",
-                    "--tags",
-                    f"--skip={offset}",
-                    f"--max-count={limit + 1}",
-                    "--date=iso-strict",
-                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
-                ),
-                repository,
-                "read commit history",
-            )
+        revisions = refs or ("--branches", "--remotes", "--tags")
+        arguments = (
+            "log",
+            f"--skip={offset}",
+            f"--max-count={limit + 1}",
+            "--date=iso-strict",
+            "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+            *revisions,
         )
+        runner.run(GitCommand(arguments, repository, "read commit history"))
         return runner
 
     def request_status(self, repository: Path) -> GitRunner:

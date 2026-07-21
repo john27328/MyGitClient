@@ -26,6 +26,7 @@ from mygitclient.git.models import (
     CommitSummary,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
+from mygitclient.ui.refs_panel import RefsPanel
 
 FILTER_HIGHLIGHT_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 
@@ -138,9 +139,11 @@ class HistoryPanel(QWidget):
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setObjectName("historySplitter")
+        self.refs_panel = RefsPanel()
+        self.splitter.addWidget(self.refs_panel)
         self.splitter.addWidget(history_list)
         self.splitter.addWidget(self.details)
-        self.splitter.setSizes([700, 360])
+        self.splitter.setSizes([240, 700, 360])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -151,6 +154,10 @@ class HistoryPanel(QWidget):
         return self.tree.topLevelItemCount()
 
     def reset(self) -> None:
+        self.refs_panel.reset()
+        self.clear_commits()
+
+    def clear_commits(self) -> None:
         self.filter_edit.clear()
         self.tree.clear()
         self.files.clear()

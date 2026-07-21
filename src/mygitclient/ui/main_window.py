@@ -96,6 +96,7 @@ class MainWindow(QMainWindow):
         self._amend_diff_loaded = False
         self._status_runner: GitRunner | None = None
         self._history_runner: GitRunner | None = None
+        self._history_refs: tuple[str, ...] = ()
         self._active_queue_operation: QueuedOperation | None = None
         self._queued_operation_count = 0
         self._queue_elapsed = QElapsedTimer()
@@ -155,6 +156,15 @@ class MainWindow(QMainWindow):
         self._history_panel.load_more_requested.connect(self._load_more_history)
         self._history_panel.commit_selected.connect(self._history_commit_selected)
         self._history_panel.file_selected.connect(self._history_file_selected)
+        refs_panel = self._history_panel.refs_panel
+        refs_panel.ref_selected.connect(self._history_ref_selected)
+        refs_panel.checkout_requested.connect(self._checkout_branch)
+        refs_panel.rename_requested.connect(self._rename_branch)
+        refs_panel.delete_requested.connect(self._delete_branch)
+        refs_panel.force_delete_requested.connect(self._force_delete_branch)
+        refs_panel.create_tag_requested.connect(self._create_tag)
+        refs_panel.delete_tag_requested.connect(self._delete_tag)
+        refs_panel.push_tag_requested.connect(self._push_tag)
 
         self._branches_panel = BranchesPanel()
         self._branches_panel.checkout_requested.connect(self._checkout_branch)
@@ -424,6 +434,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
         self._history_panel.reset()
+        self._history_refs = ()
         self._branches_panel.reset()
         self._tags_panel.reset()
         self._diff_view.reset()
@@ -435,7 +446,7 @@ class MainWindow(QMainWindow):
         self._diff.show()
         self._workspace_tab_changed(self._workspace_tabs.currentIndex())
         self._status_runner = self._git.request_status(repository)
-        self._history_runner = self._git.request_history(repository)
+        self._history_runner = None
         self._git.request_branches(repository)
         self._git.request_tags(repository)
         self._refresh_timer.start()
@@ -481,7 +492,24 @@ class MainWindow(QMainWindow):
         self._history_panel.set_loading(True)
         self._status_label.setText("Loading more commits…")
         self._history_runner = self._git.request_history(
-            self._repository, offset=self._history_panel.commit_count
+            self._repository,
+            offset=self._history_panel.commit_count,
+            refs=self._history_refs,
+        )
+
+    @Slot(str)
+    def _history_ref_selected(self, ref: str) -> None:
+        if self._repository is None or not ref:
+            return
+        refs = (ref,)
+        if refs == self._history_refs:
+            return
+        self._history_refs = refs
+        self._history_panel.clear_commits()
+        self._history_panel.set_loading(True)
+        self._status_label.setText(f"Loading history for {ref}…")
+        self._history_runner = self._git.request_history(
+            self._repository, refs=self._history_refs
         )
 
     @Slot(object)
@@ -582,12 +610,14 @@ class MainWindow(QMainWindow):
         if not isinstance(value, BranchesSnapshot) or value.repository != self._repository:
             return
         self._branches_panel.show_branches(value)
+        self._history_panel.refs_panel.show_branches(value)
 
     @Slot(object)
     def _show_tags(self, value: object) -> None:
         if not isinstance(value, TagsSnapshot) or value.repository != self._repository:
             return
         self._tags_panel.show_tags(value)
+        self._history_panel.refs_panel.show_tags(value)
 
     @Slot()
     def _create_tag(self) -> None:
