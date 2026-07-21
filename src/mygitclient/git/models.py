@@ -74,6 +74,19 @@ class TagsSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class StashInfo:
+    ref: str
+    oid: str
+    subject: str
+
+
+@dataclass(frozen=True, slots=True)
+class StashesSnapshot:
+    repository: Path
+    stashes: tuple[StashInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FileStatus:
     path: str
     index_status: str

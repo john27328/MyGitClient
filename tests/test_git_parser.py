@@ -6,6 +6,7 @@ from mygitclient.git.parsers import (
     parse_branches,
     parse_commit_files,
     parse_commit_log,
+    parse_stashes,
     parse_status_porcelain_v2,
     parse_tags,
     parse_unified_diff,
@@ -24,6 +25,18 @@ def test_parse_tags_distinguishes_annotated_and_lightweight_tags() -> None:
         ("snapshot", False, "commit-two"),
     ]
     assert snapshot.tags[0].subject == "Release 1.0"
+
+
+def test_parse_stashes_preserves_ref_oid_and_subject() -> None:
+    snapshot = parse_stashes(
+        Path("repository"),
+        b"stash@{0}\x001234\x00On main: unfinished work\x1e\n",
+    )
+
+    assert len(snapshot.stashes) == 1
+    assert snapshot.stashes[0].ref == "stash@{0}"
+    assert snapshot.stashes[0].oid == "1234"
+    assert snapshot.stashes[0].subject == "On main: unfinished work"
 
 
 def test_parse_branches_includes_tracking_and_remote_refs() -> None:

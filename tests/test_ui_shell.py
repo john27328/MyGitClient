@@ -31,8 +31,8 @@ from mygitclient.git.models import (
 )
 from mygitclient.git.service import GitService
 from mygitclient.theme import Theme
-from mygitclient.ui.branches_panel import BranchesPanel
 from mygitclient.ui.main_window import MainWindow, push_requires_rewrite, sync_action_labels
+from mygitclient.ui.refs_panel import RefsPanel
 
 
 def test_main_window_is_created(qapp: QApplication) -> None:
@@ -42,6 +42,9 @@ def test_main_window_is_created(qapp: QApplication) -> None:
 
     assert window.windowTitle() == "MyGitClient"
     assert window.centralWidget() is not None
+    tabs = window.findChild(QTabWidget, "workspaceTabs")
+    assert tabs is not None
+    assert tabs.count() == 2
     assert not window.windowIcon().isNull()
     toolbar = window.findChild(QToolBar, "repositoryToolbar")
     refresh_action = window.findChild(QAction, "refreshAction")
@@ -155,7 +158,7 @@ def test_branch_delete_requires_confirmation_and_preserves_force_choice(
         upstream="origin/old-feature",
         upstream_gone=True,
     )
-    panel = window.findChild(BranchesPanel)
+    panel = window.findChild(RefsPanel)
     assert panel is not None
     panel.show_branches(BranchesSnapshot(tmp_path, (branch,)))
     local_root = panel.tree.topLevelItem(0)
@@ -479,18 +482,16 @@ def test_branches_tab_can_checkout_and_create_branch(
     settings = QSettings(str(tmp_path / "branches.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)
     tabs = window.findChild(QTabWidget, "workspaceTabs")
-    branches = window.findChild(QTreeWidget, "branchesTree")
-    checkout = window.findChild(QPushButton, "checkoutBranchButton")
-    create = window.findChild(QPushButton, "createBranchButton")
+    refs_panel = window.findChild(RefsPanel)
+    branches = window.findChild(QTreeWidget, "refsTree")
     stage_all = window.findChild(QCheckBox, "stageAllCheckBox")
     assert tabs is not None
     assert branches is not None
-    assert checkout is not None
-    assert create is not None
+    assert refs_panel is not None
     assert stage_all is not None
     window.show()
     window.open_repository(repository)
-    tabs.setCurrentIndex(2)
+    tabs.setCurrentIndex(1)
 
     def local_branch_count() -> int:
         root = branches.topLevelItem(0)
@@ -498,7 +499,7 @@ def test_branches_tab_can_checkout_and_create_branch(
 
     qtbot.waitUntil(lambda: local_branch_count() == 2, timeout=5000)
     window.open_repository(repository)
-    assert tabs.currentIndex() == 2
+    assert tabs.currentIndex() == 1
     assert not stage_all.isVisible()
     qtbot.waitUntil(lambda: local_branch_count() == 2, timeout=5000)
     local = branches.topLevelItem(0)
@@ -511,14 +512,14 @@ def test_branches_tab_can_checkout_and_create_branch(
             break
     assert feature is not None
     branches.setCurrentItem(feature)
-    checkout.click()
+    refs_panel.checkout_action.trigger()
     qtbot.waitUntil(lambda: window.windowTitle().startswith("branches — feature —"), timeout=5000)
 
     def branch_name_dialog(*_args: object) -> tuple[str, bool]:
         return "new-branch", True
 
     monkeypatch.setattr(QInputDialog, "getText", branch_name_dialog)
-    create.click()
+    refs_panel.create_branch_action.trigger()
     qtbot.waitUntil(
         lambda: window.windowTitle().startswith("branches — new-branch —"), timeout=5000
     )

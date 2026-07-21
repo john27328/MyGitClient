@@ -47,6 +47,8 @@ from mygitclient.git.models import (
     FileStatus,
     RepositoryStatus,
     RepositoryStatusSnapshot,
+    StashesSnapshot,
+    StashInfo,
     TagInfo,
     TagsSnapshot,
     UnifiedDiff,
@@ -56,16 +58,15 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
-from mygitclient.ui.branches_panel import BranchesPanel
 from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
-from mygitclient.ui.tags_panel import TagsPanel
 from mygitclient.workspace import (
     LinkedRepositoriesSnapshot,
+    LinkedRepository,
     WorkspaceDiscoveryService,
     WorkspaceManager,
     find_repository_root,
@@ -162,28 +163,19 @@ class MainWindow(QMainWindow):
         refs_panel.rename_requested.connect(self._rename_branch)
         refs_panel.delete_requested.connect(self._delete_branch)
         refs_panel.force_delete_requested.connect(self._force_delete_branch)
+        refs_panel.create_branch_requested.connect(self._create_branch)
         refs_panel.create_tag_requested.connect(self._create_tag)
         refs_panel.delete_tag_requested.connect(self._delete_tag)
         refs_panel.push_tag_requested.connect(self._push_tag)
-
-        self._branches_panel = BranchesPanel()
-        self._branches_panel.checkout_requested.connect(self._checkout_branch)
-        self._branches_panel.create_requested.connect(self._create_branch)
-        self._branches_panel.rename_requested.connect(self._rename_branch)
-        self._branches_panel.delete_requested.connect(self._delete_branch)
-        self._branches_panel.force_delete_requested.connect(self._force_delete_branch)
-
-        self._tags_panel = TagsPanel()
-        self._tags_panel.create_requested.connect(self._create_tag)
-        self._tags_panel.delete_requested.connect(self._delete_tag)
-        self._tags_panel.push_requested.connect(self._push_tag)
+        refs_panel.stash_apply_requested.connect(self._apply_stash)
+        refs_panel.stash_pop_requested.connect(self._pop_stash)
+        refs_panel.stash_drop_requested.connect(self._drop_stash)
+        refs_panel.repository_requested.connect(self._open_linked_repository)
 
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
         self._workspace_tabs.addTab(self._changes_container, "Changes")
         self._workspace_tabs.addTab(self._history_panel, "History")
-        self._workspace_tabs.addTab(self._branches_panel, "Branches")
-        self._workspace_tabs.addTab(self._tags_panel, "Tags")
         self._workspace_tabs.setMinimumWidth(360)
         self._workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
         self._workspace_tabs.hide()
@@ -356,6 +348,7 @@ class MainWindow(QMainWindow):
         self._git.history_ready.connect(self._show_history)
         self._git.branches_ready.connect(self._show_branches)
         self._git.tags_ready.connect(self._show_tags)
+        self._git.stashes_ready.connect(self._show_stashes)
         self._git.commit_files_ready.connect(self._show_commit_files)
         self._git.commit_diff_ready.connect(self._show_commit_diff)
         self._git.diff_ready.connect(self._show_diff)
@@ -435,8 +428,6 @@ class MainWindow(QMainWindow):
         self._changes.clear()
         self._history_panel.reset()
         self._history_refs = ()
-        self._branches_panel.reset()
-        self._tags_panel.reset()
         self._diff_view.reset()
         self._welcome.hide()
         self._workspace_tabs.show()
@@ -449,6 +440,7 @@ class MainWindow(QMainWindow):
         self._history_runner = None
         self._git.request_branches(repository)
         self._git.request_tags(repository)
+        self._git.request_stashes(repository)
         self._refresh_timer.start()
 
     @Slot(int)
@@ -456,11 +448,7 @@ class MainWindow(QMainWindow):
         repository = getattr(self, "_repository", None)
         commit_diff_visible = getattr(self, "_commit_diff_visible", False)
         showing_history = index == 1
-        showing_branches = index == 2
-        showing_tags = index == 3
-        show_diff = repository is not None and (
-            not showing_history or commit_diff_visible
-        ) and not showing_branches and not showing_tags
+        show_diff = repository is not None and (not showing_history or commit_diff_visible)
         self._diff_container.setVisible(show_diff)
         if showing_history:
             if commit_diff_visible:
@@ -472,12 +460,6 @@ class MainWindow(QMainWindow):
                 )
                 self._splitter.setSizes([220, 0, available, 0])
                 self._history_panel.set_expanded_layout(True)
-        elif showing_branches or showing_tags:
-            available = max(
-                self._splitter.width() - self._repositories_panel.minimumWidth(), 600
-            )
-            self._splitter.setSizes([220, 0, available, 0])
-            self._history_panel.set_expanded_layout(False)
         elif repository is not None:
             self._commit_diff_visible = False
             self._history_panel.set_expanded_layout(False)
@@ -616,15 +598,19 @@ class MainWindow(QMainWindow):
     def _show_branches(self, value: object) -> None:
         if not isinstance(value, BranchesSnapshot) or value.repository != self._repository:
             return
-        self._branches_panel.show_branches(value)
         self._history_panel.refs_panel.show_branches(value)
 
     @Slot(object)
     def _show_tags(self, value: object) -> None:
         if not isinstance(value, TagsSnapshot) or value.repository != self._repository:
             return
-        self._tags_panel.show_tags(value)
         self._history_panel.refs_panel.show_tags(value)
+
+    @Slot(object)
+    def _show_stashes(self, value: object) -> None:
+        if not isinstance(value, StashesSnapshot) or value.repository != self._repository:
+            return
+        self._history_panel.refs_panel.show_stashes(value)
 
     @Slot()
     def _create_tag(self) -> None:
@@ -644,7 +630,7 @@ class MainWindow(QMainWindow):
         )
         if not accepted:
             return
-        self._tags_panel.setEnabled(False)
+        self._history_panel.refs_panel.setEnabled(False)
         self._status_label.setText(f"Creating tag {name} at {target[:8]}…")
         self._git.request_create_tag(repository, name, target, message.strip())
 
@@ -659,25 +645,60 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._tags_panel.setEnabled(False)
+        self._history_panel.refs_panel.setEnabled(False)
         self._git.request_delete_tag(self._repository, value.name)
 
     @Slot(object)
     def _push_tag(self, value: object) -> None:
         if self._repository is None or not isinstance(value, TagInfo):
             return
-        self._tags_panel.setEnabled(False)
+        self._history_panel.refs_panel.setEnabled(False)
         self._status_label.setText(f"Pushing tag {value.name}…")
         self._git.request_push_tag(self._repository, value.name)
+
+    @Slot(object)
+    def _apply_stash(self, value: object) -> None:
+        self._run_stash_action(value, action="apply", confirm=False)
+
+    @Slot(object)
+    def _pop_stash(self, value: object) -> None:
+        self._run_stash_action(value, action="pop", confirm=True)
+
+    @Slot(object)
+    def _drop_stash(self, value: object) -> None:
+        self._run_stash_action(value, action="drop", confirm=True)
+
+    def _run_stash_action(
+        self, value: object, *, action: str, confirm: bool
+    ) -> None:
+        if self._repository is None or not isinstance(value, StashInfo):
+            return
+        if confirm:
+            detail = (
+                f"{action.title()} {value.ref}?\n\n{value.subject}\n\n"
+                + (
+                    "The stash will be removed after its changes are applied."
+                    if action == "pop"
+                    else "This permanently removes the stash without applying it."
+                )
+            )
+            answer = QMessageBox.question(self, f"{action.title()} stash", detail)
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"{action.title()}ing {value.ref}…")
+        self._git.request_stash_action(self._repository, value, action=action)
 
     @Slot(object)
     def _checkout_branch(self, value: object) -> None:
         if self._repository is None or not isinstance(value, BranchInfo):
             return
-        self._branches_panel.setEnabled(False)
+        self._history_panel.refs_panel.setEnabled(False)
         self._status_label.setText(f"Checking out {value.name}…")
         self._git.request_checkout(
-            self._repository, value, autostash=self._branches_panel.autostash.isChecked()
+            self._repository,
+            value,
+            autostash=self._history_panel.refs_panel.autostash.isChecked(),
         )
 
     @Slot()
@@ -688,7 +709,7 @@ class MainWindow(QMainWindow):
         name = name.strip()
         if not accepted or not name:
             return
-        self._branches_panel.setEnabled(False)
+        self._history_panel.refs_panel.setEnabled(False)
         self._status_label.setText(f"Creating branch {name}…")
         self._git.request_create_branch(self._repository, name)
 
@@ -702,7 +723,7 @@ class MainWindow(QMainWindow):
         name = name.strip()
         if not accepted or not name or name == value.name:
             return
-        self._branches_panel.setEnabled(False)
+        self._history_panel.refs_panel.setEnabled(False)
         self._git.request_rename_branch(self._repository, value, name)
 
     @Slot(object)
@@ -738,7 +759,7 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._branches_panel.setEnabled(False)
+        self._history_panel.refs_panel.setEnabled(False)
         self._git.request_delete_branch(self._repository, value, force=force)
 
     def _show_linked_repositories(self, repository: Path) -> None:
@@ -749,6 +770,13 @@ class MainWindow(QMainWindow):
         if not isinstance(value, LinkedRepositoriesSnapshot):
             return
         self._repositories_panel.set_linked(value.repository, value.repositories)
+        if value.repository == self._repository:
+            self._history_panel.refs_panel.show_linked_repositories(value.repositories)
+
+    @Slot(object)
+    def _open_linked_repository(self, value: object) -> None:
+        if isinstance(value, LinkedRepository) and value.path.is_dir():
+            self.open_repository(value.path, remember=False)
 
     def _populate_repository_switcher(self) -> None:
         self._repositories_panel.set_open(self._open_repositories, self._repository)
@@ -1220,8 +1248,7 @@ class MainWindow(QMainWindow):
             self._set_network_busy(None)
         self._changes.setEnabled(True)
         self._changes_container.setEnabled(True)
-        self._branches_panel.setEnabled(True)
-        self._tags_panel.setEnabled(True)
+        self._history_panel.refs_panel.setEnabled(True)
         if path == "commit":
             self._commit_message.clear()
             self._commit_description.clear()
@@ -1239,6 +1266,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Branch deleted")
         elif path == "tags:changed":
             self._status_label.setText("Tags updated")
+        elif path == "stashes:changed":
+            self._status_label.setText("Stashes updated")
         elif path == "pull":
             self._status_label.setText("Pull completed")
         elif path == "fetch":
@@ -1260,6 +1289,7 @@ class MainWindow(QMainWindow):
             self._status_runner = self._git.request_status(self._repository)
             self._git.request_branches(self._repository)
             self._git.request_tags(self._repository)
+            self._git.request_stashes(self._repository)
 
     @Slot()
     def _update_commit_controls(self) -> None:
@@ -1624,8 +1654,7 @@ class MainWindow(QMainWindow):
         self._history_runner = None
         self._changes.setEnabled(True)
         self._changes_container.setEnabled(True)
-        self._branches_panel.setEnabled(True)
-        self._tags_panel.setEnabled(True)
+        self._history_panel.refs_panel.setEnabled(True)
         self._status_label.setText("Git operation failed")
         QMessageBox.critical(self, "Git error", message)
 

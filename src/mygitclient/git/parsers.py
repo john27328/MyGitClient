@@ -16,6 +16,8 @@ from mygitclient.git.models import (
     DiffLineKind,
     FileStatus,
     RepositoryStatus,
+    StashesSnapshot,
+    StashInfo,
     TagInfo,
     TagsSnapshot,
     UnifiedDiff,
@@ -81,6 +83,22 @@ def parse_tags(repository: Path, output: bytes) -> TagsSnapshot:
             )
         )
     return TagsSnapshot(repository, tuple(tags))
+
+
+def parse_stashes(repository: Path, output: bytes) -> StashesSnapshot:
+    stashes: list[StashInfo] = []
+    for raw_record in output.split(b"\x1e"):
+        raw_record = raw_record.strip(b"\r\n")
+        if not raw_record:
+            continue
+        fields = raw_record.split(b"\x00")
+        if len(fields) != 3:
+            raise GitParseError("Malformed stash record")
+        ref, oid, subject = (
+            field.decode("utf-8", errors="surrogateescape") for field in fields
+        )
+        stashes.append(StashInfo(ref, oid, subject))
+    return StashesSnapshot(repository, tuple(stashes))
 
 
 def parse_commit_files(output: bytes) -> tuple[CommitFileChange, ...]:

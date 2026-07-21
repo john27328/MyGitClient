@@ -14,6 +14,7 @@ from mygitclient.git.models import (
     CommitPage,
     DiffSnapshot,
     FileStatus,
+    StashesSnapshot,
     TagsSnapshot,
 )
 from mygitclient.git.runner import GitRunner
@@ -381,6 +382,49 @@ def test_selected_files_can_be_stashed(qtbot: QtBot, tmp_path: Path) -> None:
     assert subprocess.check_output(
         ["git", "stash", "list"], cwd=tmp_path, text=True
     ).startswith("stash@{0}")
+
+
+def test_stashes_can_be_listed_applied_and_dropped(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    tracked.write_text("after\n", encoding="utf-8")
+    _git(tmp_path, "stash", "push", "-m", "saved work")
+    service = GitService()
+    snapshots: list[object] = []
+    service.stashes_ready.connect(snapshots.append)
+
+    with qtbot.waitSignal(service.stashes_ready, timeout=5000):
+        service.request_stashes(tmp_path)
+
+    snapshot = snapshots[-1]
+    assert isinstance(snapshot, StashesSnapshot)
+    assert len(snapshot.stashes) == 1
+    stash = snapshot.stashes[0]
+    assert stash.ref == "stash@{0}"
+    assert "saved work" in stash.subject
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_stash_action(tmp_path, stash, action="apply")
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+    _git(tmp_path, "restore", "tracked.txt")
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_stash_action(tmp_path, stash, action="drop")
+    assert subprocess.check_output(
+        ["git", "stash", "list"], cwd=tmp_path, text=True
+    ).strip() == ""
 
 
 def test_checkout_autostash_restores_local_changes(qtbot: QtBot, tmp_path: Path) -> None:
