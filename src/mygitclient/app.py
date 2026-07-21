@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from PySide6.QtCore import QCoreApplication, QSettings
 from PySide6.QtWidgets import QApplication
 
+from mygitclient import __version__
 from mygitclient.logging_config import configure_logging
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
@@ -17,7 +18,7 @@ def create_application(arguments: Sequence[str]) -> tuple[QApplication, MainWind
     _set_windows_app_id()
     QCoreApplication.setOrganizationName("MyGitClient")
     QCoreApplication.setApplicationName("MyGitClient")
-    QCoreApplication.setApplicationVersion("0.1.0")
+    QCoreApplication.setApplicationVersion(__version__)
 
     configure_logging()
     logging.getLogger(__name__).info("Starting MyGitClient")

@@ -10,12 +10,14 @@ from PySide6.QtCore import (
     QSignalBlocker,
     Qt,
     QTimer,
+    QUrl,
     Slot,
 )
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
+    QDesktopServices,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
     QTreeWidgetItem,
 )
 
+from mygitclient import __version__
 from mygitclient.git.models import (
     AmendDiffSnapshot,
     AmendPreview,
@@ -66,6 +69,7 @@ from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
+from mygitclient.updates import UpdateChecker, UpdateInfo
 from mygitclient.workspace import (
     LinkedRepositoriesSnapshot,
     LinkedRepository,
@@ -82,6 +86,11 @@ class MainWindow(QMainWindow):
         self._theme = theme
         self._workspace = WorkspaceManager(settings)
         self._workspace_discovery = WorkspaceDiscoveryService(self)
+        self._update_checker = UpdateChecker(self)
+        self._manual_update_check = False
+        self._update_checker.update_available.connect(self._update_available)
+        self._update_checker.up_to_date.connect(self._update_is_current)
+        self._update_checker.failed.connect(self._update_check_failed)
         self._git = GitService(self)
         self._repository: Path | None = None
         self._open_repositories: list[Path] = []
@@ -223,6 +232,7 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
         self.statusBar().addWidget(self._status_label)
+        QTimer.singleShot(2500, self._automatic_update_check)
 
     def _read_bool_setting(self, key: str) -> bool:
         value = self._settings.value(key, False)
@@ -345,6 +355,65 @@ class MainWindow(QMainWindow):
             self._theme_actions.addAction(action)
             theme_menu.addAction(action)
         self._theme_actions.triggered.connect(self._theme_selected)
+
+        help_menu = self.menuBar().addMenu("&Help")
+        check_updates = QAction("Check for Updates…", self)
+        check_updates.setObjectName("checkUpdatesAction")
+        check_updates.triggered.connect(self._manual_update_check_requested)
+        help_menu.addAction(check_updates)
+        about_action = QAction("About MyGitClient", self)
+        about_action.setObjectName("aboutAction")
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+    @Slot()
+    def _automatic_update_check(self) -> None:
+        self._manual_update_check = False
+        self._update_checker.check()
+
+    @Slot()
+    def _manual_update_check_requested(self) -> None:
+        self._manual_update_check = True
+        self._status_label.setText("Checking for updates…")
+        self._update_checker.check()
+
+    @Slot(object)
+    def _update_available(self, value: object) -> None:
+        if not isinstance(value, UpdateInfo):
+            return
+        self._manual_update_check = False
+        answer = QMessageBox.question(
+            self,
+            "Update available",
+            f"MyGitClient {value.version} is available.\n\n"
+            f"You are using {__version__}. Open the download page?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl(value.page_url))
+
+    @Slot()
+    def _update_is_current(self) -> None:
+        if self._manual_update_check:
+            QMessageBox.information(
+                self,
+                "No updates",
+                f"MyGitClient {__version__} is the latest version.",
+            )
+        self._manual_update_check = False
+
+    @Slot(str)
+    def _update_check_failed(self, message: str) -> None:
+        if self._manual_update_check:
+            QMessageBox.warning(self, "Update check failed", message)
+        self._manual_update_check = False
+
+    @Slot()
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "About MyGitClient",
+            f"MyGitClient {__version__}\n\nA focused desktop Git client.",
+        )
 
     def _connect_services(self) -> None:
         self._git.amend_diff_ready.connect(self._show_amend_diff)
