@@ -59,19 +59,24 @@ def test_file_checkbox_stages_and_unstages_changes(
     assert item.checkState(0) is Qt.CheckState.Unchecked
     changes.setCurrentItem(item)
 
-    def index_text_is(expected: str) -> bool:
+    def file_state_is(expected: Qt.CheckState) -> bool:
         current = changes.topLevelItem(0)
-        return current is not None and current.text(1) == expected
+        if current is None or current.checkState(0) is not expected:
+            return False
+        tooltip = current.toolTip(0)
+        if expected is Qt.CheckState.Checked:
+            return "Staged: Modified" in tooltip and "Not staged:" not in tooltip
+        return "Staged:" not in tooltip and "Not staged: Modified" in tooltip
 
     item.setCheckState(0, Qt.CheckState.Checked)
-    qtbot.waitUntil(lambda: index_text_is("Modified"), timeout=5000)
+    qtbot.waitUntil(lambda: file_state_is(Qt.CheckState.Checked), timeout=5000)
     staged_item = changes.topLevelItem(0)
     assert staged_item is not None
     assert staged_item.checkState(0) is Qt.CheckState.Checked
     qtbot.waitUntil(lambda: gutter.toPlainText().count("✓") == 2, timeout=5000)
 
     staged_item.setCheckState(0, Qt.CheckState.Unchecked)
-    qtbot.waitUntil(lambda: index_text_is(""), timeout=5000)
+    qtbot.waitUntil(lambda: file_state_is(Qt.CheckState.Unchecked), timeout=5000)
     unstaged_item = changes.topLevelItem(0)
     assert unstaged_item is not None
     assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
@@ -194,7 +199,7 @@ def test_commit_and_amend_from_commit_panel(
         item = changes.topLevelItem(0)
         if changes.topLevelItemCount() != 1 or item is None:
             return False
-        if working_status is not None and item.text(2) != working_status:
+        if working_status is not None and f"Not staged: {working_status}" not in item.toolTip(0):
             return False
         return not partial or item.checkState(0) is Qt.CheckState.PartiallyChecked
 

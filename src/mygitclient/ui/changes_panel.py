@@ -80,7 +80,7 @@ class ChangesPanel(QWidget):
         self._settings = settings
         self.tree = ChangesTreeWidget()
         self.tree.setObjectName("changesTree")
-        self.tree.setHeaderLabels(["File", "Index", "Working tree"])
+        self.tree.setHeaderLabel("Changes")
         self.tree.setRootIsDecorated(False)
         self.tree.setMinimumWidth(280)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
@@ -174,7 +174,7 @@ class ChangesPanel(QWidget):
                     key = parts[: depth + 1]
                     folder = folders.get(key)
                     if folder is None:
-                        folder = QTreeWidgetItem([parts[depth], "", ""])
+                        folder = QTreeWidgetItem([parts[depth]])
                         folder.setData(0, _FOLDER_ROLE, True)
                         folder.setFlags(
                             folder.flags()
@@ -188,13 +188,9 @@ class ChangesPanel(QWidget):
                         folders[key] = folder
                     parent = folder
                 display_name = parts[-1]
-            index_label = "" if file.index_status == "?" else _status_label(file.index_status)
-            item = QTreeWidgetItem(
-                [display_name, index_label, _status_label(file.worktree_status)]
-            )
-            item.setToolTip(0, file.path)
-            if file.original_path is not None:
-                item.setToolTip(0, f"{file.path}\nRenamed from {file.original_path}")
+            item = QTreeWidgetItem([display_name])
+            item.setIcon(0, load_icon(_status_icon(file)))
+            item.setToolTip(0, _status_tooltip(file))
             item.setData(0, Qt.ItemDataRole.UserRole, file)
             if not file.unmerged:
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -286,3 +282,40 @@ def _status_label(code: str) -> str:
         "?": "Untracked",
         "!": "Ignored",
     }.get(code, code)
+
+
+def _primary_status(file: FileStatus) -> str:
+    if file.unmerged:
+        return "U"
+    if file.worktree_status not in (".", "!"):
+        return file.worktree_status
+    if file.index_status != ".":
+        return file.index_status
+    return file.worktree_status
+
+
+def _status_icon(file: FileStatus) -> str:
+    return {
+        "M": "status-modified.svg",
+        "A": "status-added.svg",
+        "D": "status-deleted.svg",
+        "R": "status-renamed.svg",
+        "C": "status-added.svg",
+        "U": "status-conflict.svg",
+        "T": "status-modified.svg",
+        "?": "status-untracked.svg",
+        "!": "status-untracked.svg",
+    }.get(_primary_status(file), "status-modified.svg")
+
+
+def _status_tooltip(file: FileStatus) -> str:
+    lines = [file.path]
+    if file.original_path is not None:
+        lines.append(f"Renamed from: {file.original_path}")
+    index = "Untracked" if file.index_status == "?" else _status_label(file.index_status)
+    worktree = _status_label(file.worktree_status)
+    if index:
+        lines.append(f"Staged: {index}")
+    if worktree:
+        lines.append(f"Not staged: {worktree}")
+    return "\n".join(lines)

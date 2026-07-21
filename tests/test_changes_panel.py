@@ -36,11 +36,13 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
     assert panel.findChild(QAction, "discardChangesAction") is panel.discard_action
     assert panel.findChild(QAction, "stashSelectedAction") is panel.stash_action
     assert panel.findChild(QAction, "ignoreFileAction") is panel.ignore_action
+    assert panel.tree.columnCount() == 1
+    assert panel.tree.headerItem().text(0) == "Changes"
 
 
 def test_clicking_file_text_does_not_toggle_checkbox(qtbot: QtBot) -> None:
     tree = ChangesTreeWidget()
-    tree.setHeaderLabels(["File", "Index", "Working tree"])
+    tree.setHeaderLabel("Changes")
     tree.setRootIsDecorated(False)
     tree.resize(500, 200)
     item = QTreeWidgetItem(["src/example.py", "", "Modified"])
@@ -112,6 +114,21 @@ def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
     assert package.child(0).checkState(0) is Qt.CheckState.Checked
     assert package.child(1).checkState(0) is Qt.CheckState.Checked
     assert requests == [((first, second), True)]
+
+
+def test_file_row_uses_status_icon_and_detailed_tooltip(qtbot: QtBot) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    file = FileStatus("src/example.py", "M", "M")
+
+    panel.show_files([(file, Qt.CheckState.PartiallyChecked)], None)
+
+    item = panel.tree.topLevelItem(0)
+    assert item is not None
+    assert not item.icon(0).isNull()
+    assert item.text(0) == "src/example.py"
+    assert "Staged: Modified" in item.toolTip(0)
+    assert "Not staged: Modified" in item.toolTip(0)
 
 
 def test_changes_view_mode_is_saved(qtbot: QtBot, tmp_path: Path) -> None:
