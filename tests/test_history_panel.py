@@ -9,6 +9,7 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
+    RefComparisonSnapshot,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphRow
 from mygitclient.ui.history_panel import FILTER_HIGHLIGHT_ROLE, HistoryPanel
@@ -122,3 +123,28 @@ def test_history_panel_shows_commit_details_and_emits_file_selection(
     assert "Update documentation" in panel.details_label.text()
     assert commit.oid in panel.details_label.text()
     assert selected_files == [(commit, change)]
+
+
+def test_history_panel_shows_ref_comparison_and_emits_file_selection(
+    qtbot: QtBot,
+) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    change = CommitFileChange("M", "README.md")
+    snapshot = RefComparisonSnapshot(
+        Path("repository"), "refs/heads/main", "refs/heads/feature", (change,)
+    )
+    selected: list[tuple[object, object, object]] = []
+
+    def capture(base: str, compare: str, file: object) -> None:
+        selected.append((base, compare, file))
+
+    panel.comparison_file_selected.connect(capture)
+
+    panel.show_comparison(snapshot)
+    item = panel.files.topLevelItem(0)
+    assert item is not None
+    panel.files.setCurrentItem(item)
+
+    assert "refs/heads/main → refs/heads/feature" in panel.details_label.text()
+    assert selected == [("refs/heads/main", "refs/heads/feature", change)]

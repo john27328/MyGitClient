@@ -24,6 +24,7 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
+    RefComparisonSnapshot,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
 from mygitclient.ui.refs_panel import RefsPanel
@@ -80,6 +81,7 @@ class HistoryPanel(QWidget):
     load_more_requested = Signal()
     commit_selected = Signal(object)
     file_selected = Signal(object, object)
+    comparison_file_selected = Signal(str, str, object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -132,6 +134,7 @@ class HistoryPanel(QWidget):
         self.files.setHeaderLabels(["Status", "File"])
         self.files.setColumnWidth(0, 80)
         self.files.currentItemChanged.connect(self._file_changed)
+        self._comparison_refs: tuple[str, str] | None = None
         details_layout = QVBoxLayout(self.details)
         details_layout.setContentsMargins(8, 0, 0, 0)
         details_layout.addWidget(self.details_label)
@@ -162,6 +165,7 @@ class HistoryPanel(QWidget):
         self.tree.clear()
         self.files.clear()
         self.details_label.setText("Select a commit to view its details.")
+        self._comparison_refs = None
         self.load_more_button.hide()
         self._update_filter_count()
 
@@ -197,6 +201,27 @@ class HistoryPanel(QWidget):
             self.files.addTopLevelItem(item)
         self.files.resizeColumnToContents(0)
 
+    def show_comparison(self, snapshot: RefComparisonSnapshot) -> None:
+        self._comparison_refs = (snapshot.base_ref, snapshot.compare_ref)
+        self.tree.clearSelection()
+        self.files.clear()
+        self.details_label.setText(
+            f"Comparing {snapshot.base_ref} → {snapshot.compare_ref}\n\n"
+            f"{len(snapshot.files)} changed file(s). Select a file to view its diff."
+        )
+        for change in snapshot.files:
+            item = QTreeWidgetItem([change.status, change.path])
+            item.setData(0, Qt.ItemDataRole.UserRole, change)
+            if change.original_path is not None:
+                item.setToolTip(1, f"Renamed from {change.original_path}")
+            self.files.addTopLevelItem(item)
+        self.files.resizeColumnToContents(0)
+
+    def clear_comparison(self) -> None:
+        self._comparison_refs = None
+        self.files.clear()
+        self.details_label.setText("Select a commit to view its details.")
+
     @property
     def selected_commit(self) -> CommitSummary | None:
         item = cast(QTreeWidgetItem | None, self.tree.currentItem())
@@ -214,6 +239,7 @@ class HistoryPanel(QWidget):
         commit = current.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(commit, CommitSummary):
             return
+        self._comparison_refs = None
         parents = ", ".join(parent[:8] for parent in commit.parent_oids) or "None (root)"
         self.details_label.setText(
             f"{commit.subject}\n\n"
@@ -229,11 +255,17 @@ class HistoryPanel(QWidget):
     def _file_changed(
         self, current: QTreeWidgetItem | None, _previous: QTreeWidgetItem | None
     ) -> None:
-        commit = self.selected_commit
-        if current is None or commit is None:
+        if current is None:
             return
         change = current.data(0, Qt.ItemDataRole.UserRole)
-        if isinstance(change, CommitFileChange):
+        if not isinstance(change, CommitFileChange):
+            return
+        if self._comparison_refs is not None:
+            base_ref, compare_ref = self._comparison_refs
+            self.comparison_file_selected.emit(base_ref, compare_ref, change)
+            return
+        commit = self.selected_commit
+        if commit is not None:
             self.file_selected.emit(commit, change)
 
     def _append_commit(self, commit: CommitSummary) -> None:

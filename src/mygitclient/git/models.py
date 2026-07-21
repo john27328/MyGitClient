@@ -157,6 +157,22 @@ class CommitDiffSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RefComparisonSnapshot:
+    repository: Path
+    base_ref: str
+    compare_ref: str
+    files: tuple[CommitFileChange, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RefComparisonDiffSnapshot:
+    repository: Path
+    base_ref: str
+    compare_ref: str
+    diff: UnifiedDiff
+
+
+@dataclass(frozen=True, slots=True)
 class AmendPreview:
     repository: Path
     commit_oid: str

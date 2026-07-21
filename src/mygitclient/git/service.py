@@ -18,6 +18,8 @@ from mygitclient.git.models import (
     FileStatus,
     GitCommand,
     GitResult,
+    RefComparisonDiffSnapshot,
+    RefComparisonSnapshot,
     RepositoryStatusSnapshot,
     StashesSnapshot,
     StashInfo,
@@ -55,6 +57,8 @@ class GitService(QObject):
     branches_ready = Signal(object)
     commit_files_ready = Signal(object)
     commit_diff_ready = Signal(object)
+    comparison_ready = Signal(object)
+    comparison_diff_ready = Signal(object)
     status_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
@@ -87,6 +91,12 @@ class GitService(QObject):
         self._latest_commit_files_request: dict[Path, int] = {}
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_commit_diff_request: dict[Path, int] = {}
+        self._comparison_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
+        self._latest_comparison_request: dict[Path, int] = {}
+        self._comparison_diff_requests: dict[
+            GitRunner, tuple[Path, str, str, str, int]
+        ] = {}
+        self._latest_comparison_diff_request: dict[Path, int] = {}
         self._amend_preview_requests: dict[GitRunner, tuple[Path, str, int]] = {}
         self._latest_amend_preview_request: dict[Path, int] = {}
         self._amend_diff_requests: dict[
@@ -531,6 +541,72 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, repository, "read commit history"))
         return runner
 
+    def request_ref_comparison(
+        self, repository: Path, base_ref: str, compare_ref: str
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_comparison_request[repository] = request_id
+        self._comparison_requests[runner] = (
+            repository,
+            base_ref,
+            compare_ref,
+            request_id,
+        )
+        runner.completed.connect(self._handle_ref_comparison)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "diff",
+                    "--name-status",
+                    "-z",
+                    "--find-renames",
+                    f"{base_ref}...{compare_ref}",
+                ),
+                repository,
+                "compare refs",
+            )
+        )
+        return runner
+
+    def request_ref_comparison_diff(
+        self,
+        repository: Path,
+        base_ref: str,
+        compare_ref: str,
+        path: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_comparison_diff_request[repository] = request_id
+        self._comparison_diff_requests[runner] = (
+            repository,
+            base_ref,
+            compare_ref,
+            path,
+            request_id,
+        )
+        runner.completed.connect(self._handle_ref_comparison_diff)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-color",
+                    f"{base_ref}...{compare_ref}",
+                    "--",
+                    path,
+                ),
+                repository,
+                "read ref comparison diff",
+            )
+        )
+        return runner
+
     def request_status(self, repository: Path) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
@@ -799,6 +875,8 @@ class GitService(QObject):
         checkout = self._checkout_workflows.pop(runner, None)
         self._commit_files_requests.pop(runner, None)
         self._commit_diff_requests.pop(runner, None)
+        self._comparison_requests.pop(runner, None)
+        self._comparison_diff_requests.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(
                 f"Could not {checkout.step} during checkout: {message}"
@@ -834,6 +912,64 @@ class GitService(QObject):
             return
         page = CommitPage(repository, commits[:limit], offset, len(commits) > limit)
         self.history_ready.emit(page)
+
+    @Slot(object)
+    def _handle_ref_comparison(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned comparison from an unknown operation")
+            return
+        request = self._comparison_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected comparison result")
+            return
+        repository, base_ref, compare_ref, request_id = request
+        if self._latest_comparison_request.get(repository) != request_id:
+            return
+        self._latest_comparison_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not compare refs")
+            return
+        try:
+            files = parse_commit_files(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.comparison_ready.emit(
+            RefComparisonSnapshot(repository, base_ref, compare_ref, files)
+        )
+
+    @Slot(object)
+    def _handle_ref_comparison_diff(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit(
+                "Git returned comparison diff from an unknown operation"
+            )
+            return
+        request = self._comparison_diff_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected comparison diff")
+            return
+        repository, base_ref, compare_ref, path, request_id = request
+        if self._latest_comparison_diff_request.get(repository) != request_id:
+            return
+        self._latest_comparison_diff_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read comparison diff")
+            return
+        diff = parse_unified_diff(result.stdout, path, staged=False)
+        self.comparison_diff_ready.emit(
+            RefComparisonDiffSnapshot(repository, base_ref, compare_ref, diff)
+        )
 
     @Slot(object)
     def _handle_branches(self, result: object) -> None:

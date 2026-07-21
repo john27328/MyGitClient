@@ -45,6 +45,8 @@ from mygitclient.git.models import (
     CommitSummary,
     DiffSnapshot,
     FileStatus,
+    RefComparisonDiffSnapshot,
+    RefComparisonSnapshot,
     RepositoryStatus,
     RepositoryStatusSnapshot,
     StashesSnapshot,
@@ -157,6 +159,9 @@ class MainWindow(QMainWindow):
         self._history_panel.load_more_requested.connect(self._load_more_history)
         self._history_panel.commit_selected.connect(self._history_commit_selected)
         self._history_panel.file_selected.connect(self._history_file_selected)
+        self._history_panel.comparison_file_selected.connect(
+            self._history_comparison_file_selected
+        )
         refs_panel = self._history_panel.refs_panel
         refs_panel.refs_selected.connect(self._history_refs_selected)
         refs_panel.checkout_requested.connect(self._checkout_branch)
@@ -346,6 +351,8 @@ class MainWindow(QMainWindow):
         self._git.amend_preview_ready.connect(self._show_amend_preview)
         self._git.status_ready.connect(self._show_status)
         self._git.history_ready.connect(self._show_history)
+        self._git.comparison_ready.connect(self._show_ref_comparison)
+        self._git.comparison_diff_ready.connect(self._show_ref_comparison_diff)
         self._git.branches_ready.connect(self._show_branches)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
@@ -500,6 +507,11 @@ class MainWindow(QMainWindow):
         self._history_runner = self._git.request_history(
             self._repository, refs=self._history_refs
         )
+        if len(refs) == 2:
+            self._status_label.setText(f"Comparing {refs[0]} with {refs[1]}…")
+            self._git.request_ref_comparison(self._repository, refs[0], refs[1])
+        else:
+            self._history_panel.clear_comparison()
 
     @Slot(object)
     def _show_history(self, value: object) -> None:
@@ -561,6 +573,57 @@ class MainWindow(QMainWindow):
             file_value.path,
             parent_oid=commit_value.parent_oids[0] if commit_value.parent_oids else None,
         )
+
+    @Slot(str, str, object)
+    def _history_comparison_file_selected(
+        self, base_ref: str, compare_ref: str, file_value: object
+    ) -> None:
+        if self._repository is None or not isinstance(file_value, CommitFileChange):
+            return
+        self._status_label.setText(f"Comparing {file_value.path}…")
+        self._git.request_ref_comparison_diff(
+            self._repository, base_ref, compare_ref, file_value.path
+        )
+
+    @Slot(object)
+    def _show_ref_comparison(self, value: object) -> None:
+        if (
+            not isinstance(value, RefComparisonSnapshot)
+            or value.repository != self._repository
+            or self._history_refs != (value.base_ref, value.compare_ref)
+        ):
+            return
+        self._history_panel.show_comparison(value)
+        self._status_label.setText(
+            f"{len(value.files)} file(s) differ between the selected refs"
+        )
+
+    @Slot(object)
+    def _show_ref_comparison_diff(self, value: object) -> None:
+        if (
+            not isinstance(value, RefComparisonDiffSnapshot)
+            or value.repository != self._repository
+            or self._history_refs != (value.base_ref, value.compare_ref)
+            or self._workspace_tabs.currentIndex() != 1
+        ):
+            return
+        blocker = QSignalBlocker(self._diff_version)
+        self._diff_version.clear()
+        self._diff_version.addItem(
+            f"{value.base_ref}…{value.compare_ref}", None
+        )
+        del blocker
+        self._diff_view.display_diff(
+            value.diff,
+            selection_key=None,
+            preserve_scroll=False,
+            whole_file_staged=False,
+            interactive=False,
+        )
+        self._diff_container.show()
+        self._commit_diff_visible = True
+        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
+        self._status_label.setText(f"Showing comparison diff for {value.diff.path}")
 
     @Slot(object)
     def _show_commit_diff(self, value: object) -> None:

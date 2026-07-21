@@ -14,6 +14,8 @@ from mygitclient.git.models import (
     CommitPage,
     DiffSnapshot,
     FileStatus,
+    RefComparisonDiffSnapshot,
+    RefComparisonSnapshot,
     StashesSnapshot,
     TagsSnapshot,
 )
@@ -101,6 +103,45 @@ def test_history_can_be_limited_to_one_branch(qtbot: QtBot, tmp_path: Path) -> N
         "feature commit",
         "main commit",
     }
+
+
+def test_refs_can_be_compared_by_file_and_diff(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(tmp_path, *identity, "commit", "-m", "base")
+    _git(tmp_path, "switch", "-c", "feature")
+    tracked.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, *identity, "commit", "-am", "feature")
+    service = GitService()
+    comparisons: list[object] = []
+    diffs: list[object] = []
+    service.comparison_ready.connect(comparisons.append)
+    service.comparison_diff_ready.connect(diffs.append)
+
+    with qtbot.waitSignal(service.comparison_ready, timeout=5000):
+        service.request_ref_comparison(tmp_path, "main", "feature")
+
+    comparison = comparisons[-1]
+    assert isinstance(comparison, RefComparisonSnapshot)
+    assert [(change.status, change.path) for change in comparison.files] == [
+        ("M", "tracked.txt")
+    ]
+
+    with qtbot.waitSignal(service.comparison_diff_ready, timeout=5000):
+        service.request_ref_comparison_diff(tmp_path, "main", "feature", "tracked.txt")
+
+    diff = diffs[-1]
+    assert isinstance(diff, RefComparisonDiffSnapshot)
+    assert "-base" in diff.diff.text
+    assert "+feature" in diff.diff.text
 
 
 def test_diff_result_identifies_its_repository(qtbot: QtBot, tmp_path: Path) -> None:
