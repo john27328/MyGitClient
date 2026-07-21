@@ -161,6 +161,7 @@ class MainWindow(QMainWindow):
         self._branches_panel.create_requested.connect(self._create_branch)
         self._branches_panel.rename_requested.connect(self._rename_branch)
         self._branches_panel.delete_requested.connect(self._delete_branch)
+        self._branches_panel.force_delete_requested.connect(self._force_delete_branch)
 
         self._tags_panel = TagsPanel()
         self._tags_panel.create_requested.connect(self._create_tag)
@@ -669,17 +670,32 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _delete_branch(self, value: object) -> None:
+        self._confirm_delete_branch(value, force=False)
+
+    @Slot(object)
+    def _force_delete_branch(self, value: object) -> None:
+        self._confirm_delete_branch(value, force=True)
+
+    def _confirm_delete_branch(self, value: object, *, force: bool) -> None:
         if self._repository is None or not isinstance(value, BranchInfo):
             return
-        force = value.ahead > 0
         if force:
-            detail = (
-                f"Branch '{value.name}' is {value.ahead} commit(s) ahead of its upstream.\n\n"
-                "Force-delete the local branch? Its remote branch and commits reachable "
-                "from other branches will not be deleted."
+            tracking = (
+                "Its upstream branch no longer exists.\n\n"
+                if value.upstream_gone
+                else ""
+            )
+            detail = tracking + (
+                f"Force-delete local branch '{value.name}'?\n\n"
+                "Commits that are not reachable from another branch may become difficult "
+                "to recover. The remote branch will not be deleted."
             )
         else:
-            detail = f"Delete local branch '{value.name}'?"
+            detail = (
+                f"Safely delete local branch '{value.name}'?\n\n"
+                "Git will refuse if the branch contains commits that have not been merged. "
+                "Use Force delete from the branch context menu only if that is intentional."
+            )
         answer = QMessageBox.question(
             self, "Force delete branch" if force else "Delete branch", detail
         )

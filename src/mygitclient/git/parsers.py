@@ -52,6 +52,7 @@ def parse_branches(repository: Path, output: bytes) -> BranchesSnapshot:
                 upstream=upstream or None,
                 ahead=int(ahead_match.group(1)) if ahead_match else 0,
                 behind=int(behind_match.group(1)) if behind_match else 0,
+                upstream_gone="gone" in tracking,
             )
         )
     return BranchesSnapshot(repository, tuple(branches))

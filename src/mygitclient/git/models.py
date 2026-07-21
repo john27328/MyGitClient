@@ -49,6 +49,7 @@ class BranchInfo:
     upstream: str | None = None
     ahead: int = 0
     behind: int = 0
+    upstream_gone: bool = False
 
 
 @dataclass(frozen=True, slots=True)

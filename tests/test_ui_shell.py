@@ -23,8 +23,15 @@ from PySide6.QtWidgets import (
 from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
 
-from mygitclient.git.models import BranchStatus, RepositoryStatus
+from mygitclient.git.models import (
+    BranchesSnapshot,
+    BranchInfo,
+    BranchStatus,
+    RepositoryStatus,
+)
+from mygitclient.git.service import GitService
 from mygitclient.theme import Theme
+from mygitclient.ui.branches_panel import BranchesPanel
 from mygitclient.ui.main_window import MainWindow, push_requires_rewrite, sync_action_labels
 
 
@@ -114,6 +121,54 @@ def test_force_push_menu_confirmation_starts_force_with_lease(
     force_push.trigger()
 
     assert requested == [True]
+    window.close()
+
+
+def test_branch_delete_requires_confirmation_and_preserves_force_choice(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    requested: list[bool] = []
+
+    def confirm(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
+        return QMessageBox.StandardButton.Yes
+
+    def record_delete(
+        _service: GitService,
+        _repository: Path,
+        _branch: BranchInfo,
+        *,
+        force: bool = False,
+    ) -> None:
+        requested.append(force)
+
+    monkeypatch.setattr(QMessageBox, "question", confirm)
+    monkeypatch.setattr(GitService, "request_delete_branch", record_delete)
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_path, check=True)
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    window.open_repository(tmp_path)
+    branch = BranchInfo(
+        "refs/heads/old-feature",
+        "old-feature",
+        "1" * 40,
+        False,
+        upstream="origin/old-feature",
+        upstream_gone=True,
+    )
+    panel = window.findChild(BranchesPanel)
+    assert panel is not None
+    panel.show_branches(BranchesSnapshot(tmp_path, (branch,)))
+    local_root = panel.tree.topLevelItem(0)
+    assert local_root is not None
+    branch_item = local_root.child(0)
+    assert branch_item is not None
+    panel.tree.setCurrentItem(branch_item)
+
+    panel.delete_action.trigger()
+    panel.setEnabled(True)
+    panel.force_delete_action.trigger()
+
+    assert requested == [False, True]
     window.close()
 
 

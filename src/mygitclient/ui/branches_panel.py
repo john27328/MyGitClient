@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from typing import cast
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import QPoint, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -22,6 +23,7 @@ class BranchesPanel(QWidget):
     create_requested = Signal()
     rename_requested = Signal(object)
     delete_requested = Signal(object)
+    force_delete_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -34,6 +36,23 @@ class BranchesPanel(QWidget):
         self.tree.currentItemChanged.connect(self._selection_changed)
         self.tree.itemClicked.connect(self._item_clicked)
         self.tree.itemDoubleClicked.connect(self._item_activated)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
+
+        self.context_menu = QMenu(self)
+        self.checkout_action = self.context_menu.addAction("Checkout")
+        self.checkout_action.setObjectName("checkoutBranchContextAction")
+        self.checkout_action.triggered.connect(self._checkout_selected)
+        self.rename_action = self.context_menu.addAction("Rename…")
+        self.rename_action.setObjectName("renameBranchContextAction")
+        self.rename_action.triggered.connect(self._rename_selected)
+        self.context_menu.addSeparator()
+        self.delete_action = self.context_menu.addAction("Delete safely…")
+        self.delete_action.setObjectName("deleteBranchContextAction")
+        self.delete_action.triggered.connect(self._delete_selected)
+        self.force_delete_action = self.context_menu.addAction("Force delete…")
+        self.force_delete_action.setObjectName("forceDeleteBranchContextAction")
+        self.force_delete_action.triggered.connect(self._force_delete_selected)
 
         self.checkout_button = QPushButton("Checkout selected")
         self.checkout_button.setObjectName("checkoutBranchButton")
@@ -100,20 +119,33 @@ class BranchesPanel(QWidget):
     @Slot()
     def _selection_changed(self) -> None:
         branch = self._selected_branch()
-        self.checkout_button.setEnabled(branch is not None and not branch.current)
-        editable = branch is not None and not branch.remote and not branch.current
-        self.rename_button.setEnabled(editable)
-        self.delete_button.setEnabled(editable)
+        self._update_actions(branch)
 
     @Slot(QTreeWidgetItem, int)
     def _item_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         branch = item.data(0, Qt.ItemDataRole.UserRole)
-        self.checkout_button.setEnabled(
-            isinstance(branch, BranchInfo) and not branch.current
-        )
-        editable = isinstance(branch, BranchInfo) and not branch.remote and not branch.current
+        self._update_actions(branch if isinstance(branch, BranchInfo) else None)
+
+    def _update_actions(self, branch: BranchInfo | None) -> None:
+        can_checkout = branch is not None and not branch.current
+        editable = branch is not None and not branch.remote and not branch.current
+        self.checkout_button.setEnabled(can_checkout)
+        self.checkout_action.setEnabled(can_checkout)
         self.rename_button.setEnabled(editable)
+        self.rename_action.setEnabled(editable)
         self.delete_button.setEnabled(editable)
+        self.delete_action.setEnabled(editable)
+        self.force_delete_action.setEnabled(editable)
+
+    @Slot(QPoint)
+    def _show_context_menu(self, position: QPoint) -> None:
+        item = self.tree.itemAt(position)
+        if item is not None:
+            self.tree.setCurrentItem(item)
+        branch = self._selected_branch()
+        self._update_actions(branch)
+        if branch is not None:
+            self.context_menu.exec(self.tree.viewport().mapToGlobal(position))
 
     @Slot()
     def _rename_selected(self) -> None:
@@ -126,6 +158,12 @@ class BranchesPanel(QWidget):
         branch = self._selected_branch()
         if branch is not None and not branch.remote and not branch.current:
             self.delete_requested.emit(branch)
+
+    @Slot()
+    def _force_delete_selected(self) -> None:
+        branch = self._selected_branch()
+        if branch is not None and not branch.remote and not branch.current:
+            self.force_delete_requested.emit(branch)
 
     @Slot()
     def _checkout_selected(self) -> None:
@@ -148,6 +186,8 @@ class BranchesPanel(QWidget):
 
 
 def _tracking_label(branch: BranchInfo) -> str:
+    if branch.upstream_gone:
+        return "Gone"
     parts: list[str] = []
     if branch.ahead:
         parts.append(f"↑ {branch.ahead}")

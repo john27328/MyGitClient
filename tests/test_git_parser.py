@@ -42,6 +42,17 @@ def test_parse_branches_includes_tracking_and_remote_refs() -> None:
     assert remote.name == "origin/topic"
 
 
+def test_parse_branches_marks_missing_upstream() -> None:
+    snapshot = parse_branches(
+        Path("repository"),
+        b"refs/heads/old-feature\x00old-feature\x001234\x00origin/old-feature\x00[gone]"
+        b"\x00 \x1e\n",
+    )
+
+    assert snapshot.branches[0].upstream == "origin/old-feature"
+    assert snapshot.branches[0].upstream_gone
+
+
 def test_parse_commit_files_supports_renames_and_regular_changes() -> None:
     files = parse_commit_files(
         b"M\x00changed.txt\x00R100\x00old name.txt\x00new name.txt\x00D\x00deleted.txt\x00"
