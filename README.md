@@ -39,6 +39,11 @@ Download the portable ZIP and matching checksum from the
 [latest release](https://github.com/john27328/MyGitClient/releases/latest), extract it,
 and start `MyGitClient.exe` or `Launch MyGitClient.cmd`.
 
+Portable builds can install later releases from `Help → Check for Updates…`. The app
+downloads the Windows ZIP, verifies its published SHA-256 checksum, replaces the portable
+folder through a separate updater process, and restarts itself. Source/venv installations
+continue to open the release download page instead.
+
 The archive includes the Python runtime and application dependencies. A system Git
 installation must still be available in `PATH`.
 
