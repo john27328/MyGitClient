@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, cast
 
-from PySide6.QtCore import QObject, QProcess, QUrl, Signal, Slot
+from PySide6.QtCore import QObject, QProcess, QTimer, QUrl, Signal, Slot
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 from mygitclient import __version__
@@ -217,6 +217,11 @@ class UpdateDownloader(QObject):
         self._archive: Path | None = None
         self._checksum_url: str | None = None
         self._cancelled = False
+        self._timed_out = False
+        self._inactivity_timer = QTimer(self)
+        self._inactivity_timer.setSingleShot(True)
+        self._inactivity_timer.setInterval(30_000)
+        self._inactivity_timer.timeout.connect(self._timeout)
 
     def download(self, update: UpdateInfo) -> None:
         if self._reply is not None:
@@ -225,6 +230,7 @@ class UpdateDownloader(QObject):
             self.failed.emit("This release does not contain a portable update and checksum")
             return
         self._cancelled = False
+        self._timed_out = False
         self._directory = Path(tempfile.mkdtemp(prefix="mygitclient-update-"))
         self._archive = self._directory / f"MyGitClient-{update.version}-windows-x64.zip"
         self._checksum_url = update.checksum_url
@@ -240,10 +246,21 @@ class UpdateDownloader(QObject):
     def _start(self, url: str, finished: Callable[[], None], *, write: bool) -> None:
         reply = self._network.get(_request(QUrl(url)))
         self._reply = reply
+        self._inactivity_timer.start()
         if write:
             reply.readyRead.connect(self._write_ready_data)
-            reply.downloadProgress.connect(self.progress)
+            reply.downloadProgress.connect(self._download_progress)
         reply.finished.connect(finished)
+
+    def _download_progress(self, received: int, total: int) -> None:
+        self._inactivity_timer.start()
+        self.progress.emit(received, total)
+
+    @Slot()
+    def _timeout(self) -> None:
+        self._timed_out = True
+        if self._reply is not None:
+            self._reply.abort()
 
     @Slot()
     def _write_ready_data(self) -> None:
@@ -255,6 +272,7 @@ class UpdateDownloader(QObject):
         reply = self._reply
         self._write_ready_data()
         self._reply = None
+        self._inactivity_timer.stop()
         if self._stream is not None:
             self._stream.close()
             self._stream = None
@@ -263,6 +281,9 @@ class UpdateDownloader(QObject):
         try:
             if self._cancelled:
                 self.cancelled.emit()
+                return
+            if self._timed_out:
+                self.failed.emit("The update download timed out. Check your connection and retry.")
                 return
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 self.failed.emit(reply.errorString())
@@ -281,8 +302,12 @@ class UpdateDownloader(QObject):
         if reply is None:
             return
         try:
+            self._inactivity_timer.stop()
             if self._cancelled:
                 self.cancelled.emit()
+                return
+            if self._timed_out:
+                self.failed.emit("The update download timed out. Check your connection and retry.")
                 return
             if reply.error() != QNetworkReply.NetworkError.NoError:
                 self.failed.emit(reply.errorString())

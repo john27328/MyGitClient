@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mygitclient.updates import (
+    UpdateDownloader,
     create_updater_script,
     parse_checksum,
     parse_release,
@@ -92,3 +93,21 @@ def test_updater_script_replaces_portable_directory(tmp_path: Path) -> None:
     assert "Expand-Archive" in text
     assert "Move-Item -LiteralPath $target" in text
     assert "Start-Process -FilePath $executable" in text
+
+
+def test_downloader_forwards_large_qt_progress_values() -> None:
+    class TestDownloader(UpdateDownloader):
+        def forward_progress(self, received: int, total: int) -> None:
+            self._download_progress(received, total)
+
+    downloader = TestDownloader()
+    progress: list[tuple[int, int]] = []
+
+    def capture_progress(received: int, total: int) -> None:
+        progress.append((received, total))
+
+    downloader.progress.connect(capture_progress)
+
+    downloader.forward_progress(51_000_000, 52_000_000)
+
+    assert progress == [(51_000_000, 52_000_000)]
