@@ -104,16 +104,37 @@ def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
     assert panel.tree.topLevelItemCount() == 2
     src = panel.tree.topLevelItem(0)
     assert src is not None
-    package = src.child(0)
-    assert package.text(0) == "package"
-    assert package.childCount() == 2
-    assert package.checkState(0) is Qt.CheckState.PartiallyChecked
+    assert src.text(0) == "src/package"
+    assert src.childCount() == 2
+    assert src.checkState(0) is Qt.CheckState.PartiallyChecked
 
-    package.setCheckState(0, Qt.CheckState.Checked)
+    src.setCheckState(0, Qt.CheckState.Checked)
 
-    assert package.child(0).checkState(0) is Qt.CheckState.Checked
-    assert package.child(1).checkState(0) is Qt.CheckState.Checked
+    assert src.child(0).checkState(0) is Qt.CheckState.Checked
+    assert src.child(1).checkState(0) is Qt.CheckState.Checked
     assert requests == [((first, second), True)]
+
+
+def test_tree_mode_compacts_a_single_file_path_and_preserves_selection(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "changes.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/viewMode", "tree")
+    panel = ChangesPanel(settings)
+    qtbot.addWidget(panel)
+    file = FileStatus("src/package/only.py", ".", "M")
+
+    selected = panel.show_files([(file, Qt.CheckState.Checked)], file.path)
+
+    assert panel.tree.topLevelItemCount() == 1
+    item = panel.tree.topLevelItem(0)
+    assert item is not None
+    assert item is selected
+    assert item.text(0) == "src/package/only.py"
+    assert item.childCount() == 0
+    assert item.data(0, Qt.ItemDataRole.UserRole) == file
+    assert item.checkState(0) is Qt.CheckState.Checked
+    assert not item.icon(0).isNull()
 
 
 def test_file_row_uses_status_icon_and_detailed_tooltip(qtbot: QtBot) -> None:

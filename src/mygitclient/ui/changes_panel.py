@@ -205,10 +205,50 @@ class ChangesPanel(QWidget):
             for index in range(self.tree.topLevelItemCount()):
                 root = self.tree.topLevelItem(index)
                 if root is not None:
+                    self._compact_folder_chain(root)
+            selected_item = self._find_file_item(selected_path)
+            for index in range(self.tree.topLevelItemCount()):
+                root = self.tree.topLevelItem(index)
+                if root is not None:
                     self._refresh_folder_state(root)
             self.tree.expandAll()
         del blocker
         return selected_item
+
+    def _compact_folder_chain(self, item: QTreeWidgetItem) -> None:
+        while item.data(0, _FOLDER_ROLE) is True and item.childCount() == 1:
+            child = item.takeChild(0)
+            item.setText(0, f"{item.text(0)}/{child.text(0)}")
+            if child.data(0, _FOLDER_ROLE) is True:
+                while child.childCount():
+                    item.addChild(child.takeChild(0))
+                continue
+            item.setData(0, _FOLDER_ROLE, None)
+            item.setData(0, Qt.ItemDataRole.UserRole, child.data(0, Qt.ItemDataRole.UserRole))
+            item.setIcon(0, child.icon(0))
+            item.setToolTip(0, child.toolTip(0))
+            item.setFlags(child.flags())
+            if child.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(0, child.checkState(0))
+        for index in range(item.childCount()):
+            self._compact_folder_chain(item.child(index))
+
+    def _find_file_item(self, path: str | None) -> QTreeWidgetItem | None:
+        if path is None:
+            return None
+        pending: list[QTreeWidgetItem] = []
+        for index in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(index)
+            if item is not None:
+                pending.append(item)
+        while pending:
+            item = pending.pop()
+            value = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(value, FileStatus) and value.path == path:
+                return item
+            for index in range(item.childCount()):
+                pending.append(item.child(index))
+        return None
 
     @Slot(QTreeWidgetItem, int)
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
