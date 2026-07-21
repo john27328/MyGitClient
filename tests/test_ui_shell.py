@@ -54,6 +54,7 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     pull_button = window.findChild(QToolButton, "pullButton")
     pull_rebase = window.findChild(QAction, "pullRebaseAction")
     pull_autostash = window.findChild(QAction, "pullAutostashAction")
+    font_sizes = window.findChild(QAction, "fontSizesAction")
     assert toolbar is not None
     assert refresh_action is not None
     assert fetch_action is not None
@@ -62,6 +63,7 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert pull_button is not None
     assert pull_rebase is not None
     assert pull_autostash is not None
+    assert font_sizes is not None
     assert not fetch_action.icon().isNull()
     assert not push_action.icon().isNull()
     assert not pull_action.icon().isNull()

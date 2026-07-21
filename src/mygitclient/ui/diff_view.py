@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -51,6 +52,10 @@ class DiffView(QWidget):
         diff_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         diff_font.setStyleHint(QFont.StyleHint.Monospace)
         diff_font.setFixedPitch(True)
+        saved_font_size = settings.value("diff/fontSize", diff_font.pointSize())
+        if isinstance(saved_font_size, (int, str)):
+            with suppress(ValueError):
+                diff_font.setPointSize(max(7, min(32, int(saved_font_size))))
 
         self.diff = QPlainTextEdit()
         self.diff.setObjectName("diffPanel")
@@ -110,6 +115,17 @@ class DiffView(QWidget):
 
         self.side_old = self._make_side_editor("sideBySideOld")
         self.side_new = self._make_side_editor("sideBySideNew")
+        self.side_old_gutter = self._make_side_gutter("sideBySideOldGutter")
+        self.side_new_gutter = self._make_side_gutter("sideBySideNewGutter")
+        for widget in (
+            self.side_old,
+            self.side_new,
+            self.side_old_gutter,
+            self.side_new_gutter,
+        ):
+            widget.setFont(diff_font)
+        self._side_old_line_indexes: list[int | None] = []
+        self._side_new_line_indexes: list[int | None] = []
         self.side_old_highlighter = DiffHighlighter(self.side_old)
         self.side_new_highlighter = DiffHighlighter(self.side_new)
         self.side_old.verticalScrollBar().valueChanged.connect(
@@ -118,9 +134,29 @@ class DiffView(QWidget):
         self.side_new.verticalScrollBar().valueChanged.connect(
             self.side_old.verticalScrollBar().setValue
         )
+        self.side_old.verticalScrollBar().valueChanged.connect(
+            self.side_old_gutter.verticalScrollBar().setValue
+        )
+        self.side_new.verticalScrollBar().valueChanged.connect(
+            self.side_new_gutter.verticalScrollBar().setValue
+        )
+        self.side_old_gutter.line_activated.connect(self._side_old_line_activated)
+        self.side_new_gutter.line_activated.connect(self._side_new_line_activated)
+        old_body = QWidget()
+        old_layout = QHBoxLayout(old_body)
+        old_layout.setContentsMargins(0, 0, 0, 0)
+        old_layout.setSpacing(0)
+        old_layout.addWidget(self.side_old_gutter)
+        old_layout.addWidget(self.side_old, 1)
+        new_body = QWidget()
+        new_layout = QHBoxLayout(new_body)
+        new_layout.setContentsMargins(0, 0, 0, 0)
+        new_layout.setSpacing(0)
+        new_layout.addWidget(self.side_new_gutter)
+        new_layout.addWidget(self.side_new, 1)
         side_splitter = QSplitter(Qt.Orientation.Horizontal)
-        side_splitter.addWidget(self.side_old)
-        side_splitter.addWidget(self.side_new)
+        side_splitter.addWidget(old_body)
+        side_splitter.addWidget(new_body)
         side_splitter.setSizes([500, 500])
 
         self.wrap_button = self._toggle_button("diffWrapButton", "Wrap")
@@ -170,6 +206,7 @@ class DiffView(QWidget):
         self.clear_lines_button.clicked.connect(self.clear_selection)
         self.selected_lines_button.clicked.connect(self._request_selected_lines)
         self.hunk_button.clicked.connect(self._request_selected_hunk)
+        self._update_gutter_visibility(False)
 
     @staticmethod
     def _make_side_editor(object_name: str) -> QPlainTextEdit:
@@ -182,6 +219,23 @@ class DiffView(QWidget):
         font.setFixedPitch(True)
         editor.setFont(font)
         return editor
+
+    @staticmethod
+    def _make_side_gutter(object_name: str) -> DiffGutter:
+        gutter = DiffGutter()
+        gutter.setObjectName(object_name)
+        gutter.setReadOnly(True)
+        gutter.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        gutter.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        gutter.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        gutter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        gutter.setCursor(Qt.CursorShape.PointingHandCursor)
+        gutter.setFixedWidth(28)
+        gutter.setStyleSheet(
+            "QPlainTextEdit { background: palette(base); color: palette(mid); "
+            "border: 0; border-right: 1px solid palette(midlight); }"
+        )
+        return gutter
 
     @staticmethod
     def _toggle_button(object_name: str, text: str) -> QToolButton:
@@ -250,7 +304,11 @@ class DiffView(QWidget):
         self.selection.clear()
         self.diff.clear()
         self.gutter.clear()
+        self.side_old_gutter.clear()
+        self.side_new_gutter.clear()
         self.diff.setExtraSelections([])
+        self.side_old.setExtraSelections([])
+        self.side_new.setExtraSelections([])
 
     def render_selection(self) -> None:
         diff = self.current_diff
@@ -277,6 +335,7 @@ class DiffView(QWidget):
             extra.format.setBackground(color)
             selections.append(extra)
         self.diff.setExtraSelections(selections)
+        self._render_side_selection(diff)
         has_selection = self._interactive and bool(self.selection.selected_lines)
         self.selected_lines_button.setEnabled(has_selection)
         self.clear_lines_button.setEnabled(has_selection)
@@ -300,6 +359,23 @@ class DiffView(QWidget):
             self._remember_selection()
             self.render_selection()
             self.selection_changed.emit()
+
+    @Slot(int, bool)
+    def _side_old_line_activated(self, row_index: int, extend: bool) -> None:
+        self._side_line_activated(self._side_old_line_indexes, row_index, extend)
+
+    @Slot(int, bool)
+    def _side_new_line_activated(self, row_index: int, extend: bool) -> None:
+        self._side_line_activated(self._side_new_line_indexes, row_index, extend)
+
+    def _side_line_activated(
+        self, indexes: list[int | None], row_index: int, extend: bool
+    ) -> None:
+        if row_index < 0 or row_index >= len(indexes):
+            return
+        line_index = indexes[row_index]
+        if line_index is not None:
+            self._gutter_line_activated(line_index, extend)
 
     def _remember_selection(self) -> None:
         diff = self.current_diff
@@ -352,7 +428,7 @@ class DiffView(QWidget):
         )
         for editor in (self.diff, self.side_old, self.side_new):
             editor.setLineWrapMode(mode)
-        self.gutter.setVisible(not enabled and self.isVisible())
+        self._update_gutter_visibility(enabled)
         tooltip = (
             "Turn off Wrap to select individual lines in the gutter"
             if enabled
@@ -371,8 +447,26 @@ class DiffView(QWidget):
             option.setFlags(flags)
             editor.document().setDefaultTextOption(option)
 
+    def set_font_size(self, point_size: int) -> None:
+        for editor in (
+            self.diff,
+            self.gutter,
+            self.side_old,
+            self.side_new,
+            self.side_old_gutter,
+            self.side_new_gutter,
+        ):
+            font = editor.font()
+            font.setPointSize(point_size)
+            editor.setFont(font)
+        if self.current_diff is not None:
+            self._render_gutter(self.current_diff, self.selection)
+
     def set_view_mode(self, mode: str) -> None:
         self.stack.setCurrentIndex(1 if mode == "side-by-side" else 0)
+        self._update_gutter_visibility(
+            self.diff.lineWrapMode() != QPlainTextEdit.LineWrapMode.NoWrap
+        )
 
     def rehighlight(self) -> None:
         self.diff_highlighter.rehighlight()
@@ -414,6 +508,9 @@ class DiffView(QWidget):
         new_kinds: list[DiffLineKind] = []
         old_inline: dict[int, tuple[tuple[int, int], ...]] = {}
         new_inline: dict[int, tuple[tuple[int, int], ...]] = {}
+        line_indexes = {id(line): index for index, line in enumerate(diff.lines)}
+        self._side_old_line_indexes = []
+        self._side_new_line_indexes = []
         for row_index, row in enumerate(diff.side_by_side_rows):
             old_text = self._side_line_text(row.old, old_width, old=True)
             new_text = self._side_line_text(row.new, new_width, old=False)
@@ -421,6 +518,12 @@ class DiffView(QWidget):
             new_lines.append(new_text)
             old_kinds.append(row.old.kind if row.old is not None else "metadata")
             new_kinds.append(row.new.kind if row.new is not None else "metadata")
+            self._side_old_line_indexes.append(
+                line_indexes.get(id(row.old)) if row.old is not None else None
+            )
+            self._side_new_line_indexes.append(
+                line_indexes.get(id(row.new)) if row.new is not None else None
+            )
             if (
                 row.old is not None
                 and row.new is not None
@@ -450,6 +553,57 @@ class DiffView(QWidget):
         self.side_new_highlighter.set_line_kinds(tuple(new_kinds))
         self.side_old.setPlainText("\n".join(old_lines))
         self.side_new.setPlainText("\n".join(new_lines))
+
+    def _render_side_selection(self, diff: UnifiedDiff) -> None:
+        self.side_old_gutter.setPlainText(
+            "\n".join(self._side_marker(diff, index) for index in self._side_old_line_indexes)
+        )
+        self.side_new_gutter.setPlainText(
+            "\n".join(self._side_marker(diff, index) for index in self._side_new_line_indexes)
+        )
+        self.side_old.setExtraSelections(
+            self._side_extra_selections(self.side_old, self._side_old_line_indexes, diff)
+        )
+        self.side_new.setExtraSelections(
+            self._side_extra_selections(self.side_new, self._side_new_line_indexes, diff)
+        )
+
+    def _side_marker(self, diff: UnifiedDiff, line_index: int | None) -> str:
+        if line_index is None or not self._interactive:
+            return " "
+        return self.selection.marker(diff, line_index)
+
+    def _side_extra_selections(
+        self,
+        editor: QPlainTextEdit,
+        indexes: list[int | None],
+        diff: UnifiedDiff,
+    ) -> list[QTextEdit.ExtraSelection]:
+        selections: list[QTextEdit.ExtraSelection] = []
+        dark = editor.palette().base().color().lightness() < 128
+        for row_index, line_index in enumerate(indexes):
+            if line_index is None or line_index not in self.selection.selected_lines:
+                continue
+            extra = QTextEdit.ExtraSelection()
+            cursor = QTextCursor(editor.document().findBlockByNumber(row_index))
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            extra.cursor = cursor
+            kind = diff.lines[line_index].kind
+            if kind == "addition":
+                color = QColor("#2f7548" if dark else "#b7e8c3")
+            elif kind == "deletion":
+                color = QColor("#843944" if dark else "#f2b8b8")
+            else:
+                color = QColor("#365b8c" if dark else "#dbeafe")
+            extra.format.setBackground(color)
+            selections.append(extra)
+        return selections
+
+    def _update_gutter_visibility(self, wrap_enabled: bool) -> None:
+        unified = self.view_mode_combo.currentData() == "unified"
+        self.gutter.setVisible(unified and not wrap_enabled)
+        self.side_old_gutter.setVisible(not unified and not wrap_enabled)
+        self.side_new_gutter.setVisible(not unified and not wrap_enabled)
 
     @staticmethod
     def _side_line_text(line: DiffLine | None, width: int, *, old: bool) -> str:

@@ -701,6 +701,32 @@ class GitService(QObject):
         self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
+    def request_stage_files(
+        self,
+        repository: Path,
+        files: tuple[FileStatus, ...],
+        *,
+        staged: bool,
+        has_head: bool,
+    ) -> GitRunner:
+        paths = tuple(file.path for file in files)
+        if staged:
+            arguments = ("add", "--", *paths)
+            operation = "stage selected files"
+        elif has_head:
+            arguments = ("restore", "--staged", "--", *paths)
+            operation = "unstage selected files"
+        else:
+            arguments = ("rm", "-r", "--cached", "--", *paths)
+            operation = "unstage selected new files"
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = paths[0] if len(paths) == 1 else "."
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
+        return runner
+
     def request_commit(
         self, repository: Path, message: str, description: str, *, amend: bool
     ) -> GitRunner:

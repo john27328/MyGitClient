@@ -18,16 +18,21 @@ from PySide6.QtGui import (
     QActionGroup,
     QCloseEvent,
     QDesktopServices,
+    QFontDatabase,
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QSpinBox,
     QSplitter,
     QTabWidget,
     QToolBar,
@@ -84,6 +89,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._settings = settings
         self._theme = theme
+        self._apply_saved_ui_font()
         self._workspace = WorkspaceManager(settings)
         self._workspace_discovery = WorkspaceDiscoveryService(self)
         self._update_checker = UpdateChecker(self)
@@ -142,7 +148,7 @@ class MainWindow(QMainWindow):
             "Open a Git repository with File → Open Repository."
         )
 
-        self._changes_panel = ChangesPanel()
+        self._changes_panel = ChangesPanel(self._settings)
         self._changes_container = self._changes_panel
         self._changes = self._changes_panel.tree
         self._discard_action = self._changes_panel.discard_action
@@ -162,6 +168,8 @@ class MainWindow(QMainWindow):
         self._commit_message.textChanged.connect(self._update_commit_controls)
         self._amend.toggled.connect(self._amend_toggled)
         self._commit_button.clicked.connect(self._create_commit)
+        self._changes_panel.folder_stage_requested.connect(self._stage_folder)
+        self._changes_panel.view_mode_changed.connect(self._changes_view_mode_changed)
         self._update_commit_controls()
 
         self._history_panel = HistoryPanel()
@@ -355,6 +363,11 @@ class MainWindow(QMainWindow):
             self._theme_actions.addAction(action)
             theme_menu.addAction(action)
         self._theme_actions.triggered.connect(self._theme_selected)
+        view_menu.addSeparator()
+        font_sizes = QAction("Font Sizes…", self)
+        font_sizes.setObjectName("fontSizesAction")
+        font_sizes.triggered.connect(self._configure_font_sizes)
+        view_menu.addAction(font_sizes)
 
         help_menu = self.menuBar().addMenu("&Help")
         check_updates = QAction("Check for Updates…", self)
@@ -442,6 +455,54 @@ class MainWindow(QMainWindow):
         self._changes.itemSelectionChanged.connect(self._selected_file_changed)
         self._changes.itemSelectionChanged.connect(self._update_file_actions)
         self._changes.itemChanged.connect(self._stage_checkbox_changed)
+
+    def _apply_saved_ui_font(self) -> None:
+        app = QApplication.instance()
+        if not isinstance(app, QApplication):
+            return
+        default_size = QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont).pointSize()
+        value = self._settings.value("appearance/fontSize", default_size)
+        try:
+            point_size = int(value) if isinstance(value, (int, str)) else default_size
+        except ValueError:
+            point_size = default_size
+        font = app.font()
+        font.setPointSize(max(7, min(24, point_size)))
+        app.setFont(font)
+
+    @Slot()
+    def _configure_font_sizes(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Font Sizes")
+        form = QFormLayout(dialog)
+        interface_size = QSpinBox(dialog)
+        interface_size.setObjectName("interfaceFontSizeSpinBox")
+        interface_size.setRange(7, 24)
+        app = QApplication.instance()
+        current_ui_size = app.font().pointSize() if isinstance(app, QApplication) else 10
+        interface_size.setValue(current_ui_size)
+        diff_size = QSpinBox(dialog)
+        diff_size.setObjectName("diffFontSizeSpinBox")
+        diff_size.setRange(7, 32)
+        diff_size.setValue(self._diff.font().pointSize())
+        form.addRow("Interface:", interface_size)
+        form.addRow("Diff:", diff_size)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._settings.setValue("appearance/fontSize", interface_size.value())
+        self._settings.setValue("diff/fontSize", diff_size.value())
+        if isinstance(app, QApplication):
+            font = app.font()
+            font.setPointSize(interface_size.value())
+            app.setFont(font)
+        self._diff_view.set_font_size(diff_size.value())
 
     def _populate_recent_repositories(self) -> None:
         self._repositories_panel.set_recent(self._workspace.recent_repositories())
@@ -1245,48 +1306,18 @@ class MainWindow(QMainWindow):
         self._update_sync_indicators()
         changed_paths = {file.path for file in status_value.files}
         self._diff_view.retain_changed_paths(value.repository, changed_paths)
-        blocker = QSignalBlocker(self._changes)
         stage_all_blocker = QSignalBlocker(self._stage_all)
-        item_to_restore: QTreeWidgetItem | None = None
-        self._changes.clear()
         files_to_show = list(status_value.files)
         if self._amend.isChecked():
             visible_paths = {file.path for file in files_to_show}
             for change in self._amend_commit_files:
                 if change.path not in visible_paths:
                     files_to_show.append(FileStatus(change.path, ".", "."))
-        for file in files_to_show:
-            index_label = "" if file.index_status == "?" else _status_label(file.index_status)
-            item = QTreeWidgetItem(
-                [file.path, index_label, _status_label(file.worktree_status)]
-            )
-            if file.original_path is not None:
-                item.setToolTip(0, f"Renamed from {file.original_path}")
-            item.setData(0, Qt.ItemDataRole.UserRole, file)
-            if not file.unmerged:
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                has_saved_selection = self._diff_view.has_saved_selection(
-                    value.repository, file.path
-                )
-                if self._amend.isChecked():
-                    included = file.path in self._amend_included_paths
-                    if included and file.has_worktree_change:
-                        state = Qt.CheckState.PartiallyChecked
-                    elif included:
-                        state = Qt.CheckState.Checked
-                    else:
-                        state = Qt.CheckState.Unchecked
-                    item.setCheckState(0, state)
-                elif has_saved_selection or (file.is_staged and file.has_worktree_change):
-                    item.setCheckState(0, Qt.CheckState.PartiallyChecked)
-                elif file.is_staged:
-                    item.setCheckState(0, Qt.CheckState.Checked)
-                else:
-                    item.setCheckState(0, Qt.CheckState.Unchecked)
-            self._changes.addTopLevelItem(item)
-            if file.path == selected_path:
-                item_to_restore = item
-        del blocker
+        rendered_files = [
+            (file, self._file_check_state(value.repository, file))
+            for file in files_to_show
+        ]
+        item_to_restore = self._changes_panel.show_files(rendered_files, selected_path)
         stageable = [file for file in status_value.files if not file.unmerged]
         has_conflicts = any(file.unmerged for file in status_value.files)
         self._stage_all.setEnabled(bool(stageable) and not has_conflicts)
@@ -1333,6 +1364,45 @@ class MainWindow(QMainWindow):
             del blocker
         self._generated_commit_message = message
         self._generated_commit_description = description
+
+    def _file_check_state(self, repository: Path, file: FileStatus) -> Qt.CheckState:
+        if file.unmerged:
+            return Qt.CheckState.Unchecked
+        has_saved_selection = self._diff_view.has_saved_selection(repository, file.path)
+        if self._amend.isChecked():
+            included = file.path in self._amend_included_paths
+            if included and file.has_worktree_change:
+                return Qt.CheckState.PartiallyChecked
+            return Qt.CheckState.Checked if included else Qt.CheckState.Unchecked
+        if has_saved_selection or (file.is_staged and file.has_worktree_change):
+            return Qt.CheckState.PartiallyChecked
+        return Qt.CheckState.Checked if file.is_staged else Qt.CheckState.Unchecked
+
+    @Slot(object, bool)
+    def _stage_folder(self, value: object, should_stage: bool) -> None:
+        if self._repository is None or not isinstance(value, tuple):
+            return
+        objects = cast(tuple[object, ...], value)
+        files = tuple(file for file in objects if isinstance(file, FileStatus))
+        if not files or len(files) != len(objects):
+            return
+        self._changes.setEnabled(False)
+        action = "Staging" if should_stage else "Unstaging"
+        self._status_label.setText(f"{action} {len(files)} files…")
+        status = self._repository_status
+        self._git.request_stage_files(
+            self._repository,
+            files,
+            staged=should_stage,
+            has_head=status is not None and status.branch.oid is not None,
+        )
+
+    @Slot(str)
+    def _changes_view_mode_changed(self, _mode: str) -> None:
+        if self._repository is None:
+            return
+        self._repository_status = None
+        self._status_runner = self._git.request_status(self._repository)
 
     @Slot(QTreeWidgetItem, int)
     def _stage_checkbox_changed(self, item: QTreeWidgetItem, column: int) -> None:
@@ -1885,21 +1955,6 @@ def format_operation_duration(milliseconds: int) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{seconds:02d}"
     return f"{minutes}:{seconds:02d}"
-
-
-def _status_label(code: str) -> str:
-    return {
-        ".": "",
-        "?": "Untracked",
-        "!": "Ignored",
-        "A": "Added",
-        "M": "Modified",
-        "D": "Deleted",
-        "R": "Renamed",
-        "C": "Copied",
-        "U": "Unmerged",
-        "T": "Type changed",
-    }.get(code, code)
 
 
 def _commit_change_label(file: FileStatus) -> str:

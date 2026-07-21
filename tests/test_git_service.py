@@ -425,6 +425,44 @@ def test_selected_files_can_be_stashed(qtbot: QtBot, tmp_path: Path) -> None:
     ).startswith("stash@{0}")
 
 
+def test_selected_files_can_be_staged_and_unstaged(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    files = tuple(
+        FileStatus(path, ".", "M") for path in ("folder/first.txt", "folder/second.txt")
+    )
+    (tmp_path / "folder").mkdir()
+    for file in files:
+        (tmp_path / file.path).write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    for file in files:
+        (tmp_path / file.path).write_text("after\n", encoding="utf-8")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_stage_files(tmp_path, files, staged=True, has_head=True)
+    assert subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only"], cwd=tmp_path, text=True
+    ).splitlines() == ["folder/first.txt", "folder/second.txt"]
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_stage_files(tmp_path, files, staged=False, has_head=True)
+    assert subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only"], cwd=tmp_path, text=True
+    ).strip() == ""
+
+
 def test_stashes_can_be_listed_applied_and_dropped(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     tracked = tmp_path / "tracked.txt"

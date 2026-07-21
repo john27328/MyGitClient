@@ -23,6 +23,8 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     assert view.findChild(DiffGutter, "diffGutter") is view.gutter
     assert view.findChild(QPlainTextEdit, "sideBySideOld") is view.side_old
     assert view.findChild(QPlainTextEdit, "sideBySideNew") is view.side_new
+    assert view.findChild(DiffGutter, "sideBySideOldGutter") is view.side_old_gutter
+    assert view.findChild(DiffGutter, "sideBySideNewGutter") is view.side_new_gutter
     assert view.findChild(QStackedWidget) is view.stack
     assert view.findChild(QToolButton, "diffWrapButton") is view.wrap_button
     assert view.findChild(QToolButton, "diffWhitespaceButton") is view.whitespace_button
@@ -37,6 +39,23 @@ def test_diff_view_restores_saved_mode(qtbot: QtBot, tmp_path: Path) -> None:
 
     assert view.view_mode_combo.currentData() == "side-by-side"
     assert view.stack.currentIndex() == 1
+
+
+def test_diff_view_restores_and_updates_font_size(qtbot: QtBot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "diff-font.ini"), QSettings.Format.IniFormat)
+    settings.setValue("diff/fontSize", 14)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+
+    assert view.diff.font().pointSize() == 14
+    assert view.side_old_gutter.font().pointSize() == 14
+
+    view.set_font_size(16)
+
+    assert view.diff.font().pointSize() == 16
+    assert view.gutter.font().pointSize() == 16
+    assert view.side_old.font().pointSize() == 16
+    assert view.side_new_gutter.font().pointSize() == 16
 
 
 def test_diff_view_owns_line_selection_and_emits_request(
@@ -142,3 +161,47 @@ def test_diff_selection_is_restored_per_file_and_version(
         whole_file_staged=False,
     )
     assert view.selection.selected_lines == set()
+
+
+def test_side_by_side_gutters_select_lines(qtbot: QtBot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "side-selection.ini"), QSettings.Format.IniFormat)
+    settings.setValue("diff/viewMode", "side-by-side")
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    diff = parse_unified_diff(
+        b"diff --git a/file.txt b/file.txt\n"
+        b"--- a/file.txt\n"
+        b"+++ b/file.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-before\n"
+        b"+after\n",
+        "file.txt",
+        staged=False,
+    )
+    view.display_diff(
+        diff,
+        selection_key=(tmp_path, diff.path, diff.staged),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+
+    view.side_old_gutter.line_activated.emit(4, False)
+    view.side_new_gutter.line_activated.emit(4, True)
+
+    assert view.selection.selected_lines == {4, 5}
+    assert "✓" in view.side_old_gutter.toPlainText()
+    assert "✓" in view.side_new_gutter.toPlainText()
+    assert len(view.side_old.extraSelections()) == 1
+    assert len(view.side_new.extraSelections()) == 1
+
+
+def test_unified_gutter_visibility_does_not_depend_on_parent_visibility(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "gutter.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+
+    view.set_wrap(False)
+
+    assert not view.gutter.isHidden()
