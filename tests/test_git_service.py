@@ -89,6 +89,18 @@ def test_history_can_be_limited_to_one_branch(qtbot: QtBot, tmp_path: Path) -> N
     assert isinstance(page, CommitPage)
     assert [commit.subject for commit in page.commits] == ["main commit"]
 
+    with qtbot.waitSignal(service.history_ready, timeout=5000):
+        service.request_history(
+            tmp_path, refs=("refs/heads/main", "refs/heads/feature")
+        )
+
+    comparison_page = pages[-1]
+    assert isinstance(comparison_page, CommitPage)
+    assert {commit.subject for commit in comparison_page.commits} == {
+        "feature commit",
+        "main commit",
+    }
+
 
 def test_diff_result_identifies_its_repository(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")

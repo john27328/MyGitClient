@@ -157,7 +157,7 @@ class MainWindow(QMainWindow):
         self._history_panel.commit_selected.connect(self._history_commit_selected)
         self._history_panel.file_selected.connect(self._history_file_selected)
         refs_panel = self._history_panel.refs_panel
-        refs_panel.ref_selected.connect(self._history_ref_selected)
+        refs_panel.refs_selected.connect(self._history_refs_selected)
         refs_panel.checkout_requested.connect(self._checkout_branch)
         refs_panel.rename_requested.connect(self._rename_branch)
         refs_panel.delete_requested.connect(self._delete_branch)
@@ -497,17 +497,24 @@ class MainWindow(QMainWindow):
             refs=self._history_refs,
         )
 
-    @Slot(str)
-    def _history_ref_selected(self, ref: str) -> None:
-        if self._repository is None or not ref:
+    @Slot(object)
+    def _history_refs_selected(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, tuple):
             return
-        refs = (ref,)
+        selected_refs: list[str] = []
+        for ref in cast(tuple[object, ...], value):
+            if not isinstance(ref, str) or not ref:
+                return
+            selected_refs.append(ref)
+        refs = tuple(selected_refs)
+        if not refs or len(refs) > 2:
+            return
         if refs == self._history_refs:
             return
         self._history_refs = refs
         self._history_panel.clear_commits()
         self._history_panel.set_loading(True)
-        self._status_label.setText(f"Loading history for {ref}…")
+        self._status_label.setText(f"Loading history for {' + '.join(refs)}…")
         self._history_runner = self._git.request_history(
             self._repository, refs=self._history_refs
         )

@@ -4,6 +4,7 @@ from typing import cast
 
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QComboBox,
     QLineEdit,
     QMenu,
     QTreeWidget,
@@ -18,7 +19,7 @@ REF_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 class RefsPanel(QWidget):
-    ref_selected = Signal(str)
+    refs_selected = Signal(object)
     checkout_requested = Signal(object)
     rename_requested = Signal(object)
     delete_requested = Signal(object)
@@ -33,12 +34,20 @@ class RefsPanel(QWidget):
         self._branches: tuple[BranchInfo, ...] = ()
         self._tags: tuple[TagInfo, ...] = ()
         self._selected_ref = ""
+        self._comparison_ref = ""
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setObjectName("refsFilterEdit")
         self.filter_edit.setPlaceholderText("Filter branches and tags…")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._apply_filter)
+
+        self.compare_combo = QComboBox()
+        self.compare_combo.setObjectName("historyCompareRefCombo")
+        self.compare_combo.setToolTip(
+            "Show commits reachable from one additional branch in the same history."
+        )
+        self.compare_combo.currentIndexChanged.connect(self._comparison_changed)
 
         self.tree = QTreeWidget()
         self.tree.setObjectName("refsTree")
@@ -67,11 +76,18 @@ class RefsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 8, 0)
         layout.addWidget(self.filter_edit)
+        layout.addWidget(self.compare_combo)
         layout.addWidget(self.tree, 1)
 
     @property
     def selected_ref(self) -> str:
         return self._selected_ref
+
+    @property
+    def selected_refs(self) -> tuple[str, ...]:
+        if self._comparison_ref:
+            return (self._selected_ref, self._comparison_ref)
+        return (self._selected_ref,) if self._selected_ref else ()
 
     def show_branches(self, snapshot: BranchesSnapshot) -> None:
         self._branches = snapshot.branches
@@ -85,7 +101,9 @@ class RefsPanel(QWidget):
         self._branches = ()
         self._tags = ()
         self._selected_ref = ""
+        self._comparison_ref = ""
         self.filter_edit.clear()
+        self.compare_combo.clear()
         self.tree.clear()
 
     def _rebuild(self) -> None:
@@ -144,7 +162,12 @@ class RefsPanel(QWidget):
             selected_ref = selected_item.data(0, REF_ROLE)
             if isinstance(selected_ref, str) and selected_ref != self._selected_ref:
                 self._selected_ref = selected_ref
-                self.ref_selected.emit(selected_ref)
+                if self._comparison_ref == selected_ref:
+                    self._comparison_ref = ""
+                self._rebuild_compare_combo()
+                self.refs_selected.emit(self.selected_refs)
+            else:
+                self._rebuild_compare_combo()
 
     def _root(self, label: str) -> QTreeWidgetItem:
         root = QTreeWidgetItem([label])
@@ -161,7 +184,35 @@ class RefsPanel(QWidget):
         ref = current.data(0, REF_ROLE)
         if isinstance(ref, str) and ref != self._selected_ref:
             self._selected_ref = ref
-            self.ref_selected.emit(ref)
+            if self._comparison_ref == ref:
+                self._comparison_ref = ""
+            self._rebuild_compare_combo()
+            self.refs_selected.emit(self.selected_refs)
+
+    def _rebuild_compare_combo(self) -> None:
+        blocker = QSignalBlocker(self.compare_combo)
+        self.compare_combo.clear()
+        self.compare_combo.addItem("No comparison", "")
+        selected_index = 0
+        for branch in self._branches:
+            if branch.full_name == self._selected_ref:
+                continue
+            self.compare_combo.addItem(branch.name, branch.full_name)
+            if branch.full_name == self._comparison_ref:
+                selected_index = self.compare_combo.count() - 1
+        if selected_index == 0:
+            self._comparison_ref = ""
+        self.compare_combo.setCurrentIndex(selected_index)
+        del blocker
+
+    @Slot(int)
+    def _comparison_changed(self, index: int) -> None:
+        value = self.compare_combo.itemData(index)
+        comparison = value if isinstance(value, str) else ""
+        if comparison == self._comparison_ref:
+            return
+        self._comparison_ref = comparison
+        self.refs_selected.emit(self.selected_refs)
 
     @Slot(str)
     def _apply_filter(self, text: str) -> None:
