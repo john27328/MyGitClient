@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from mygitclient.git.parsers import (
+    diff_paths,
     parse_branches,
     parse_commit_files,
     parse_commit_log,
@@ -246,3 +247,26 @@ def test_parse_rename_record_with_nul_separated_original_path() -> None:
 
     assert status.files[0].path == "new name.txt"
     assert status.files[0].original_path == "old name.txt"
+
+
+def test_diff_paths_decodes_git_quoted_utf8_paths() -> None:
+    path = "notes/20 Области/Сериалы/Тест.md"
+
+    def git_quote(value: str) -> str:
+        return '"' + "".join(
+            f"\\{byte:03o}" if byte >= 128 else chr(byte)
+            for byte in value.encode("utf-8")
+        ) + '"'
+
+    old_path = git_quote(f"a/{path}")
+    new_path = git_quote(f"b/{path}")
+    output = (
+        f"diff --git {old_path} {new_path}\n"
+        f"--- {old_path}\n"
+        f"+++ {new_path}\n"
+        "@@ -1 +1 @@\n-old\n+new\n"
+    ).encode("ascii")
+
+    diff = parse_unified_diff(output, "HEAD", staged=True)
+
+    assert diff_paths(diff) == {path}

@@ -1,4 +1,8 @@
-from mygitclient.git.errors import format_git_error
+from mygitclient.git.errors import (
+    GitErrorCategory,
+    analyze_git_error,
+    format_git_error,
+)
 
 
 def test_checkout_error_separates_local_changes_from_attribute_warning() -> None:
@@ -50,3 +54,21 @@ def test_index_lock_error_explains_safe_recovery() -> None:
     assert "Wait for it to finish" in formatted
     assert "C:/work/project/.git/index.lock" in formatted
     assert "Another git process" not in formatted
+
+
+def test_git_errors_have_structured_categories_and_recovery() -> None:
+    cases = (
+        ("CONFLICT (content): Merge conflict in app.py", GitErrorCategory.CONFLICT),
+        ("fatal: ambiguous argument 'gone'", GitErrorCategory.MISSING_REFERENCE),
+        ("fatal: cannot open file: Permission denied", GitErrorCategory.PERMISSION),
+        ("fatal: something unexpected", GitErrorCategory.UNKNOWN),
+    )
+
+    for message, category in cases:
+        details = analyze_git_error(message, operation="update repository")
+        assert details.category is category
+        assert details.raw_message == message
+
+    conflict = analyze_git_error(cases[0][0], operation="merge branches")
+    assert conflict.recovery is not None
+    assert "continue or abort" in conflict.recovery

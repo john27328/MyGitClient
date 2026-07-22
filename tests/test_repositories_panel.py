@@ -43,9 +43,9 @@ def test_recent_repository_menu_opens_and_removes_entries(
 
     panel.repository_activated.connect(capture_activation)
     panel.remove_requested.connect(removed.append)
-    actions = [action for action in panel.recent_menu.actions() if not action.isSeparator()]
-
-    actions[0].trigger()
+    first_item = panel.menu_tree.topLevelItem(0)
+    assert first_item is not None
+    panel.menu_tree.itemActivated.emit(first_item, 0)
     panel.remove_menu.actions()[1].trigger()
 
     assert panel.recent_button.isEnabled()
@@ -109,6 +109,11 @@ def test_linked_repository_is_not_duplicated_at_top_level(
     child_item = parent_item.child(0)
     assert child_item is not None
     assert child_item.text(0) == "child (submodule)"
+    popup_parent = panel.menu_tree.topLevelItem(0)
+    assert popup_parent is not None
+    assert popup_parent.text(0) == "parent"
+    assert popup_parent.childCount() == 1
+    assert popup_parent.child(0).text(0) == "child (submodule)"
     received: list[tuple[object, bool]] = []
 
     def capture_activation(path: object, remember: bool) -> None:
@@ -116,7 +121,23 @@ def test_linked_repository_is_not_duplicated_at_top_level(
 
     panel.repository_activated.connect(capture_activation)
     panel.tree.itemActivated.emit(child_item, 0)
-    assert received == [(child, False)]
+    panel.menu_tree.itemActivated.emit(popup_parent.child(0), 0)
+    assert received == [(child, False), (child, False)]
+
+
+def test_repository_menu_shows_sync_status(qtbot: QtBot, tmp_path: Path) -> None:
+    panel = RepositoriesPanel()
+    qtbot.addWidget(panel)
+    repository = tmp_path / "project"
+    panel.set_recent((repository,))
+    panel.set_open([repository], repository)
+
+    panel.set_sync_status(repository, ahead=2, behind=3)
+
+    item = panel.menu_tree.topLevelItem(0)
+    assert item is not None
+    assert item.text(0) == "✓ project"
+    assert item.text(1) == "Pull ↓3 · Push ↑2"
 
 
 def test_empty_recent_list_has_disabled_placeholder(qtbot: QtBot) -> None:

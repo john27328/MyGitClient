@@ -195,6 +195,17 @@ def test_commit_and_amend_from_commit_panel(
     )
     assert body.stdout.strip() == "- Add tracked.txt"
 
+    amend.setChecked(True)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    clean_amend_item = changes.topLevelItem(0)
+    assert clean_amend_item is not None
+    qtbot.waitUntil(
+        lambda: clean_amend_item.checkState(0) is Qt.CheckState.Checked,
+        timeout=5000,
+    )
+    amend.setChecked(False)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 0, timeout=5000)
+
     def first_item_has(*, working_status: str | None = None, partial: bool = False) -> bool:
         item = changes.topLevelItem(0)
         if changes.topLevelItemCount() != 1 or item is None:

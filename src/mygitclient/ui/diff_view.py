@@ -16,6 +16,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
+    QLabel,
     QPlainTextEdit,
     QSplitter,
     QStackedWidget,
@@ -96,6 +97,12 @@ class DiffView(QWidget):
         self.version_combo.setObjectName("diffVersionCombo")
         self.version_combo.setToolTip("Choose which version of the selected file to compare")
         self.version_combo.hide()
+        self.version_label = QLabel()
+        self.version_label.setObjectName("diffVersionLabel")
+        self.version_label.setToolTip(
+            "The selected file has only this version of the diff"
+        )
+        self.version_label.hide()
 
         self.view_mode_combo = QComboBox()
         self.view_mode_combo.setObjectName("diffViewModeCombo")
@@ -188,7 +195,9 @@ class DiffView(QWidget):
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
-        toolbar_layout.addWidget(self.version_combo, 1)
+        toolbar_layout.addWidget(self.version_label)
+        toolbar_layout.addWidget(self.version_combo)
+        toolbar_layout.addStretch(1)
         toolbar_layout.addWidget(self.wrap_button)
         toolbar_layout.addWidget(self.whitespace_button)
         toolbar_layout.addWidget(self.ignore_whitespace_button)
@@ -210,10 +219,21 @@ class DiffView(QWidget):
         self.gutter.line_activated.connect(self._gutter_line_activated)
         self.diff.cursorPositionChanged.connect(self._update_hunk_button)
         self.view_mode_combo.currentIndexChanged.connect(self._update_hunk_button)
+        self.version_combo.currentTextChanged.connect(self._version_text_changed)
         self.clear_lines_button.clicked.connect(self.clear_selection)
         self.selected_lines_button.clicked.connect(self._request_selected_lines)
         self.hunk_button.clicked.connect(self._request_selected_hunk)
         self._update_gutter_visibility(False)
+
+    def refresh_version_selector(self) -> None:
+        count = self.version_combo.count()
+        self.version_label.setText(self.version_combo.currentText())
+        self.version_label.setVisible(count == 1)
+        self.version_combo.setVisible(count > 1)
+
+    @Slot(str)
+    def _version_text_changed(self, text: str) -> None:
+        self.version_label.setText(text)
 
     @staticmethod
     def _make_side_editor(object_name: str) -> QPlainTextEdit:

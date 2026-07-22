@@ -253,7 +253,51 @@ def diff_paths(diff: UnifiedDiff) -> frozenset[str]:
 
 def _diff_header_path(value: str, prefix: str) -> str:
     path = value.split("\t", 1)[0]
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        path = _decode_git_quoted_path(path[1:-1])
     return path.removeprefix(prefix)
+
+
+_GIT_PATH_ESCAPES = {
+    "a": b"\a",
+    "b": b"\b",
+    "t": b"\t",
+    "n": b"\n",
+    "v": b"\v",
+    "f": b"\f",
+    "r": b"\r",
+    "\\": b"\\",
+    '"': b'"',
+}
+
+
+def _decode_git_quoted_path(value: str) -> str:
+    """Decode the C-style quoting used by Git for paths in textual diff headers."""
+    decoded = bytearray()
+    index = 0
+    while index < len(value):
+        character = value[index]
+        if character != "\\":
+            decoded.extend(character.encode("utf-8", errors="surrogateescape"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(value):
+            decoded.extend(b"\\")
+            break
+        escape = value[index]
+        if escape in _GIT_PATH_ESCAPES:
+            decoded.extend(_GIT_PATH_ESCAPES[escape])
+            index += 1
+            continue
+        octal = re.match(r"[0-7]{1,3}", value[index:])
+        if octal is not None:
+            decoded.append(int(octal.group(), 8))
+            index += len(octal.group())
+            continue
+        decoded.extend(escape.encode("utf-8", errors="surrogateescape"))
+        index += 1
+    return decoded.decode("utf-8", errors="surrogateescape")
 
 
 def _next_line(value: int | None) -> int | None:

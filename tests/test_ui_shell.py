@@ -197,7 +197,11 @@ def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> N
     assert item.text(0) == "project"
     assert repositories_panel.isHidden()
     assert recent_button.menu() is not None
-    assert recent_button.menu().actions()[0].text() == "project"
+    menu_tree = window.findChild(QTreeWidget, "repositoryMenuTree")
+    assert menu_tree is not None
+    menu_item = menu_tree.topLevelItem(0)
+    assert menu_item is not None
+    assert menu_item.text(0) == "project"
     window.close()
 
 
@@ -355,6 +359,35 @@ def test_open_repositories_are_restored_and_switchable(
     assert diff_container.isHidden()
     assert workspace_tabs.currentIndex() == 1
     assert settings.value("workspace/lastRepository") == str(repositories[0])
+    window.close()
+
+
+def test_fetch_all_queues_every_open_repository(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    repositories = [tmp_path / "first", tmp_path / "second"]
+    for repository in repositories:
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    settings = QSettings(str(tmp_path / "fetch-all.ini"), QSettings.Format.IniFormat)
+    settings.setValue("workspace/openRepositories", [str(path) for path in repositories])
+    settings.setValue("workspace/lastRepository", str(repositories[0]))
+    window = MainWindow(settings, Theme.SYSTEM)
+    fetch_all = window.findChild(QAction, "fetchAllAction")
+    service = window.findChild(GitService)
+    assert fetch_all is not None
+    assert service is not None
+    requested: list[Path] = []
+    monkeypatch.setattr(service, "request_fetch", requested.append)
+
+    fetch_all.trigger()
+
+    assert requested == repositories
     window.close()
 
 

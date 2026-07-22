@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
         self._history_refs: tuple[str, ...] = ()
         self._active_queue_operation: QueuedOperation | None = None
         self._queued_operation_count = 0
+        self._refresh_all_after_queue = False
         self._queue_elapsed = QElapsedTimer()
         self._known_queue_operations: dict[int, QueuedOperation] = {}
         self._operation_output_dialogs: dict[int, OperationOutputDialog] = {}
@@ -288,7 +289,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(open_action)
         toolbar.addWidget(self._repositories_panel.recent_button)
         self._repository_switcher = self._repositories_panel.switcher
-        toolbar.addWidget(self._repository_switcher)
         refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
         refresh_action.setObjectName("refreshAction")
         refresh_action.setShortcut("F5")
@@ -297,7 +297,19 @@ class MainWindow(QMainWindow):
         self._fetch_action = QAction(load_icon("fetch.svg"), "Fetch", self)
         self._fetch_action.setObjectName("fetchAction")
         self._fetch_action.triggered.connect(self._fetch_repository)
-        toolbar.addAction(self._fetch_action)
+        fetch_menu = QMenu(self)
+        self._fetch_all_action = fetch_menu.addAction(
+            load_icon("fetch.svg"), "Fetch all open repositories"
+        )
+        self._fetch_all_action.setObjectName("fetchAllAction")
+        self._fetch_all_action.triggered.connect(self._fetch_all_repositories)
+        self._fetch_button = QToolButton()
+        self._fetch_button.setObjectName("fetchButton")
+        self._fetch_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self._fetch_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._fetch_button.setDefaultAction(self._fetch_action)
+        self._fetch_button.setMenu(fetch_menu)
+        toolbar.addWidget(self._fetch_button)
         self._pull_action = QAction(load_icon("pull.svg"), "Pull", self)
         self._pull_action.setObjectName("pullAction")
         self._pull_action.triggered.connect(self._pull_repository)
@@ -660,7 +672,7 @@ class MainWindow(QMainWindow):
         self._diff_view.reset()
         self._welcome.hide()
         self._workspace_tabs.show()
-        self._diff_version.show()
+        self._diff_view.refresh_version_selector()
         self._diff_view_mode.show()
         self._diff_gutter.setVisible(not self._wrap_button.isChecked())
         self._diff.show()
@@ -843,6 +855,7 @@ class MainWindow(QMainWindow):
             f"{value.base_ref}…{value.compare_ref}", None
         )
         del blocker
+        self._diff_view.refresh_version_selector()
         self._diff_view.display_diff(
             value.diff,
             selection_key=None,
@@ -870,6 +883,7 @@ class MainWindow(QMainWindow):
         self._diff_version.clear()
         self._diff_version.addItem(f"Commit {value.commit_oid[:8]}", None)
         del blocker
+        self._diff_view.refresh_version_selector()
         self._diff_view.display_diff(
             value.diff,
             selection_key=None,
@@ -877,7 +891,6 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
-        self._diff_version.show()
         self._diff_view_mode.show()
         self._diff.show()
         self._diff_container.show()
@@ -1073,6 +1086,9 @@ class MainWindow(QMainWindow):
 
     def _populate_repository_switcher(self) -> None:
         self._repositories_panel.set_open(self._open_repositories, self._repository)
+        for repository in self._open_repositories:
+            if repository != self._repository and repository.is_dir():
+                self._git.request_status(repository)
 
     @Slot(object)
     def _repository_selected(self, value: object) -> None:
@@ -1207,6 +1223,16 @@ class MainWindow(QMainWindow):
         self._git.request_fetch(self._repository)
 
     @Slot()
+    def _fetch_all_repositories(self) -> None:
+        repositories = [path for path in self._open_repositories if path.is_dir()]
+        if not repositories:
+            return
+        self._refresh_all_after_queue = True
+        self._status_label.setText(f"Queueing fetch for {len(repositories)} repositories…")
+        for repository in repositories:
+            self._git.request_fetch(repository)
+
+    @Slot()
     def _push_repository(self) -> None:
         if push_requires_rewrite(self._repository_status):
             QMessageBox.information(
@@ -1316,6 +1342,11 @@ class MainWindow(QMainWindow):
             if dialog is not None:
                 dialog.update_output(operation.output_preview, operation.output)
         self._cancel_action.setEnabled(bool(operations))
+        if not operations and self._refresh_all_after_queue:
+            self._refresh_all_after_queue = False
+            for repository in self._open_repositories:
+                if repository.is_dir():
+                    self._git.request_status(repository)
         self._update_queue_duration()
 
     @Slot()
@@ -1387,6 +1418,10 @@ class MainWindow(QMainWindow):
     def _show_status(self, value: object) -> None:
         if not isinstance(value, RepositoryStatusSnapshot):
             return
+        branch = value.status.branch
+        self._repositories_panel.set_sync_status(
+            value.repository, ahead=branch.ahead, behind=branch.behind
+        )
         if self._repository is None or value.repository != self._repository:
             return
         self._status_runner = None
@@ -1632,13 +1667,16 @@ class MainWindow(QMainWindow):
         self._commit_message.setPlainText(self._pre_amend_message)
         self._commit_description.setPlainText(self._pre_amend_description)
         del message_blocker, description_blocker
-        self._request_selected_diff()
         self._amend_commit_files = ()
         self._amend_included_paths = frozenset()
         self._amend_parent_oid = None
         self._amend_render_pending = False
         self._amend_files_loaded = False
         self._amend_diff_loaded = False
+        self._diff_view.reset()
+        if repository is not None:
+            self._repository_status = None
+            self._status_runner = self._git.request_status(repository)
         self._update_commit_controls()
 
     @Slot(object)
@@ -1684,6 +1722,7 @@ class MainWindow(QMainWindow):
             label = f"{label} В· {value.path}"
         self._diff_version.addItem(label, None)
         del version_blocker
+        self._diff_view.refresh_version_selector()
         self._diff_view.display_diff(
             value.diff,
             selection_key=None,
@@ -1844,6 +1883,7 @@ class MainWindow(QMainWindow):
         if file.is_staged:
             self._diff_version.addItem("Staged", True)
         del blocker
+        self._diff_view.refresh_version_selector()
 
     @Slot(object)
     def _show_diff(self, value: object) -> None:

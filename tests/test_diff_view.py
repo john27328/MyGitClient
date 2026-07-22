@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtWidgets import QPlainTextEdit, QStackedWidget, QToolButton
+from PySide6.QtWidgets import QLabel, QPlainTextEdit, QStackedWidget, QToolButton
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.parsers import parse_unified_diff
@@ -32,6 +32,26 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
         view.findChild(QToolButton, "diffIgnoreWhitespaceButton")
         is view.ignore_whitespace_button
     )
+    assert view.findChild(QLabel, "diffVersionLabel") is view.version_label
+
+
+def test_single_diff_source_is_a_label_and_two_sources_are_selectable(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "diff-source.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+
+    view.version_combo.addItem("Working tree", False)
+    view.refresh_version_selector()
+    assert not view.version_label.isHidden()
+    assert view.version_label.text() == "Working tree"
+    assert view.version_combo.isHidden()
+
+    view.version_combo.addItem("Staged", True)
+    view.refresh_version_selector()
+    assert view.version_label.isHidden()
+    assert not view.version_combo.isHidden()
 
 
 def test_inline_highlight_is_skipped_for_unrelated_lines() -> None:
