@@ -102,7 +102,10 @@ def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
     )
 
     assert panel.tree.topLevelItemCount() == 2
-    src = panel.tree.topLevelItem(0)
+    readme = panel.tree.topLevelItem(0)
+    assert readme is not None
+    assert readme.text(0) == "README.md"
+    src = panel.tree.topLevelItem(1)
     assert src is not None
     assert src.text(0) == "src/package"
     assert src.childCount() == 2
@@ -137,6 +140,32 @@ def test_tree_mode_compacts_a_single_file_path_and_preserves_selection(
     assert not item.icon(0).isNull()
 
 
+def test_status_refresh_preserves_changes_tree_scroll_position(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "changes.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/viewMode", "tree")
+    panel = ChangesPanel(settings)
+    qtbot.addWidget(panel)
+    panel.resize(320, 240)
+    panel.show()
+    files = [
+        (FileStatus(f"src/folder-{index}/file.py", ".", "M"), Qt.CheckState.Unchecked)
+        for index in range(40)
+    ]
+    panel.show_files(files, None)
+    qtbot.waitUntil(lambda: panel.tree.verticalScrollBar().maximum() > 0)
+    scroll = panel.tree.verticalScrollBar()
+    scroll.setValue(scroll.maximum() // 2)
+    expected = scroll.value()
+
+    refreshed = [(file, Qt.CheckState.Checked) for file, _state in files]
+    panel.show_files(refreshed, None)
+    qtbot.waitUntil(lambda: scroll.value() == expected)
+
+    assert scroll.value() == expected
+
+
 def test_file_row_uses_status_icon_and_detailed_tooltip(qtbot: QtBot) -> None:
     panel = ChangesPanel()
     qtbot.addWidget(panel)
@@ -150,6 +179,30 @@ def test_file_row_uses_status_icon_and_detailed_tooltip(qtbot: QtBot) -> None:
     assert item.text(0) == "src/example.py"
     assert "Staged: Modified" in item.toolTip(0)
     assert "Not staged: Modified" in item.toolTip(0)
+
+
+def test_changed_files_are_sorted_by_path_independently_of_git_status_order(
+    qtbot: QtBot,
+) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    files = [
+        FileStatus("src/Zebra.py", ".", "M"),
+        FileStatus("README.md", ".", "M"),
+        FileStatus("src/alpha.py", "M", "."),
+    ]
+
+    panel.show_files(
+        [(file, Qt.CheckState.Unchecked) for file in files],
+        None,
+    )
+
+    labels: list[str] = []
+    for index in range(panel.tree.topLevelItemCount()):
+        item = panel.tree.topLevelItem(index)
+        assert item is not None
+        labels.append(item.text(0))
+    assert labels == ["README.md", "src/alpha.py", "src/Zebra.py"]
 
 
 def test_changes_view_mode_is_saved(qtbot: QtBot, tmp_path: Path) -> None:

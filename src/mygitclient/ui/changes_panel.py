@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-from PySide6.QtCore import QRect, QSettings, QSignalBlocker, Qt, Signal, Slot
+from PySide6.QtCore import QRect, QSettings, QSignalBlocker, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -78,6 +78,7 @@ class ChangesPanel(QWidget):
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
+        self._render_generation = 0
         self.tree = ChangesTreeWidget()
         self.tree.setObjectName("changesTree")
         self.tree.setHeaderLabel("Changes")
@@ -160,12 +161,16 @@ class ChangesPanel(QWidget):
         files: list[tuple[FileStatus, Qt.CheckState]],
         selected_path: str | None,
     ) -> QTreeWidgetItem | None:
+        vertical_scroll = self.tree.verticalScrollBar().value()
+        horizontal_scroll = self.tree.horizontalScrollBar().value()
+        self._render_generation += 1
+        render_generation = self._render_generation
         blocker = QSignalBlocker(self.tree)
         self.tree.clear()
         self.tree.setRootIsDecorated(self.tree_mode)
         selected_item: QTreeWidgetItem | None = None
         folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
-        for file, state in files:
+        for file, state in sorted(files, key=lambda value: value[0].path.casefold()):
             parent: QTreeWidgetItem | None = None
             display_name = file.path
             if self.tree_mode:
@@ -213,7 +218,21 @@ class ChangesPanel(QWidget):
                     self._refresh_folder_state(root)
             self.tree.expandAll()
         del blocker
+        QTimer.singleShot(
+            0,
+            lambda: self._restore_scroll_position(
+                render_generation, vertical_scroll, horizontal_scroll
+            ),
+        )
         return selected_item
+
+    def _restore_scroll_position(
+        self, render_generation: int, vertical: int, horizontal: int
+    ) -> None:
+        if render_generation != self._render_generation:
+            return
+        self.tree.verticalScrollBar().setValue(vertical)
+        self.tree.horizontalScrollBar().setValue(horizontal)
 
     def _compact_folder_chain(self, item: QTreeWidgetItem) -> None:
         while item.data(0, _FOLDER_ROLE) is True and item.childCount() == 1:
