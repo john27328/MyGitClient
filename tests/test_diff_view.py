@@ -242,7 +242,7 @@ def test_diff_hunk_checkbox_emits_immediate_request(
     assert not view.selection.selected_lines
 
 
-def test_diff_selection_is_restored_per_file_and_version(
+def test_immediate_line_request_does_not_leave_saved_selection(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "saved-selection.ini"), QSettings.Format.IniFormat)
@@ -269,6 +269,12 @@ def test_diff_selection_is_restored_per_file_and_version(
         staged=False,
     )
     first_key = (tmp_path, first.path, False)
+    requests: list[tuple[object, object]] = []
+
+    def capture_request(value: object, lines: object) -> None:
+        requests.append((value, lines))
+
+    view.lines_requested.connect(capture_request)
 
     view.display_diff(
         first,
@@ -277,6 +283,7 @@ def test_diff_selection_is_restored_per_file_and_version(
         whole_file_staged=False,
     )
     view.gutter.line_activated.emit(4, False)
+    assert requests == [(first, {4})]
     view.display_diff(
         second,
         selection_key=(tmp_path, second.path, False),
@@ -291,7 +298,8 @@ def test_diff_selection_is_restored_per_file_and_version(
         preserve_scroll=False,
         whole_file_staged=False,
     )
-    assert view.selection.selected_lines == {4}
+    assert view.selection.selected_lines == set()
+    assert not view.has_saved_selection(tmp_path, first.path)
 
     view.display_diff(
         first,
@@ -302,7 +310,9 @@ def test_diff_selection_is_restored_per_file_and_version(
     assert view.selection.selected_lines == set()
 
 
-def test_side_by_side_gutters_select_lines(qtbot: QtBot, tmp_path: Path) -> None:
+def test_side_by_side_gutters_emit_immediate_line_requests(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     settings = QSettings(str(tmp_path / "side-selection.ini"), QSettings.Format.IniFormat)
     settings.setValue("diff/viewMode", "side-by-side")
     view = DiffView(settings)
@@ -323,15 +333,20 @@ def test_side_by_side_gutters_select_lines(qtbot: QtBot, tmp_path: Path) -> None
         preserve_scroll=False,
         whole_file_staged=False,
     )
+    requests: list[tuple[object, object]] = []
+
+    def capture_request(value: object, lines: object) -> None:
+        requests.append((value, lines))
+
+    view.lines_requested.connect(capture_request)
 
     view.side_old_gutter.line_activated.emit(1, False)
     view.side_new_gutter.line_activated.emit(1, True)
 
-    assert view.selection.selected_lines == {4, 5}
-    assert "✓" in view.side_old_gutter.toPlainText()
-    assert "✓" in view.side_new_gutter.toPlainText()
-    assert len(view.side_old.extraSelections()) == 1
-    assert len(view.side_new.extraSelections()) == 1
+    assert requests == [(diff, {4}), (diff, {4, 5})]
+    assert not view.selection.selected_lines
+    assert not view.side_old.extraSelections()
+    assert not view.side_new.extraSelections()
 
 
 def test_unified_gutter_visibility_does_not_depend_on_parent_visibility(

@@ -1950,7 +1950,13 @@ class MainWindow(QMainWindow):
         staged = self._diff_version.currentData()
         if not isinstance(staged, bool):
             return
-        if not silent:
+        current_diff = self._diff_view.current_diff
+        replacing_visible_diff = (
+            current_diff is None
+            or current_diff.path != file.path
+            or current_diff.staged != staged
+        )
+        if not silent and replacing_visible_diff:
             self._diff.setPlainText("Loading diff…")
             self._status_label.setText(f"Reading diff for {file.path}…")
         self._git.request_diff(
@@ -1988,12 +1994,17 @@ class MainWindow(QMainWindow):
             return
         if self._diff_version.currentData() != diff_value.staged:
             return
-        preserve_selection = diff_value == self._diff_view.current_diff
+        current_diff = self._diff_view.current_diff
+        preserve_view = (
+            current_diff is not None
+            and current_diff.path == diff_value.path
+            and current_diff.staged == diff_value.staged
+        )
         whole_file_staged = diff_value.staged and file.is_staged
         self._diff_view.display_diff(
             diff_value,
             selection_key=(value.repository, diff_value.path, diff_value.staged),
-            preserve_scroll=preserve_selection,
+            preserve_scroll=preserve_view,
             whole_file_staged=whole_file_staged,
         )
         version = "staged" if diff_value.staged else "working tree"

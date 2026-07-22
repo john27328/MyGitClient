@@ -552,6 +552,7 @@ def test_unchanged_diff_refresh_preserves_scroll_position(
     qtbot.waitUntil(lambda: diff_panel.verticalScrollBar().maximum() > 0, timeout=5000)
     target = max(1, diff_panel.verticalScrollBar().maximum() // 2)
     diff_panel.verticalScrollBar().setValue(target)
+    diff_before_apply = diff_panel.toPlainText()
     gutter.line_activated.emit(5, False)
 
     def line_is_staged() -> bool:
@@ -565,8 +566,12 @@ def test_unchanged_diff_refresh_preserves_scroll_position(
         return bool(cached)
 
     qtbot.waitUntil(line_is_staged, timeout=5000)
-
-    assert diff_panel.verticalScrollBar().value() == target
+    qtbot.waitUntil(lambda: diff_panel.toPlainText() != diff_before_apply, timeout=5000)
+    qtbot.waitUntil(lambda: diff_panel.verticalScrollBar().value() > 0, timeout=5000)
+    # Applying a line shortens the document and can shift the scrollbar range by a
+    # platform-dependent pixel or two. The viewport must stay near the same place,
+    # rather than snapping to the top.
+    assert abs(diff_panel.verticalScrollBar().value() - target) <= 2
     current = changes.topLevelItem(0)
     assert current is not None
     assert current.checkState(0) is Qt.CheckState.Unchecked

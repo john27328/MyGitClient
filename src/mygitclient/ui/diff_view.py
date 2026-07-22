@@ -4,7 +4,7 @@ from contextlib import suppress
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, Signal, Slot
+from PySide6.QtCore import QSettings, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -351,6 +351,10 @@ class DiffView(QWidget):
         self._render_side_by_side(diff)
         if preserve_scroll:
             self._restore_scroll_positions(positions)
+            # Headless Qt platforms may update scrollbar ranges on the next event-loop
+            # pass. Restore once more after layout so an unchanged asynchronous refresh
+            # cannot clamp the saved position to zero.
+            QTimer.singleShot(0, lambda: self._restore_clamped_scroll_positions(positions))
         self.render_selection()
         self._update_hunk_button()
         self.selection_changed.emit()
@@ -765,6 +769,21 @@ class DiffView(QWidget):
         self.side_old.verticalScrollBar().setValue(side_vertical)
         self.side_old.horizontalScrollBar().setValue(old_horizontal)
         self.side_new.horizontalScrollBar().setValue(new_horizontal)
+
+    def _restore_clamped_scroll_positions(
+        self, positions: tuple[int, int, int, int, int]
+    ) -> None:
+        """Retry non-zero positions that Qt clamped before recalculating ranges."""
+        widgets = (
+            self.diff.verticalScrollBar(),
+            self.diff.horizontalScrollBar(),
+            self.side_old.verticalScrollBar(),
+            self.side_old.horizontalScrollBar(),
+            self.side_new.horizontalScrollBar(),
+        )
+        for scrollbar, position in zip(widgets, positions, strict=True):
+            if position > 0 and scrollbar.value() == 0:
+                scrollbar.setValue(position)
 
 
 def inline_change_ranges(
