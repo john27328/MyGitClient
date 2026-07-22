@@ -1495,8 +1495,10 @@ class MainWindow(QMainWindow):
         else:
             self._stage_all.setCheckState(Qt.CheckState.PartiallyChecked)
         del stage_all_blocker
+        selection_restored = False
         if item_to_restore is not None:
             self._changes_panel.active_tree().setCurrentItem(item_to_restore)
+            selection_restored = True
         elif self._changes_panel.split_mode and selected_path is not None:
             opposite_tree = (
                 self._changes_panel.staged_tree
@@ -1510,8 +1512,10 @@ class MainWindow(QMainWindow):
                 self._changes_panel.set_active_tree(opposite_tree)
                 opposite_tree.setFocus()
                 opposite_tree.setCurrentItem(opposite_item)
-        elif (
-            not self._amend.isChecked()
+                selection_restored = True
+        if (
+            not selection_restored
+            and not self._amend.isChecked()
             and self._diff_view.current_diff is not None
             and self._diff_view.current_diff.path not in changed_paths
         ):

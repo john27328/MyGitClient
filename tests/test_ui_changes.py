@@ -137,6 +137,48 @@ def test_stage_all_checkbox_updates_every_file(
     window.close()
 
 
+def test_split_commit_clears_diff_when_file_leaves_both_trees(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("content\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "MyGitClient Test"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
+    )
+    settings = QSettings(str(tmp_path / "split-commit.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/presentationMode", "split")
+    window = MainWindow(settings, Theme.SYSTEM)
+    unstaged = window.findChild(QTreeWidget, "unstagedChangesTree")
+    staged = window.findChild(QTreeWidget, "stagedChangesTree")
+    message = window.findChild(QPlainTextEdit, "commitMessageEdit")
+    commit_button = window.findChild(QPushButton, "commitButton")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    assert unstaged is not None and staged is not None
+    assert message is not None and commit_button is not None and diff_panel is not None
+
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: staged.topLevelItemCount() == 1, timeout=5000)
+    item = staged.topLevelItem(0)
+    assert item is not None
+    staged.setFocus()
+    staged.setCurrentItem(item)
+    qtbot.waitUntil(lambda: "+content" in diff_panel.toPlainText(), timeout=5000)
+    message.setPlainText("initial commit")
+    commit_button.click()
+
+    qtbot.waitUntil(
+        lambda: unstaged.topLevelItemCount() == 0 and staged.topLevelItemCount() == 0,
+        timeout=5000,
+    )
+    qtbot.waitUntil(lambda: diff_panel.toPlainText() == "", timeout=5000)
+    window.close()
+
+
 def test_commit_and_amend_from_commit_panel(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
