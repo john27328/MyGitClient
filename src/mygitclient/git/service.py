@@ -489,6 +489,7 @@ class GitService(QObject):
         path: str,
         *,
         parent_oid: str | None,
+        ignore_whitespace: bool = False,
     ) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
@@ -497,7 +498,7 @@ class GitService(QObject):
         self._commit_diff_requests[runner] = (repository, commit_oid, path, request_id)
         runner.completed.connect(self._handle_commit_diff)
         runner.failed_to_start.connect(self._handle_start_error)
-        arguments = (
+        arguments = list(
             ("diff", "--no-ext-diff", "--no-color", parent_oid, commit_oid, "--", path)
             if parent_oid is not None
             else (
@@ -511,7 +512,9 @@ class GitService(QObject):
                 path,
             )
         )
-        runner.run(GitCommand(arguments, repository, "read commit diff"))
+        if ignore_whitespace:
+            arguments.insert(1, "--ignore-all-space")
+        runner.run(GitCommand(tuple(arguments), repository, "read commit diff"))
         return runner
 
     def request_history(
@@ -577,6 +580,8 @@ class GitService(QObject):
         base_ref: str,
         compare_ref: str,
         path: str,
+        *,
+        ignore_whitespace: bool = False,
     ) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
@@ -591,16 +596,19 @@ class GitService(QObject):
         )
         runner.completed.connect(self._handle_ref_comparison_diff)
         runner.failed_to_start.connect(self._handle_start_error)
+        arguments = [
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            f"{base_ref}...{compare_ref}",
+            "--",
+            path,
+        ]
+        if ignore_whitespace:
+            arguments.insert(1, "--ignore-all-space")
         runner.run(
             GitCommand(
-                (
-                    "diff",
-                    "--no-ext-diff",
-                    "--no-color",
-                    f"{base_ref}...{compare_ref}",
-                    "--",
-                    path,
-                ),
+                tuple(arguments),
                 repository,
                 "read ref comparison diff",
             )
@@ -630,7 +638,14 @@ class GitService(QObject):
         )
         return runner
 
-    def request_diff(self, repository: Path, file: FileStatus, *, staged: bool) -> GitRunner:
+    def request_diff(
+        self,
+        repository: Path,
+        file: FileStatus,
+        *,
+        staged: bool,
+        ignore_whitespace: bool = False,
+    ) -> GitRunner:
         untracked = file.index_status == "?"
         if untracked:
             arguments = ["diff", "--no-index", "--no-color", "--", "/dev/null", file.path]
@@ -638,6 +653,9 @@ class GitService(QObject):
             arguments = ["diff", "--no-ext-diff", "--no-color"]
             if staged:
                 arguments.append("--cached")
+        if ignore_whitespace:
+            arguments.insert(1, "--ignore-all-space")
+        if not untracked:
             arguments.extend(("--", file.path))
 
         runner = GitRunner(parent=self)

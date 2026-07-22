@@ -138,6 +138,40 @@ def test_parse_unified_diff_classifies_lines() -> None:
     assert selected_patch.endswith(b"-before\n+after\n")
 
 
+def test_side_by_side_rows_align_similar_lines_around_an_inserted_line() -> None:
+    diff = parse_unified_diff(
+        b"diff --git a/file.h b/file.h\n"
+        b"--- a/file.h\n"
+        b"+++ b/file.h\n"
+        b"@@ -1,3 +1,4 @@\n"
+        b"-mutable bool m_saved = false;\n"
+        b"-mutable bool m_finished = false;\n"
+        b"-mutable std::exception_ptr m_error;\n"
+        b"+// synchronization state\n"
+        b"+mutable std::atomic_bool m_saved = false;\n"
+        b"+mutable std::atomic_bool m_finished = false;\n"
+        b"+mutable std::exception_ptr m_error;\n",
+        "file.h",
+        staged=False,
+    )
+
+    changed = list(diff.side_by_side_rows[4:])
+    assert changed[0].old is None
+    assert changed[0].new is not None
+    assert changed[0].new.text == "+// synchronization state"
+    assert all(row.old is not None and row.new is not None for row in changed[1:])
+    assert [row.old.text for row in changed[1:] if row.old is not None] == [
+        "-mutable bool m_saved = false;",
+        "-mutable bool m_finished = false;",
+        "-mutable std::exception_ptr m_error;",
+    ]
+    assert [row.new.text for row in changed[1:] if row.new is not None] == [
+        "+mutable std::atomic_bool m_saved = false;",
+        "+mutable std::atomic_bool m_finished = false;",
+        "+mutable std::exception_ptr m_error;",
+    ]
+
+
 def test_parse_unified_diff_tracks_context_and_multiple_hunks() -> None:
     output = (
         b"@@ -3,2 +3,2 @@\n"

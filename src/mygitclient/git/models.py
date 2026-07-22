@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from itertools import zip_longest
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Literal
 
@@ -224,6 +224,94 @@ class SideBySideRow:
     new: DiffLine | None
 
 
+def pair_changed_lines(
+    deleted: list[DiffLine], added: list[DiffLine]
+) -> tuple[SideBySideRow, ...]:
+    if not deleted:
+        return tuple(SideBySideRow(None, line) for line in added)
+    if not added:
+        return tuple(SideBySideRow(line, None) for line in deleted)
+    if len(deleted) * len(added) > 4096:
+        count = max(len(deleted), len(added))
+        return tuple(
+            SideBySideRow(
+                deleted[index] if index < len(deleted) else None,
+                added[index] if index < len(added) else None,
+            )
+            for index in range(count)
+        )
+
+    scores = [[0.0] * (len(added) + 1) for _ in range(len(deleted) + 1)]
+    choices = [[""] * (len(added) + 1) for _ in range(len(deleted) + 1)]
+    for old_index in range(1, len(deleted) + 1):
+        choices[old_index][0] = "old"
+    for new_index in range(1, len(added) + 1):
+        choices[0][new_index] = "new"
+    for old_index, old_line in enumerate(deleted, start=1):
+        old_text = old_line.text[1:].strip()
+        for new_index, new_line in enumerate(added, start=1):
+            new_text = new_line.text[1:].strip()
+            similarity = SequenceMatcher(
+                None, old_text, new_text, autojunk=False
+            ).ratio()
+            best = scores[old_index - 1][new_index]
+            choice = "old"
+            if scores[old_index][new_index - 1] > best:
+                best = scores[old_index][new_index - 1]
+                choice = "new"
+            paired = scores[old_index - 1][new_index - 1] + similarity
+            if similarity >= 0.55 and paired > best:
+                best = paired
+                choice = "pair"
+            scores[old_index][new_index] = best
+            choices[old_index][new_index] = choice
+
+    rows: list[SideBySideRow] = []
+    old_index = len(deleted)
+    new_index = len(added)
+    while old_index or new_index:
+        choice = choices[old_index][new_index]
+        if choice == "pair":
+            rows.append(SideBySideRow(deleted[old_index - 1], added[new_index - 1]))
+            old_index -= 1
+            new_index -= 1
+        elif choice == "old":
+            rows.append(SideBySideRow(deleted[old_index - 1], None))
+            old_index -= 1
+        else:
+            rows.append(SideBySideRow(None, added[new_index - 1]))
+            new_index -= 1
+    rows.reverse()
+    compacted: list[SideBySideRow] = []
+    index = 0
+    while index < len(rows):
+        current = rows[index]
+        following = rows[index + 1] if index + 1 < len(rows) else None
+        if (
+            following is not None
+            and current.old is None
+            and current.new is not None
+            and following.old is not None
+            and following.new is None
+        ):
+            compacted.append(SideBySideRow(following.old, current.new))
+            index += 2
+            continue
+        if (
+            following is not None
+            and current.old is not None
+            and current.new is None
+            and following.old is None
+            and following.new is not None
+        ):
+            compacted.append(SideBySideRow(current.old, following.new))
+            index += 2
+            continue
+        compacted.append(current)
+        index += 1
+    return tuple(compacted)
+
+
 @dataclass(frozen=True, slots=True)
 class UnifiedDiff:
     path: str
@@ -276,7 +364,7 @@ class UnifiedDiff:
             while index < len(self.lines) and self.lines[index].kind == "addition":
                 added.append(self.lines[index])
                 index += 1
-            rows.extend(SideBySideRow(old, new) for old, new in zip_longest(deleted, added))
+            rows.extend(pair_changed_lines(deleted, added))
         return tuple(rows)
 
     def hunk_index_for_line(self, line_index: int) -> int | None:

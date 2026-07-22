@@ -455,15 +455,19 @@ def test_diff_display_toggles_are_persisted(qapp: QApplication, tmp_path: Path) 
     window = MainWindow(settings, Theme.SYSTEM)
     wrap = window.findChild(QToolButton, "diffWrapButton")
     whitespace = window.findChild(QToolButton, "diffWhitespaceButton")
+    ignore_whitespace = window.findChild(QToolButton, "diffIgnoreWhitespaceButton")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     assert wrap is not None
     assert whitespace is not None
+    assert ignore_whitespace is not None
     assert diff_panel is not None
 
     wrap.setChecked(True)
     whitespace.setChecked(True)
+    ignore_whitespace.setChecked(True)
 
     assert diff_panel.lineWrapMode() is QPlainTextEdit.LineWrapMode.WidgetWidth
     assert settings.value("diff/wrapLines") is True
     assert settings.value("diff/showWhitespace") is True
+    assert settings.value("diff/ignoreWhitespace") is True
     window.close()

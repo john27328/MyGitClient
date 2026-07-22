@@ -224,6 +224,7 @@ class MainWindow(QMainWindow):
         self._diff_view_mode = self._diff_view.view_mode_combo
         self._wrap_button = self._diff_view.wrap_button
         self._whitespace_button = self._diff_view.whitespace_button
+        self._ignore_whitespace_button = self._diff_view.ignore_whitespace_button
 
         self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
@@ -236,6 +237,12 @@ class MainWindow(QMainWindow):
             self._read_bool_setting("diff/showWhitespace")
         )
         self._whitespace_button.toggled.connect(self._diff_whitespace_changed)
+        self._ignore_whitespace_button.setChecked(
+            self._read_bool_setting("diff/ignoreWhitespace")
+        )
+        self._ignore_whitespace_button.toggled.connect(
+            self._diff_ignore_whitespace_changed
+        )
         self._apply_diff_wrap(self._wrap_button.isChecked())
         self._apply_diff_whitespace(self._whitespace_button.isChecked())
 
@@ -790,6 +797,7 @@ class MainWindow(QMainWindow):
             commit_value.oid,
             file_value.path,
             parent_oid=commit_value.parent_oids[0] if commit_value.parent_oids else None,
+            ignore_whitespace=self._ignore_whitespace_button.isChecked(),
         )
 
     @Slot(str, str, object)
@@ -800,7 +808,11 @@ class MainWindow(QMainWindow):
             return
         self._status_label.setText(f"Comparing {file_value.path}…")
         self._git.request_ref_comparison_diff(
-            self._repository, base_ref, compare_ref, file_value.path
+            self._repository,
+            base_ref,
+            compare_ref,
+            file_value.path,
+            ignore_whitespace=self._ignore_whitespace_button.isChecked(),
         )
 
     @Slot(object)
@@ -1817,7 +1829,12 @@ class MainWindow(QMainWindow):
         if not silent:
             self._diff.setPlainText("Loading diff…")
             self._status_label.setText(f"Reading diff for {file.path}…")
-        self._git.request_diff(repository, file, staged=staged)
+        self._git.request_diff(
+            repository,
+            file,
+            staged=staged,
+            ignore_whitespace=self._ignore_whitespace_button.isChecked(),
+        )
 
     def _populate_diff_versions(self, file: FileStatus) -> None:
         blocker = QSignalBlocker(self._diff_version)
@@ -1936,6 +1953,25 @@ class MainWindow(QMainWindow):
 
     def _apply_diff_whitespace(self, enabled: bool) -> None:
         self._diff_view.set_whitespace(enabled)
+
+    @Slot(bool)
+    def _diff_ignore_whitespace_changed(self, enabled: bool) -> None:
+        self._settings.setValue("diff/ignoreWhitespace", enabled)
+        if self._workspace_tabs.currentIndex() != 1:
+            self._request_diff(silent=False)
+            return
+        item = cast(QTreeWidgetItem | None, self._history_panel.files.currentItem())
+        if item is None:
+            return
+        file = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(file, CommitFileChange):
+            return
+        if len(self._history_refs) == 2:
+            self._history_comparison_file_selected(*self._history_refs, file)
+            return
+        commit = self._history_panel.selected_commit
+        if commit is not None:
+            self._history_file_selected(commit, file)
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:

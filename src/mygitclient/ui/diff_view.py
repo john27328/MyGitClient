@@ -165,6 +165,12 @@ class DiffView(QWidget):
             "diffWhitespaceButton", "Whitespace"
         )
         self.whitespace_button.setToolTip("Show spaces and tab characters")
+        self.ignore_whitespace_button = self._toggle_button(
+            "diffIgnoreWhitespaceButton", "Ignore spaces"
+        )
+        self.ignore_whitespace_button.setToolTip(
+            "Ignore whitespace changes when loading the diff"
+        )
         self.hunk_button = QToolButton()
         self.hunk_button.setObjectName("diffHunkButton")
         self.hunk_button.setText("Stage hunk")
@@ -185,6 +191,7 @@ class DiffView(QWidget):
         toolbar_layout.addWidget(self.version_combo, 1)
         toolbar_layout.addWidget(self.wrap_button)
         toolbar_layout.addWidget(self.whitespace_button)
+        toolbar_layout.addWidget(self.ignore_whitespace_button)
         toolbar_layout.addWidget(self.hunk_button)
         toolbar_layout.addWidget(self.selected_lines_button)
         toolbar_layout.addWidget(self.clear_lines_button)
@@ -540,15 +547,12 @@ class DiffView(QWidget):
             ):
                 old_content = row.old.text[1:]
                 new_content = row.new.text[1:]
-                matcher = SequenceMatcher(None, old_content, new_content)
-                old_ranges: list[tuple[int, int]] = []
-                new_ranges: list[tuple[int, int]] = []
-                for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
-                    if tag != "equal":
-                        if old_end > old_start:
-                            old_ranges.append((old_width + 2 + old_start, old_end - old_start))
-                        if new_end > new_start:
-                            new_ranges.append((new_width + 2 + new_start, new_end - new_start))
+                old_ranges, new_ranges = inline_change_ranges(
+                    old_content,
+                    new_content,
+                    old_offset=old_width + 2,
+                    new_offset=new_width + 2,
+                )
                 if old_ranges:
                     old_inline[row_index] = tuple(old_ranges)
                 if new_ranges:
@@ -606,7 +610,6 @@ class DiffView(QWidget):
             extra.format.setBackground(color)
             selections.append(extra)
         return selections
-
     def _update_gutter_visibility(self, wrap_enabled: bool) -> None:
         unified = self.view_mode_combo.currentData() == "unified"
         self.gutter.setVisible(unified and not wrap_enabled)
@@ -638,3 +641,25 @@ class DiffView(QWidget):
         self.side_old.verticalScrollBar().setValue(side_vertical)
         self.side_old.horizontalScrollBar().setValue(old_horizontal)
         self.side_new.horizontalScrollBar().setValue(new_horizontal)
+
+
+def inline_change_ranges(
+    old: str,
+    new: str,
+    *,
+    old_offset: int = 0,
+    new_offset: int = 0,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    matcher = SequenceMatcher(None, old, new, autojunk=False)
+    if matcher.ratio() < 0.55:
+        return [], []
+    old_ranges: list[tuple[int, int]] = []
+    new_ranges: list[tuple[int, int]] = []
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if old_end > old_start:
+            old_ranges.append((old_offset + old_start, old_end - old_start))
+        if new_end > new_start:
+            new_ranges.append((new_offset + new_start, new_end - new_start))
+    return old_ranges, new_ranges

@@ -8,7 +8,7 @@ from pytestqt.qtbot import QtBot
 
 from mygitclient.git.parsers import parse_unified_diff
 from mygitclient.ui.diff_gutter import DiffGutter
-from mygitclient.ui.diff_view import DiffView
+from mygitclient.ui.diff_view import DiffView, inline_change_ranges
 
 
 def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> None:
@@ -28,6 +28,27 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     assert view.findChild(QStackedWidget) is view.stack
     assert view.findChild(QToolButton, "diffWrapButton") is view.wrap_button
     assert view.findChild(QToolButton, "diffWhitespaceButton") is view.whitespace_button
+    assert (
+        view.findChild(QToolButton, "diffIgnoreWhitespaceButton")
+        is view.ignore_whitespace_button
+    )
+
+
+def test_inline_highlight_is_skipped_for_unrelated_lines() -> None:
+    old = "mutable std::mutex m_sync;"
+    new = "// A comment describing a new synchronization strategy"
+
+    assert inline_change_ranges(old, new) == ([], [])
+
+
+def test_inline_highlight_keeps_focused_ranges_for_similar_lines() -> None:
+    old_ranges, new_ranges = inline_change_ranges(
+        "mutable bool m_saved = false;",
+        "mutable std::atomic_bool m_saved = false;",
+    )
+
+    assert old_ranges == []
+    assert new_ranges
 
 
 def test_diff_view_restores_saved_mode(qtbot: QtBot, tmp_path: Path) -> None:
