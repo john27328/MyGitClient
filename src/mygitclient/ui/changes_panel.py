@@ -79,6 +79,10 @@ class ChangesPanel(QWidget):
         super().__init__(parent)
         self._settings = settings
         self._render_generation = 0
+        self._pending_scroll_restore: tuple[int, int, int] | None = None
+        self._scroll_restore_timer = QTimer(self)
+        self._scroll_restore_timer.setSingleShot(True)
+        self._scroll_restore_timer.timeout.connect(self._restore_scroll_position)
         self.tree = ChangesTreeWidget()
         self.tree.setObjectName("changesTree")
         self.tree.setHeaderLabel("Changes")
@@ -218,17 +222,21 @@ class ChangesPanel(QWidget):
                     self._refresh_folder_state(root)
             self.tree.expandAll()
         del blocker
-        QTimer.singleShot(
-            0,
-            lambda: self._restore_scroll_position(
-                render_generation, vertical_scroll, horizontal_scroll
-            ),
+        self._pending_scroll_restore = (
+            render_generation,
+            vertical_scroll,
+            horizontal_scroll,
         )
+        self._scroll_restore_timer.start(0)
         return selected_item
 
-    def _restore_scroll_position(
-        self, render_generation: int, vertical: int, horizontal: int
-    ) -> None:
+    @Slot()
+    def _restore_scroll_position(self) -> None:
+        pending = self._pending_scroll_restore
+        self._pending_scroll_restore = None
+        if pending is None:
+            return
+        render_generation, vertical, horizontal = pending
         if render_generation != self._render_generation:
             return
         self.tree.verticalScrollBar().setValue(vertical)
