@@ -33,6 +33,7 @@ from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitG
 from mygitclient.ui.refs_panel import RefsPanel
 
 FILTER_HIGHLIGHT_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+BADGES_ROLE = int(Qt.ItemDataRole.UserRole) + 4
 
 
 class FilterHighlightDelegate(QStyledItemDelegate):
@@ -80,6 +81,55 @@ class FilterHighlightDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class RefBadgesDelegate(QStyledItemDelegate):
+    def paint(
+        self,
+        painter: QPainter,
+        option: QStyleOptionViewItem,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> None:
+        styled = QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        raw_badges = index.data(BADGES_ROLE)
+        styled.text = ""
+        style = styled.widget.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, styled, painter, styled.widget)
+        if not isinstance(raw_badges, tuple):
+            return
+        badges = cast(tuple[object, ...], raw_badges)
+        dark = styled.palette.base().color().lightness() < 128
+        colors = {
+            "local": ("#204f7a", "#d8ebff") if dark else ("#d8ebff", "#174f7a"),
+            "remote": ("#49336f", "#eadcff") if dark else ("#eadcff", "#57358a"),
+            "tag": ("#655019", "#ffedaa") if dark else ("#fff0b8", "#6d5200"),
+            "fork": ("#653f18", "#ffd8a8") if dark else ("#ffe1bd", "#79420d"),
+        }
+        metrics = styled.fontMetrics
+        x = styled.rect.left() + 4
+        height = min(styled.rect.height() - 4, metrics.height() + 4)
+        y = styled.rect.top() + (styled.rect.height() - height) // 2
+        painter.save()
+        painter.setClipRect(styled.rect)
+        for raw_badge in badges:
+            if not isinstance(raw_badge, tuple):
+                continue
+            badge = cast(tuple[object, ...], raw_badge)
+            if len(badge) != 2:
+                continue
+            kind, label = badge
+            if not isinstance(kind, str) or not isinstance(label, str):
+                continue
+            width = metrics.horizontalAdvance(label) + 14
+            background, foreground = colors.get(kind, colors["local"])
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(background))
+            painter.drawRoundedRect(x, y, width, height, 5, 5)
+            painter.setPen(QColor(foreground))
+            painter.drawText(x + 7, y, width - 14, height, Qt.AlignmentFlag.AlignCenter, label)
+            x += width + 4
+        painter.restore()
+
+
 class HistoryPanel(QWidget):
     load_more_requested = Signal()
     commit_selected = Signal(object)
@@ -90,14 +140,17 @@ class HistoryPanel(QWidget):
         super().__init__(parent)
         self.tree = QTreeWidget()
         self.tree.setObjectName("historyTree")
-        self.tree.setHeaderLabels(["Graph", "Description", "Author", "Date", "Commit"])
+        self.tree.setHeaderLabels(
+            ["Graph", "Refs", "Description", "Author", "Date", "Commit"]
+        )
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        for column, width in enumerate((60, 360, 150, 190, 90)):
+        for column, width in enumerate((60, 230, 360, 150, 190, 90)):
             self.tree.setColumnWidth(column, width)
         self.tree.setItemDelegateForColumn(0, CommitGraphDelegate(self.tree))
-        for column in (1, 2, 4):
+        self.tree.setItemDelegateForColumn(1, RefBadgesDelegate(self.tree))
+        for column in (2, 3, 5):
             self.tree.setItemDelegateForColumn(column, FilterHighlightDelegate(self.tree))
         self.tree.currentItemChanged.connect(self._commit_changed)
 
@@ -138,8 +191,8 @@ class HistoryPanel(QWidget):
         self.files.setColumnWidth(0, 80)
         self.files.currentItemChanged.connect(self._file_changed)
         self._comparison_refs: tuple[str, str] | None = None
-        self._branch_labels: dict[str, list[str]] = {}
-        self._tag_labels: dict[str, list[str]] = {}
+        self._branch_labels: dict[str, list[tuple[str, str]]] = {}
+        self._tag_labels: dict[str, list[tuple[str, str]]] = {}
         self._branch_point: BranchPointSnapshot | None = None
         details_layout = QVBoxLayout(self.details)
         details_layout.setContentsMargins(8, 0, 0, 0)
@@ -174,15 +227,15 @@ class HistoryPanel(QWidget):
         self._branch_labels = {}
         self._branch_point = None
         for branch in snapshot.branches:
-            label = branch.name if not branch.remote else f"remote: {branch.name}"
-            self._branch_labels.setdefault(branch.oid, []).append(label)
+            kind = "remote" if branch.remote else "local"
+            self._branch_labels.setdefault(branch.oid, []).append((kind, branch.name))
         self._refresh_commit_labels()
 
     def show_tags(self, snapshot: TagsSnapshot) -> None:
         self.refs_panel.show_tags(snapshot)
         self._tag_labels = {}
         for tag in snapshot.tags:
-            self._tag_labels.setdefault(tag.commit_oid, []).append(f"tag: {tag.name}")
+            self._tag_labels.setdefault(tag.commit_oid, []).append(("tag", tag.name))
         self._refresh_commit_labels()
 
     def show_branch_point(self, snapshot: BranchPointSnapshot) -> None:
@@ -215,7 +268,7 @@ class HistoryPanel(QWidget):
         header = self.tree.header()
         header.setStretchLastSection(False)
         mode = header.ResizeMode.Stretch if expanded else header.ResizeMode.Interactive
-        header.setSectionResizeMode(1, mode)
+        header.setSectionResizeMode(2, mode)
 
     def show_files(self, snapshot: CommitFilesSnapshot) -> None:
         commit = self.selected_commit
@@ -305,12 +358,12 @@ class HistoryPanel(QWidget):
             else commit.authored_at
         )
         item = QTreeWidgetItem(
-            ["", commit.subject, commit.author_name, display_date, commit.oid[:8]]
+            ["", "", commit.subject, commit.author_name, display_date, commit.oid[:8]]
         )
         item.setData(0, Qt.ItemDataRole.UserRole, commit)
-        item.setToolTip(1, commit.subject)
-        item.setToolTip(2, f"{commit.author_name} <{commit.author_email}>")
-        item.setToolTip(4, commit.oid)
+        item.setToolTip(2, commit.subject)
+        item.setToolTip(3, f"{commit.author_name} <{commit.author_email}>")
+        item.setToolTip(5, commit.oid)
         self.tree.addTopLevelItem(item)
         self._decorate_commit_item(item, commit)
 
@@ -325,23 +378,22 @@ class HistoryPanel(QWidget):
         self._apply_filter(self.filter_edit.text())
 
     def _decorate_commit_item(self, item: QTreeWidgetItem, commit: CommitSummary) -> None:
-        labels = list(self._branch_labels.get(commit.oid, ()))
-        labels.extend(self._tag_labels.get(commit.oid, ()))
+        badges = list(self._branch_labels.get(commit.oid, ()))
+        badges.extend(self._tag_labels.get(commit.oid, ()))
         point = self._branch_point
         if point is not None and point.commit_oid == commit.oid:
             base = point.base_ref.removeprefix("refs/heads/")
-            labels.append(f"branched from {base}")
-        prefix = " ".join(f"[{label}]" for label in labels)
-        item.setText(1, f"{prefix} {commit.subject}" if prefix else commit.subject)
-        tooltip = commit.subject
-        if labels:
-            tooltip += "\n\nRefs: " + ", ".join(labels)
-        item.setToolTip(1, tooltip)
+            badges.append(("fork", f"from {base}"))
+        item.setText(1, " · ".join(label for _kind, label in badges))
+        item.setData(1, BADGES_ROLE, tuple(badges))
+        item.setText(2, commit.subject)
+        item.setToolTip(1, "\n".join(label for _kind, label in badges))
 
     @Slot(str)
     def _apply_filter(self, text: str) -> None:
         query = text.strip().casefold()
         self.tree.setColumnHidden(0, bool(query))
+        self.tree.setColumnHidden(1, bool(query))
         for row in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(row)
             if item is None:
@@ -350,10 +402,10 @@ class HistoryPanel(QWidget):
             if not isinstance(commit, CommitSummary):
                 continue
             searchable = " ".join(
-                (item.text(1), commit.author_name, commit.author_email, commit.oid)
+                (item.text(1), commit.subject, commit.author_name, commit.author_email, commit.oid)
             ).casefold()
             item.setHidden(bool(query) and query not in searchable)
-            for column in (1, 2, 4):
+            for column in (2, 3, 5):
                 visible_text = item.text(column)
                 highlighted = query if query and query in visible_text.casefold() else None
                 item.setData(column, FILTER_HIGHLIGHT_ROLE, highlighted)

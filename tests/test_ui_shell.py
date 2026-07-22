@@ -262,10 +262,11 @@ def test_commit_history_is_loaded_asynchronously(
     second = history.topLevelItem(1)
     assert first is not None
     assert second is not None
-    assert first.text(1) == "[main] Second commit"
-    assert first.text(2) == "History Test"
-    assert len(first.text(4)) == 8
-    assert second.text(1) == "First commit"
+    assert first.text(1) == "main"
+    assert first.text(2) == "Second commit"
+    assert first.text(3) == "History Test"
+    assert len(first.text(5)) == 8
+    assert second.text(2) == "First commit"
     assert not load_more.isVisible()
     tabs.setCurrentIndex(1)
     assert diff_container.isHidden()

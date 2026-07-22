@@ -1636,6 +1636,16 @@ class MainWindow(QMainWindow):
         else:
             self._status_label.setText(f"Updated staging area for {path}")
         if self._repository is not None:
+            history_changed = path in {"commit", "fetch", "pull", "push"}
+            branch_changed = path.startswith("branch:") or path.startswith("branches:")
+            if history_changed and self._history_refs:
+                self._history_panel.clear_commits()
+                self._history_panel.set_loading(True)
+                self._history_runner = self._git.request_history(
+                    self._repository, refs=self._history_refs
+                )
+            elif branch_changed:
+                self._history_panel.clear_commits()
             status = self._repository_status
             if self._amend.isChecked() and status is not None and status.branch.oid:
                 self._git.request_amend_diff(

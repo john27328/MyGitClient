@@ -17,7 +17,7 @@ from mygitclient.git.models import (
     TagsSnapshot,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphRow
-from mygitclient.ui.history_panel import FILTER_HIGHLIGHT_ROLE, HistoryPanel
+from mygitclient.ui.history_panel import BADGES_ROLE, FILTER_HIGHLIGHT_ROLE, HistoryPanel
 
 
 def _commit(oid: str, subject: str, *parents: str) -> CommitSummary:
@@ -49,9 +49,9 @@ def test_history_panel_renders_page_and_graph(qtbot: QtBot) -> None:
     assert panel.commit_count == 2
     first = panel.tree.topLevelItem(0)
     assert first is not None
-    assert first.text(1) == "Merge feature"
-    assert first.text(2) == "Test Author"
-    assert first.text(4) == "merge"
+    assert first.text(2) == "Merge feature"
+    assert first.text(3) == "Test Author"
+    assert first.text(5) == "merge"
     assert isinstance(first.data(0, GRAPH_ROLE), CommitGraphRow)
     assert not panel.load_more_button.isHidden()
 
@@ -107,10 +107,15 @@ def test_history_panel_labels_branch_remote_tag_and_branch_point(qtbot: QtBot) -
     head = panel.tree.topLevelItem(0)
     fork = panel.tree.topLevelItem(1)
     assert head is not None and fork is not None
-    assert "[feature]" in head.text(1)
-    assert "[remote: origin/feature]" in head.text(1)
-    assert "[tag: v1.0]" in head.text(1)
-    assert "[branched from main]" in fork.text(1)
+    assert head.data(1, BADGES_ROLE) == (
+        ("local", "feature"),
+        ("remote", "origin/feature"),
+        ("tag", "v1.0"),
+    )
+    assert fork.data(1, BADGES_ROLE) == (
+        ("local", "main"),
+        ("fork", "from main"),
+    )
 
 
 def test_history_panel_filters_loaded_commits(qtbot: QtBot) -> None:
@@ -136,16 +141,16 @@ def test_history_panel_filters_loaded_commits(qtbot: QtBot) -> None:
     assert not second.isHidden()
     assert panel.filter_count.text() == "1 of 2 commits"
     assert panel.tree.isColumnHidden(0)
-    assert second.data(1, FILTER_HIGHLIGHT_ROLE) == "checkout"
+    assert second.data(2, FILTER_HIGHLIGHT_ROLE) == "checkout"
 
     panel.filter_edit.setText("author@example.invalid")
     assert not first.isHidden()
     assert not second.isHidden()
-    assert first.data(2, FILTER_HIGHLIGHT_ROLE) is None
+    assert first.data(3, FILTER_HIGHLIGHT_ROLE) is None
 
     panel.filter_edit.clear()
     assert not panel.tree.isColumnHidden(0)
-    assert second.data(1, FILTER_HIGHLIGHT_ROLE) is None
+    assert second.data(2, FILTER_HIGHLIGHT_ROLE) is None
 
 
 def test_history_panel_shows_commit_details_and_emits_file_selection(

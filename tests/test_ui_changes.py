@@ -153,6 +153,7 @@ def test_commit_and_amend_from_commit_panel(
     settings = QSettings(str(tmp_path / "commit.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
+    history = window.findChild(QTreeWidget, "historyTree")
     message = window.findChild(QPlainTextEdit, "commitMessageEdit")
     description = window.findChild(QPlainTextEdit, "commitDescriptionEdit")
     commit_button = window.findChild(QPushButton, "commitButton")
@@ -160,6 +161,7 @@ def test_commit_and_amend_from_commit_panel(
     diff_header = window.findChild(QLabel, "diffFileHeader")
     amend = window.findChild(QCheckBox, "amendCheckBox")
     assert changes is not None
+    assert history is not None
     assert message is not None
     assert description is not None
     assert commit_button is not None
@@ -181,6 +183,9 @@ def test_commit_and_amend_from_commit_panel(
     commit_button.click()
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 0, timeout=5000)
     qtbot.waitUntil(lambda: diff_panel.toPlainText() == "", timeout=5000)
+    qtbot.waitUntil(lambda: history.topLevelItemCount() == 1, timeout=5000)
+    history_item = history.topLevelItem(0)
+    assert history_item is not None and history_item.text(2) == "initial commit"
     log = subprocess.run(
         ["git", "log", "-1", "--pretty=%s"],
         cwd=repository,
