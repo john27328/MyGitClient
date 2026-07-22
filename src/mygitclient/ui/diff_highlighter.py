@@ -60,7 +60,11 @@ class DiffHighlighter(QSyntaxHighlighter):
             ):
                 self.setFormat(match.start(), match.end() - match.start(), keyword_format)
         inline_format = QTextCharFormat()
-        inline_format.setBackground(colors["inline"])
+        inline_format.setBackground(
+            colors["inline_addition"]
+            if kind == "addition"
+            else colors["inline_deletion"]
+        )
         for start, length in self._inline_ranges.get(block_number, ()):
             self.setFormat(start, length, inline_format)
 
@@ -68,20 +72,22 @@ class DiffHighlighter(QSyntaxHighlighter):
         dark = self._editor.palette().base().color().lightness() < 128
         if dark:
             return {
-                "addition": QColor("#173d27"),
-                "deletion": QColor("#4a2026"),
+                "addition": QColor("#142f20"),
+                "deletion": QColor("#3b1d22"),
                 "hunk": QColor("#243955"),
                 "header": QColor("#252a31"),
                 "header_text": QColor("#9aa7b5"),
                 "syntax": QColor("#c792ea"),
-                "inline": QColor("#6b3840"),
+                "inline_addition": QColor("#285d3a"),
+                "inline_deletion": QColor("#71313a"),
             }
         return {
-            "addition": QColor("#dff5e5"),
-            "deletion": QColor("#f9dddd"),
+            "addition": QColor("#edf8f0"),
+            "deletion": QColor("#fbecec"),
             "hunk": QColor("#e8f0fa"),
             "header": QColor("#f3f5f7"),
             "header_text": QColor("#64758a"),
             "syntax": QColor("#7b3fc6"),
-            "inline": QColor("#f1b9b9"),
+            "inline_addition": QColor("#b9e7c5"),
+            "inline_deletion": QColor("#f1b9b9"),
         }

@@ -48,6 +48,7 @@ from mygitclient.git.models import (
     AmendPreview,
     BranchesSnapshot,
     BranchInfo,
+    BranchPointSnapshot,
     CommitDiffSnapshot,
     CommitFileChange,
     CommitFilesSnapshot,
@@ -540,6 +541,7 @@ class MainWindow(QMainWindow):
         self._git.comparison_ready.connect(self._show_ref_comparison)
         self._git.comparison_diff_ready.connect(self._show_ref_comparison_diff)
         self._git.branches_ready.connect(self._show_branches)
+        self._git.branch_point_ready.connect(self._show_branch_point)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
         self._git.commit_files_ready.connect(self._show_commit_files)
@@ -904,13 +906,31 @@ class MainWindow(QMainWindow):
     def _show_branches(self, value: object) -> None:
         if not isinstance(value, BranchesSnapshot) or value.repository != self._repository:
             return
-        self._history_panel.refs_panel.show_branches(value)
+        self._history_panel.show_branches(value)
+        current = next((branch for branch in value.branches if branch.current), None)
+        if current is None:
+            return
+        local = [branch for branch in value.branches if not branch.remote]
+        base = next(
+            (branch for branch in local if branch.name == "main"),
+            next((branch for branch in local if branch.name == "master"), None),
+        )
+        if base is not None and base.full_name != current.full_name:
+            self._git.request_branch_point(
+                value.repository, current.full_name, base.full_name
+            )
+
+    @Slot(object)
+    def _show_branch_point(self, value: object) -> None:
+        if not isinstance(value, BranchPointSnapshot) or value.repository != self._repository:
+            return
+        self._history_panel.show_branch_point(value)
 
     @Slot(object)
     def _show_tags(self, value: object) -> None:
         if not isinstance(value, TagsSnapshot) or value.repository != self._repository:
             return
-        self._history_panel.refs_panel.show_tags(value)
+        self._history_panel.show_tags(value)
 
     @Slot(object)
     def _show_stashes(self, value: object) -> None:

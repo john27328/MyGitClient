@@ -9,6 +9,7 @@ from mygitclient.git.models import (
     AmendPreview,
     BranchesSnapshot,
     BranchInfo,
+    BranchPointSnapshot,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
     CommitPage,
@@ -103,6 +104,41 @@ def test_history_can_be_limited_to_one_branch(qtbot: QtBot, tmp_path: Path) -> N
         "feature commit",
         "main commit",
     }
+
+
+def test_branch_point_is_loaded_with_merge_base(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(tmp_path, *identity, "commit", "-m", "base")
+    fork_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    _git(tmp_path, "switch", "-c", "feature")
+    tracked.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "feature")
+
+    service = GitService()
+    snapshots: list[object] = []
+    service.branch_point_ready.connect(snapshots.append)
+    with qtbot.waitSignal(service.branch_point_ready, timeout=5000):
+        service.request_branch_point(
+            tmp_path, "refs/heads/feature", "refs/heads/main"
+        )
+
+    assert len(snapshots) == 1
+    snapshot = snapshots[0]
+    assert isinstance(snapshot, BranchPointSnapshot)
+    assert snapshot.commit_oid == fork_oid
+    assert snapshot.base_ref == "refs/heads/main"
 
 
 def test_refs_can_be_compared_by_file_and_diff(qtbot: QtBot, tmp_path: Path) -> None:

@@ -326,7 +326,7 @@ def test_selected_diff_lines_can_be_staged(
     changes.setCurrentItem(item)
     qtbot.waitUntil(lambda: "+TWO" in diff_panel.toPlainText(), timeout=5000)
     assert "□" in gutter.toPlainText()
-    hunk_header = diff_panel.document().find("@@")
+    hunk_header = diff_panel.document().find("Old lines")
     assert not hunk_header.isNull()
     gutter.line_activated.emit(hunk_header.blockNumber(), False)
     assert gutter.toPlainText().count("✓") == 4

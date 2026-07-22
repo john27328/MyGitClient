@@ -11,6 +11,7 @@ from mygitclient.git.models import (
     AmendDiffSnapshot,
     AmendPreview,
     BranchInfo,
+    BranchPointSnapshot,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
     CommitPage,
@@ -55,6 +56,7 @@ class GitService(QObject):
     amend_preview_ready = Signal(object)
     history_ready = Signal(object)
     branches_ready = Signal(object)
+    branch_point_ready = Signal(object)
     commit_files_ready = Signal(object)
     commit_diff_ready = Signal(object)
     comparison_ready = Signal(object)
@@ -83,6 +85,8 @@ class GitService(QObject):
         self._latest_history_request: dict[Path, int] = {}
         self._branch_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_branch_request: dict[Path, int] = {}
+        self._branch_point_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
+        self._latest_branch_point_request: dict[Path, int] = {}
         self._tag_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_tag_request: dict[Path, int] = {}
         self._stash_requests: dict[GitRunner, tuple[Path, int]] = {}
@@ -150,6 +154,30 @@ class GitService(QObject):
                 ),
                 repository,
                 "read tags",
+            )
+        )
+        return runner
+
+    def request_branch_point(
+        self, repository: Path, branch_ref: str, base_ref: str
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_branch_point_request[repository] = request_id
+        self._branch_point_requests[runner] = (
+            repository,
+            branch_ref,
+            base_ref,
+            request_id,
+        )
+        runner.completed.connect(self._handle_branch_point)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                ("merge-base", branch_ref, base_ref),
+                repository,
+                "find branch point",
             )
         )
         return runner
@@ -1042,6 +1070,31 @@ class GitService(QObject):
             self.operation_failed.emit(str(error))
             return
         self.branches_ready.emit(snapshot)
+
+    @Slot(object)
+    def _handle_branch_point(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned a branch point from an unknown operation")
+            return
+        request = self._branch_point_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected branch point result")
+            return
+        repository, branch_ref, base_ref, request_id = request
+        if self._latest_branch_point_request.get(repository) != request_id:
+            return
+        self._latest_branch_point_request.pop(repository, None)
+        if result.cancelled:
+            return
+        if not result.succeeded:
+            return
+        commit_oid = result.stdout.decode("ascii", errors="replace").strip()
+        if commit_oid:
+            self.branch_point_ready.emit(
+                BranchPointSnapshot(repository, branch_ref, base_ref, commit_oid)
+            )
 
     @Slot(object)
     def _handle_tags(self, result: object) -> None:

@@ -20,11 +20,14 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient.git.models import (
+    BranchesSnapshot,
+    BranchPointSnapshot,
     CommitFileChange,
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
     RefComparisonSnapshot,
+    TagsSnapshot,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
 from mygitclient.ui.refs_panel import RefsPanel
@@ -135,6 +138,9 @@ class HistoryPanel(QWidget):
         self.files.setColumnWidth(0, 80)
         self.files.currentItemChanged.connect(self._file_changed)
         self._comparison_refs: tuple[str, str] | None = None
+        self._branch_labels: dict[str, list[str]] = {}
+        self._tag_labels: dict[str, list[str]] = {}
+        self._branch_point: BranchPointSnapshot | None = None
         details_layout = QVBoxLayout(self.details)
         details_layout.setContentsMargins(8, 0, 0, 0)
         details_layout.addWidget(self.details_label)
@@ -157,8 +163,31 @@ class HistoryPanel(QWidget):
         return self.tree.topLevelItemCount()
 
     def reset(self) -> None:
+        self._branch_labels.clear()
+        self._tag_labels.clear()
+        self._branch_point = None
         self.refs_panel.reset()
         self.clear_commits()
+
+    def show_branches(self, snapshot: BranchesSnapshot) -> None:
+        self.refs_panel.show_branches(snapshot)
+        self._branch_labels = {}
+        self._branch_point = None
+        for branch in snapshot.branches:
+            label = branch.name if not branch.remote else f"remote: {branch.name}"
+            self._branch_labels.setdefault(branch.oid, []).append(label)
+        self._refresh_commit_labels()
+
+    def show_tags(self, snapshot: TagsSnapshot) -> None:
+        self.refs_panel.show_tags(snapshot)
+        self._tag_labels = {}
+        for tag in snapshot.tags:
+            self._tag_labels.setdefault(tag.commit_oid, []).append(f"tag: {tag.name}")
+        self._refresh_commit_labels()
+
+    def show_branch_point(self, snapshot: BranchPointSnapshot) -> None:
+        self._branch_point = snapshot
+        self._refresh_commit_labels()
 
     def clear_commits(self) -> None:
         self.filter_edit.clear()
@@ -283,6 +312,31 @@ class HistoryPanel(QWidget):
         item.setToolTip(2, f"{commit.author_name} <{commit.author_email}>")
         item.setToolTip(4, commit.oid)
         self.tree.addTopLevelItem(item)
+        self._decorate_commit_item(item, commit)
+
+    def _refresh_commit_labels(self) -> None:
+        for row in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(row)
+            if item is None:
+                continue
+            commit = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(commit, CommitSummary):
+                self._decorate_commit_item(item, commit)
+        self._apply_filter(self.filter_edit.text())
+
+    def _decorate_commit_item(self, item: QTreeWidgetItem, commit: CommitSummary) -> None:
+        labels = list(self._branch_labels.get(commit.oid, ()))
+        labels.extend(self._tag_labels.get(commit.oid, ()))
+        point = self._branch_point
+        if point is not None and point.commit_oid == commit.oid:
+            base = point.base_ref.removeprefix("refs/heads/")
+            labels.append(f"branched from {base}")
+        prefix = " ".join(f"[{label}]" for label in labels)
+        item.setText(1, f"{prefix} {commit.subject}" if prefix else commit.subject)
+        tooltip = commit.subject
+        if labels:
+            tooltip += "\n\nRefs: " + ", ".join(labels)
+        item.setToolTip(1, tooltip)
 
     @Slot(str)
     def _apply_filter(self, text: str) -> None:
@@ -296,7 +350,7 @@ class HistoryPanel(QWidget):
             if not isinstance(commit, CommitSummary):
                 continue
             searchable = " ".join(
-                (commit.subject, commit.author_name, commit.author_email, commit.oid)
+                (item.text(1), commit.author_name, commit.author_email, commit.oid)
             ).casefold()
             item.setHidden(bool(query) and query not in searchable)
             for column in (1, 2, 4):

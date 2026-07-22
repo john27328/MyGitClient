@@ -5,11 +5,16 @@ from pathlib import Path
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
+    BranchesSnapshot,
+    BranchInfo,
+    BranchPointSnapshot,
     CommitFileChange,
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
     RefComparisonSnapshot,
+    TagInfo,
+    TagsSnapshot,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphRow
 from mygitclient.ui.history_panel import FILTER_HIGHLIGHT_ROLE, HistoryPanel
@@ -57,6 +62,55 @@ def test_history_panel_emits_load_more_request(qtbot: QtBot) -> None:
 
     with qtbot.waitSignal(panel.load_more_requested, timeout=1000):
         panel.load_more_button.click()
+
+
+def test_history_panel_labels_branch_remote_tag_and_branch_point(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    repository = Path("repository")
+    fork_oid = "1" * 40
+    head_oid = "2" * 40
+    panel.show_branches(
+        BranchesSnapshot(
+            repository,
+            (
+                BranchInfo("refs/heads/main", "main", fork_oid, False),
+                BranchInfo(
+                    "refs/heads/feature", "feature", head_oid, False, current=True
+                ),
+                BranchInfo(
+                    "refs/remotes/origin/feature",
+                    "origin/feature",
+                    head_oid,
+                    True,
+                ),
+            ),
+        )
+    )
+    panel.show_tags(
+        TagsSnapshot(repository, (TagInfo("v1.0", head_oid, head_oid, False),))
+    )
+    panel.show_branch_point(
+        BranchPointSnapshot(
+            repository, "refs/heads/feature", "refs/heads/main", fork_oid
+        )
+    )
+    panel.show_page(
+        CommitPage(
+            repository,
+            (_commit(head_oid, "Feature work", fork_oid), _commit(fork_oid, "Base")),
+            0,
+            False,
+        )
+    )
+
+    head = panel.tree.topLevelItem(0)
+    fork = panel.tree.topLevelItem(1)
+    assert head is not None and fork is not None
+    assert "[feature]" in head.text(1)
+    assert "[remote: origin/feature]" in head.text(1)
+    assert "[tag: v1.0]" in head.text(1)
+    assert "[branched from main]" in fork.text(1)
 
 
 def test_history_panel_filters_loaded_commits(qtbot: QtBot) -> None:

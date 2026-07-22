@@ -33,6 +33,7 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
         is view.ignore_whitespace_button
     )
     assert view.findChild(QLabel, "diffVersionLabel") is view.version_label
+    assert view.findChild(QLabel, "diffFileHeader") is view.file_header
 
 
 def test_single_diff_source_is_a_label_and_two_sources_are_selectable(
@@ -131,6 +132,41 @@ def test_diff_view_reset_clears_both_presentations(qtbot: QtBot, tmp_path: Path)
     assert view.side_new.toPlainText() == ""
     assert view.side_old_gutter.toPlainText() == ""
     assert view.side_new_gutter.toPlainText() == ""
+    assert view.file_header.text() == ""
+
+
+def test_diff_view_hides_git_metadata_and_labels_hunks(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "clean-diff.ini"), QSettings.Format.IniFormat)
+    settings.setValue("diff/viewMode", "side-by-side")
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    diff = parse_unified_diff(
+        b"diff --git a/file.cpp b/file.cpp\n"
+        b"index 1111111..2222222 100644\n"
+        b"--- a/file.cpp\n"
+        b"+++ b/file.cpp\n"
+        b"@@ -10,2 +10,2 @@\n"
+        b"-before\n"
+        b"+after\n"
+        b" context\n",
+        "src/file.cpp",
+        staged=False,
+    )
+
+    view.display_diff(
+        diff,
+        selection_key=(tmp_path, diff.path, False),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+
+    assert view.file_header.text() == "src/file.cpp"
+    assert "diff --git" not in view.side_old.toPlainText()
+    assert "--- a/file.cpp" not in view.side_old.toPlainText()
+    assert "Old lines 10–11" in view.side_old.toPlainText()
+    assert "New lines 10–11" in view.side_new.toPlainText()
 
 
 def test_diff_view_owns_line_selection_and_emits_request(
@@ -260,8 +296,8 @@ def test_side_by_side_gutters_select_lines(qtbot: QtBot, tmp_path: Path) -> None
         whole_file_staged=False,
     )
 
-    view.side_old_gutter.line_activated.emit(4, False)
-    view.side_new_gutter.line_activated.emit(4, True)
+    view.side_old_gutter.line_activated.emit(1, False)
+    view.side_new_gutter.line_activated.emit(1, True)
 
     assert view.selection.selected_lines == {4, 5}
     assert "✓" in view.side_old_gutter.toPlainText()

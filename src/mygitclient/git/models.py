@@ -136,6 +136,14 @@ class CommitPage:
 
 
 @dataclass(frozen=True, slots=True)
+class BranchPointSnapshot:
+    repository: Path
+    branch_ref: str
+    base_ref: str
+    commit_oid: str
+
+
+@dataclass(frozen=True, slots=True)
 class CommitFileChange:
     status: str
     path: str
@@ -282,6 +290,15 @@ def pair_changed_lines(
             rows.append(SideBySideRow(None, added[new_index - 1]))
             new_index -= 1
     rows.reverse()
+    longest_side = max(len(deleted), len(added))
+    if longest_side >= 8 and len(rows) > longest_side * 1.35:
+        return tuple(
+            SideBySideRow(
+                deleted[index] if index < len(deleted) else None,
+                added[index] if index < len(added) else None,
+            )
+            for index in range(longest_side)
+        )
     compacted: list[SideBySideRow] = []
     index = 0
     while index < len(rows):

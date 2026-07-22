@@ -68,6 +68,17 @@ class DiffView(QWidget):
         self.diff.hide()
         self.diff_highlighter = DiffHighlighter(self.diff)
 
+        self.file_header = QLabel()
+        self.file_header.setObjectName("diffFileHeader")
+        self.file_header.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.file_header.setStyleSheet(
+            "QLabel { padding: 5px 8px; background: palette(alternate-base); "
+            "border-bottom: 1px solid palette(midlight); }"
+        )
+        self.file_header.hide()
+
         self.gutter = DiffGutter()
         self.gutter.setObjectName("diffGutter")
         self.gutter.setReadOnly(True)
@@ -214,6 +225,7 @@ class DiffView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(toolbar)
+        layout.addWidget(self.file_header)
         layout.addWidget(self.stack)
         self.hide()
         self.gutter.line_activated.connect(self._gutter_line_activated)
@@ -314,8 +326,14 @@ class DiffView(QWidget):
             assert selection_key is not None
             self.selection.restore(diff, self._saved_selections.get(selection_key, set()))
         self.diff_highlighter.set_diff(diff)
-        self.diff.setPlainText(diff.text or "No textual changes to display.")
+        self.file_header.setText(diff.path)
+        self.file_header.setToolTip(diff.path)
+        self.file_header.setVisible(bool(diff.lines))
+        self.diff.setPlainText(
+            "\n".join(self._display_lines(diff)) or "No textual changes to display."
+        )
         self._render_gutter(diff, self.selection)
+        self._hide_unified_service_blocks(diff)
         self._render_side_by_side(diff)
         if preserve_scroll:
             self._restore_scroll_positions(positions)
@@ -335,6 +353,8 @@ class DiffView(QWidget):
         self.side_new.clear()
         self.side_old_gutter.clear()
         self.side_new_gutter.clear()
+        self.file_header.clear()
+        self.file_header.hide()
         self._side_old_line_indexes = []
         self._side_new_line_indexes = []
         self.side_old_highlighter.set_inline_ranges({})
@@ -546,9 +566,16 @@ class DiffView(QWidget):
         line_indexes = {id(line): index for index, line in enumerate(diff.lines)}
         self._side_old_line_indexes = []
         self._side_new_line_indexes = []
-        for row_index, row in enumerate(diff.side_by_side_rows):
+        display_rows = tuple(
+            row
+            for row in diff.side_by_side_rows
+            if not self._is_service_row(row.old, row.new)
+        )
+        for row_index, row in enumerate(display_rows):
             old_text = self._side_line_text(row.old, old_width, old=True)
             new_text = self._side_line_text(row.new, new_width, old=False)
+            if row.old is not None and row.old.kind == "hunk":
+                old_text = new_text = self._hunk_label(diff, row.old)
             old_lines.append(old_text)
             new_lines.append(new_text)
             old_kinds.append(row.old.kind if row.old is not None else "metadata")
@@ -644,6 +671,55 @@ class DiffView(QWidget):
         number_text = str(number) if number is not None else ""
         content = line.text[1:] if line.kind in {"addition", "deletion", "context"} else line.text
         return f"{number_text:>{width}}  {content}"
+
+    @staticmethod
+    def _is_service_row(old: DiffLine | None, new: DiffLine | None) -> bool:
+        line = old or new
+        return line is not None and line.kind in {"header", "metadata"}
+
+    def _display_lines(self, diff: UnifiedDiff) -> tuple[str, ...]:
+        if not diff.hunks:
+            return tuple(line.text for line in diff.lines)
+        rendered: list[str] = []
+        for line in diff.lines:
+            if line.kind in {"header", "metadata"}:
+                rendered.append("")
+            elif line.kind == "hunk":
+                rendered.append(self._hunk_label(diff, line))
+            else:
+                rendered.append(line.text)
+        return tuple(rendered)
+
+    def _hide_unified_service_blocks(self, diff: UnifiedDiff) -> None:
+        for editor in (self.diff, self.gutter):
+            document = editor.document()
+            for index, line in enumerate(diff.lines):
+                block = document.findBlockByNumber(index)
+                visible = line.kind not in {"header", "metadata"}
+                block.setVisible(visible)
+                block.setLineCount(1 if visible else 0)
+            document.markContentsDirty(0, document.characterCount())
+
+    @staticmethod
+    def _hunk_label(diff: UnifiedDiff, line: DiffLine | None) -> str:
+        if line is None:
+            return ""
+        hunk = next((candidate for candidate in diff.hunks if candidate.header == line.text), None)
+        if hunk is None:
+            return line.text
+        old_end = hunk.old_start + max(hunk.old_count - 1, 0)
+        new_end = hunk.new_start + max(hunk.new_count - 1, 0)
+        old_range = (
+            str(hunk.old_start)
+            if old_end == hunk.old_start
+            else f"{hunk.old_start}–{old_end}"
+        )
+        new_range = (
+            str(hunk.new_start)
+            if new_end == hunk.new_start
+            else f"{hunk.new_start}–{new_end}"
+        )
+        return f"── Old lines {old_range} · New lines {new_range} ──"
 
     def _scroll_positions(self) -> tuple[int, int, int, int, int]:
         return (
