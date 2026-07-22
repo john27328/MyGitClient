@@ -1,3 +1,6 @@
+import re
+
+
 class GitError(RuntimeError):
     """Base error raised by the Git integration."""
 
@@ -18,7 +21,23 @@ def format_git_error(message: str, *, operation: str) -> str:
     errors = [line for line in lines if line not in attribute_warnings]
     text = "\n".join(errors) or f"Could not {operation}"
     lowered = text.casefold()
-    if "non-fast-forward" in lowered or "fetch first" in lowered:
+    if "index.lock" in lowered and "file exists" in lowered:
+        lock_match = re.search(
+            r"unable to create ['\"](?P<path>.+?index\.lock)['\"]",
+            text,
+            flags=re.IGNORECASE,
+        )
+        lock_path = lock_match.group("path") if lock_match is not None else None
+        text = (
+            "This repository is temporarily locked by another Git operation. "
+            "Wait for it to finish, then try again."
+        )
+        if lock_path is not None:
+            text += (
+                "\n\nIf no other Git application is running and the error persists, "
+                f"remove the stale lock file:\n{lock_path}"
+            )
+    elif "non-fast-forward" in lowered or "fetch first" in lowered:
         text = (
             "Push was rejected because the remote branch contains changes you do not "
             "have locally. Fetch, then Pull or Rebase, and push again."

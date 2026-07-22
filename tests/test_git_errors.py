@@ -36,3 +36,17 @@ def test_network_and_authentication_errors_are_understandable() -> None:
 
     assert "credential helper" in auth
     assert "Check your network connection" in network
+
+
+def test_index_lock_error_explains_safe_recovery() -> None:
+    formatted = format_git_error(
+        "fatal: Unable to create "
+        "'C:/work/project/.git/index.lock': File exists.\n"
+        "Another git process seems to be running in this repository.",
+        operation="stage files",
+    )
+
+    assert "temporarily locked by another Git operation" in formatted
+    assert "Wait for it to finish" in formatted
+    assert "C:/work/project/.git/index.lock" in formatted
+    assert "Another git process" not in formatted
