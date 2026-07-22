@@ -48,6 +48,10 @@ class DiffView(QWidget):
         self._saved_selections: dict[SelectionKey, set[LineFingerprint]] = {}
         self._interactive = True
         self._auto_apply_hunks = True
+        self._pending_scroll_positions: tuple[int, int, int, int, int] | None = None
+        self._scroll_restore_timer = QTimer(self)
+        self._scroll_restore_timer.setSingleShot(True)
+        self._scroll_restore_timer.timeout.connect(self._restore_pending_scroll_positions)
         self.selection = DiffSelection()
         self.setObjectName("diffContainer")
 
@@ -324,6 +328,8 @@ class DiffView(QWidget):
         whole_file_staged: bool,
         interactive: bool = True,
     ) -> None:
+        self._scroll_restore_timer.stop()
+        self._pending_scroll_positions = None
         positions = self._scroll_positions()
         self._remember_selection()
         self.current_diff = diff
@@ -354,7 +360,8 @@ class DiffView(QWidget):
             # Headless Qt platforms may update scrollbar ranges on the next event-loop
             # pass. Restore once more after layout so an unchanged asynchronous refresh
             # cannot clamp the saved position to zero.
-            QTimer.singleShot(0, lambda: self._restore_clamped_scroll_positions(positions))
+            self._pending_scroll_positions = positions
+            self._scroll_restore_timer.start(0)
         self.render_selection()
         self._update_hunk_button()
         self.selection_changed.emit()
@@ -770,10 +777,13 @@ class DiffView(QWidget):
         self.side_old.horizontalScrollBar().setValue(old_horizontal)
         self.side_new.horizontalScrollBar().setValue(new_horizontal)
 
-    def _restore_clamped_scroll_positions(
-        self, positions: tuple[int, int, int, int, int]
-    ) -> None:
+    @Slot()
+    def _restore_pending_scroll_positions(self) -> None:
         """Retry non-zero positions that Qt clamped before recalculating ranges."""
+        positions = self._pending_scroll_positions
+        self._pending_scroll_positions = None
+        if positions is None:
+            return
         widgets = (
             self.diff.verticalScrollBar(),
             self.diff.horizontalScrollBar(),
