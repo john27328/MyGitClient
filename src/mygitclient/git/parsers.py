@@ -158,7 +158,11 @@ _HUNK_HEADER = re.compile(
 
 
 def parse_unified_diff(
-    output: bytes, path: str, *, staged: bool, max_bytes: int = 2_000_000
+    output: bytes,
+    path: str,
+    *,
+    staged: bool,
+    max_bytes: int = 2_000_000,
 ) -> UnifiedDiff:
     """Decode unified diff output and classify its lines for presentation."""
     binary = b"Binary files " in output or b"GIT binary patch" in output

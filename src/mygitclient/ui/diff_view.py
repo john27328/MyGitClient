@@ -47,6 +47,7 @@ class DiffView(QWidget):
         self._current_selection_key: SelectionKey | None = None
         self._saved_selections: dict[SelectionKey, set[LineFingerprint]] = {}
         self._interactive = True
+        self._auto_apply_hunks = True
         self.selection = DiffSelection()
         self.setObjectName("diffContainer")
 
@@ -196,12 +197,14 @@ class DiffView(QWidget):
         self.hunk_button.setEnabled(False)
         self.selected_lines_button = QToolButton()
         self.selected_lines_button.setObjectName("diffSelectedLinesButton")
-        self.selected_lines_button.setText("Stage selected")
+        self.selected_lines_button.setText("Stage selected \u2193")
         self.selected_lines_button.setEnabled(False)
+        self.selected_lines_button.hide()
         self.clear_lines_button = QToolButton()
         self.clear_lines_button.setObjectName("diffClearSelectionButton")
         self.clear_lines_button.setText("Clear")
         self.clear_lines_button.setEnabled(False)
+        self.clear_lines_button.hide()
 
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
@@ -288,6 +291,17 @@ class DiffView(QWidget):
     def has_pending_partial_selection(self) -> bool:
         return bool(self.selection.selected_lines) and not self.selection.whole_file
 
+    def set_auto_apply_hunks(self, enabled: bool) -> None:
+        self._auto_apply_hunks = enabled
+        self.hunk_button.setVisible(self._interactive and not enabled)
+        self.gutter.setToolTip(
+            "Click a hunk checkbox to apply the whole block immediately. "
+            "Individual lines are collected for the selected-lines action."
+            if enabled
+            else "Click a checkbox to select a changed line. "
+            "Click a hunk checkbox to select the whole block."
+        )
+
     def has_saved_selection(self, repository: Path, path: str) -> bool:
         return any(
             bool(self._saved_selections.get((repository, path, staged)))
@@ -314,9 +328,9 @@ class DiffView(QWidget):
         self._remember_selection()
         self.current_diff = diff
         self._interactive = interactive
-        self.hunk_button.setVisible(interactive)
-        self.selected_lines_button.setVisible(interactive)
-        self.clear_lines_button.setVisible(interactive)
+        self.hunk_button.setVisible(interactive and not self._auto_apply_hunks)
+        self.selected_lines_button.hide()
+        self.clear_lines_button.hide()
         self._current_selection_key = selection_key if interactive else None
         if not interactive:
             self.selection.clear()
@@ -395,7 +409,7 @@ class DiffView(QWidget):
         self.selected_lines_button.setEnabled(has_selection)
         self.clear_lines_button.setEnabled(has_selection)
         self.selected_lines_button.setText(
-            "Unstage selected" if diff.staged else "Stage selected"
+            "Unstage selected \u2191" if diff.staged else "Stage selected \u2193"
         )
 
     @Slot()
@@ -410,10 +424,23 @@ class DiffView(QWidget):
         diff = self.current_diff
         if diff is None or not self._interactive:
             return
+        if (
+            not extend
+            and 0 <= line_index < len(diff.lines)
+            and diff.lines[line_index].kind == "hunk"
+        ):
+            hunk_index = diff.hunk_index_for_line(line_index)
+            if hunk_index is not None:
+                self.hunk_requested.emit(diff, hunk_index)
+            return
+        selected_before = set(self.selection.selected_lines)
+        whole_file_before = self.selection.whole_file
         if self.selection.toggle(diff, line_index, extend=extend):
-            self._remember_selection()
-            self.render_selection()
-            self.selection_changed.emit()
+            changed_lines = selected_before ^ self.selection.selected_lines
+            self.selection.selected_lines = selected_before
+            self.selection.whole_file = whole_file_before
+            if changed_lines:
+                self.lines_requested.emit(diff, changed_lines)
 
     @Slot(int, bool)
     def _side_old_line_activated(self, row_index: int, extend: bool) -> None:
@@ -448,6 +475,7 @@ class DiffView(QWidget):
         if diff is None or not self.selection.selected_lines:
             return
         self.lines_requested.emit(diff, set(self.selection.selected_lines))
+        self.clear_selection()
 
     @Slot()
     def _request_selected_hunk(self) -> None:

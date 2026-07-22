@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
+from typing import cast
 
 from PySide6.QtCore import QRect, QSettings, QSignalBlocker, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QMouseEvent
+from PySide6.QtGui import QAction, QFocusEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -12,6 +13,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
+    QStackedWidget,
     QStyle,
     QStyleOptionViewItem,
     QTreeWidget,
@@ -29,6 +32,8 @@ _FOLDER_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 class ChangesTreeWidget(QTreeWidget):
     """Keeps row selection separate from clicking a staging checkbox."""
 
+    focused = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._checkbox_pressed = False
@@ -42,7 +47,7 @@ class ChangesTreeWidget(QTreeWidget):
             item.setCheckState(
                 0,
                 Qt.CheckState.Unchecked
-                if current == Qt.CheckState.Checked
+                if current != Qt.CheckState.Unchecked
                 else Qt.CheckState.Checked,
             )
             self._checkbox_pressed = True
@@ -56,6 +61,10 @@ class ChangesTreeWidget(QTreeWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        self.focused.emit()
 
     def indicator_rect(self, item: QTreeWidgetItem) -> QRect:
         option = QStyleOptionViewItem()
@@ -74,6 +83,7 @@ class ChangesPanel(QWidget):
 
     folder_stage_requested = Signal(object, bool)
     view_mode_changed = Signal(str)
+    presentation_mode_changed = Signal(str)
 
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -83,14 +93,12 @@ class ChangesPanel(QWidget):
         self._scroll_restore_timer = QTimer(self)
         self._scroll_restore_timer.setSingleShot(True)
         self._scroll_restore_timer.timeout.connect(self._restore_scroll_position)
-        self.tree = ChangesTreeWidget()
-        self.tree.setObjectName("changesTree")
-        self.tree.setHeaderLabel("Changes")
-        self.tree.setRootIsDecorated(False)
-        self.tree.setMinimumWidth(280)
-        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
-        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.tree.itemChanged.connect(self._item_changed)
+        self.tree = self._make_tree("changesTree", "Changes")
+        self.unstaged_tree = self._make_tree("unstagedChangesTree", "Unstaged")
+        self.staged_tree = self._make_tree("stagedChangesTree", "Staged")
+        self._active_split_tree = self.unstaged_tree
+        for tree in self.all_trees:
+            tree.itemChanged.connect(self._item_changed)
 
         self.discard_action = QAction("Discard changes…", self.tree)
         self.discard_action.setObjectName("discardChangesAction")
@@ -101,9 +109,10 @@ class ChangesPanel(QWidget):
         self.stash_action = QAction("Stash selected changes", self.tree)
         self.stash_action.setObjectName("stashSelectedAction")
         self.stash_action.setEnabled(False)
-        self.tree.addAction(self.discard_action)
-        self.tree.addAction(self.stash_action)
-        self.tree.addAction(self.ignore_action)
+        for tree in self.all_trees:
+            tree.addAction(self.discard_action)
+            tree.addAction(self.stash_action)
+            tree.addAction(self.ignore_action)
 
         self.stage_all = QCheckBox("Stage all changes")
         self.stage_all.setObjectName("stageAllCheckBox")
@@ -117,6 +126,21 @@ class ChangesPanel(QWidget):
         index = self.view_mode.findData(saved_mode)
         self.view_mode.setCurrentIndex(max(0, index))
         self.view_mode.currentIndexChanged.connect(self._view_mode_selected)
+
+        self.presentation_mode = QComboBox()
+        self.presentation_mode.setObjectName("changesPresentationModeCombo")
+        self.presentation_mode.addItem("Combined", "combined")
+        self.presentation_mode.addItem("Split", "split")
+        saved_presentation = (
+            settings.value("changes/presentationMode", "combined")
+            if settings
+            else "combined"
+        )
+        presentation_index = self.presentation_mode.findData(saved_presentation)
+        self.presentation_mode.setCurrentIndex(max(0, presentation_index))
+        self.presentation_mode.currentIndexChanged.connect(
+            self._presentation_mode_selected
+        )
 
         self.commit_message = QPlainTextEdit()
         self.commit_message.setObjectName("commitMessageEdit")
@@ -142,14 +166,26 @@ class ChangesPanel(QWidget):
         commit_actions_layout.addStretch(1)
         commit_actions_layout.addWidget(self.commit_button)
 
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setObjectName("splitChangesTrees")
+        split.addWidget(self.unstaged_tree)
+        split.addWidget(self.staged_tree)
+        split.setSizes([350, 250])
+        self.tree_stack = QStackedWidget()
+        self.tree_stack.setObjectName("changesTreeStack")
+        self.tree_stack.addWidget(self.tree)
+        self.tree_stack.addWidget(split)
+        self.tree_stack.setCurrentIndex(1 if self.split_mode else 0)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         options = QHBoxLayout()
         options.addWidget(self.stage_all)
         options.addStretch(1)
+        options.addWidget(self.presentation_mode)
         options.addWidget(self.view_mode)
         layout.addLayout(options)
-        layout.addWidget(self.tree)
+        layout.addWidget(self.tree_stack)
         layout.addWidget(self.commit_message)
         layout.addWidget(self.commit_description)
         layout.addWidget(commit_actions)
@@ -160,18 +196,118 @@ class ChangesPanel(QWidget):
     def tree_mode(self) -> bool:
         return self.view_mode.currentData() == "tree"
 
+    @property
+    def split_mode(self) -> bool:
+        return self.presentation_mode.currentData() == "split"
+
+    @property
+    def all_trees(self) -> tuple[ChangesTreeWidget, ...]:
+        return (self.tree, self.unstaged_tree, self.staged_tree)
+
+    def active_tree(self) -> ChangesTreeWidget:
+        if not self.split_mode:
+            return self.tree
+        return self._active_split_tree
+
+    def set_active_tree(self, tree: QTreeWidget) -> None:
+        if tree is self.unstaged_tree:
+            self._active_split_tree = self.unstaged_tree
+        elif tree is self.staged_tree:
+            self._active_split_tree = self.staged_tree
+
+    def preferred_staged(self, tree: QTreeWidget | None = None) -> bool | None:
+        selected_tree = tree or self.active_tree()
+        if not self.split_mode:
+            return None
+        return selected_tree is self.staged_tree
+
+    def set_file_check_state(
+        self,
+        tree: QTreeWidget,
+        item: QTreeWidgetItem,
+        state: Qt.CheckState,
+    ) -> None:
+        blocker = QSignalBlocker(tree)
+        item.setCheckState(0, state)
+        parent = cast(QTreeWidgetItem | None, item.parent())
+        while parent is not None:
+            self._refresh_folder_state(parent)
+            parent = parent.parent()
+        del blocker
+
+    @staticmethod
+    def _make_tree(object_name: str, header: str) -> ChangesTreeWidget:
+        tree = ChangesTreeWidget()
+        tree.setObjectName(object_name)
+        tree.setHeaderLabel(header)
+        tree.setRootIsDecorated(False)
+        tree.setMinimumWidth(280)
+        tree.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        return tree
+
     def show_files(
         self,
         files: list[tuple[FileStatus, Qt.CheckState]],
         selected_path: str | None,
+        *,
+        amend: bool = False,
     ) -> QTreeWidgetItem | None:
-        vertical_scroll = self.tree.verticalScrollBar().value()
-        horizontal_scroll = self.tree.horizontalScrollBar().value()
+        selected = self._render_tree(
+            self.tree,
+            files,
+            selected_path,
+            preserve_scroll=True,
+            checkable=True,
+        )
+        unstaged = [
+            (file, Qt.CheckState.Unchecked)
+            for file, state in files
+            if (amend and state is not Qt.CheckState.Checked)
+            or file.has_worktree_change
+            or file.unmerged
+        ]
+        staged = [
+            (file, Qt.CheckState.Checked)
+            for file, state in files
+            if (amend and state is not Qt.CheckState.Unchecked)
+            or file.is_staged
+            or file.unmerged
+        ]
+        unstaged_selected = self._render_tree(
+            self.unstaged_tree,
+            unstaged,
+            selected_path,
+            preserve_scroll=False,
+            checkable=True,
+        )
+        staged_selected = self._render_tree(
+            self.staged_tree,
+            staged,
+            selected_path,
+            preserve_scroll=False,
+            checkable=True,
+        )
+        if not self.split_mode:
+            return selected
+        return staged_selected if self.active_tree() is self.staged_tree else unstaged_selected
+
+    def _render_tree(
+        self,
+        tree: ChangesTreeWidget,
+        files: list[tuple[FileStatus, Qt.CheckState]],
+        selected_path: str | None,
+        *,
+        preserve_scroll: bool,
+        checkable: bool,
+    ) -> QTreeWidgetItem | None:
+        vertical_scroll = tree.verticalScrollBar().value()
+        horizontal_scroll = tree.horizontalScrollBar().value()
         self._render_generation += 1
         render_generation = self._render_generation
-        blocker = QSignalBlocker(self.tree)
-        self.tree.clear()
-        self.tree.setRootIsDecorated(self.tree_mode)
+        blocker = QSignalBlocker(tree)
+        tree.clear()
+        tree.setRootIsDecorated(self.tree_mode)
         selected_item: QTreeWidgetItem | None = None
         folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
         for file, state in sorted(files, key=lambda value: value[0].path.casefold()):
@@ -185,13 +321,17 @@ class ChangesPanel(QWidget):
                     if folder is None:
                         folder = QTreeWidgetItem([parts[depth]])
                         folder.setData(0, _FOLDER_ROLE, True)
-                        folder.setFlags(
-                            folder.flags()
-                            | Qt.ItemFlag.ItemIsUserCheckable
-                        )
-                        folder.setCheckState(0, Qt.CheckState.Unchecked)
+                        if checkable:
+                            folder.setFlags(
+                                folder.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                            )
+                            folder.setCheckState(0, Qt.CheckState.Unchecked)
+                        else:
+                            folder.setFlags(
+                                folder.flags() & ~Qt.ItemFlag.ItemIsUserCheckable
+                            )
                         if parent is None:
-                            self.tree.addTopLevelItem(folder)
+                            tree.addTopLevelItem(folder)
                         else:
                             parent.addChild(folder)
                         folders[key] = folder
@@ -201,33 +341,36 @@ class ChangesPanel(QWidget):
             item.setIcon(0, load_icon(_status_icon(file)))
             item.setToolTip(0, _status_tooltip(file))
             item.setData(0, Qt.ItemDataRole.UserRole, file)
-            if not file.unmerged:
+            if checkable and not file.unmerged:
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(0, state)
+            else:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
             if parent is None:
-                self.tree.addTopLevelItem(item)
+                tree.addTopLevelItem(item)
             else:
                 parent.addChild(item)
             if file.path == selected_path:
                 selected_item = item
         if self.tree_mode:
-            for index in range(self.tree.topLevelItemCount()):
-                root = self.tree.topLevelItem(index)
+            for index in range(tree.topLevelItemCount()):
+                root = tree.topLevelItem(index)
                 if root is not None:
                     self._compact_folder_chain(root)
-            selected_item = self._find_file_item(selected_path)
-            for index in range(self.tree.topLevelItemCount()):
-                root = self.tree.topLevelItem(index)
-                if root is not None:
+            selected_item = self._find_file_item(tree, selected_path)
+            for index in range(tree.topLevelItemCount()):
+                root = tree.topLevelItem(index)
+                if root is not None and checkable:
                     self._refresh_folder_state(root)
-            self.tree.expandAll()
+            tree.expandAll()
         del blocker
-        self._pending_scroll_restore = (
-            render_generation,
-            vertical_scroll,
-            horizontal_scroll,
-        )
-        self._scroll_restore_timer.start(0)
+        if preserve_scroll:
+            self._pending_scroll_restore = (
+                render_generation,
+                vertical_scroll,
+                horizontal_scroll,
+            )
+            self._scroll_restore_timer.start(0)
         return selected_item
 
     @Slot()
@@ -260,12 +403,14 @@ class ChangesPanel(QWidget):
         for index in range(item.childCount()):
             self._compact_folder_chain(item.child(index))
 
-    def _find_file_item(self, path: str | None) -> QTreeWidgetItem | None:
+    def _find_file_item(
+        self, tree: QTreeWidget, path: str | None
+    ) -> QTreeWidgetItem | None:
         if path is None:
             return None
         pending: list[QTreeWidgetItem] = []
-        for index in range(self.tree.topLevelItemCount()):
-            item = self.tree.topLevelItem(index)
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
             if item is not None:
                 pending.append(item)
         while pending:
@@ -277,11 +422,22 @@ class ChangesPanel(QWidget):
                 pending.append(item.child(index))
         return None
 
+    def find_file_item(
+        self, tree: QTreeWidget, path: str | None
+    ) -> QTreeWidgetItem | None:
+        return self._find_file_item(tree, path)
+
     @Slot(QTreeWidgetItem, int)
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if column != 0 or item.data(0, _FOLDER_ROLE) is not True:
             return
-        should_stage = item.checkState(0) != Qt.CheckState.Unchecked
+        sender = self.sender()
+        if self.split_mode and sender is self.unstaged_tree:
+            should_stage = True
+        elif self.split_mode and sender is self.staged_tree:
+            should_stage = False
+        else:
+            should_stage = item.checkState(0) != Qt.CheckState.Unchecked
         files = self._descendant_files(item)
         blocker = QSignalBlocker(self.tree)
         target = Qt.CheckState.Checked if should_stage else Qt.CheckState.Unchecked
@@ -298,6 +454,16 @@ class ChangesPanel(QWidget):
         if self._settings is not None:
             self._settings.setValue("changes/viewMode", mode)
         self.view_mode_changed.emit(mode)
+
+    @Slot(int)
+    def _presentation_mode_selected(self, _index: int) -> None:
+        mode = self.presentation_mode.currentData()
+        if not isinstance(mode, str):
+            return
+        self.tree_stack.setCurrentIndex(1 if mode == "split" else 0)
+        if self._settings is not None:
+            self._settings.setValue("changes/presentationMode", mode)
+        self.presentation_mode_changed.emit(mode)
 
     def _descendant_files(self, root: QTreeWidgetItem) -> tuple[FileStatus, ...]:
         files: list[FileStatus] = []

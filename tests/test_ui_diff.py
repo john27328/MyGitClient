@@ -14,9 +14,65 @@ from PySide6.QtWidgets import (
 )
 from pytestqt.qtbot import QtBot
 
+from mygitclient.git.models import FileStatus
 from mygitclient.theme import Theme
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.main_window import MainWindow
+
+
+def test_split_changes_tree_focus_selects_working_or_staged_diff(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked.write_text("staged\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    tracked.write_text("working\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "split.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/presentationMode", "split")
+    window = MainWindow(settings, Theme.SYSTEM)
+    unstaged = window.findChild(QTreeWidget, "unstagedChangesTree")
+    staged = window.findChild(QTreeWidget, "stagedChangesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    assert unstaged is not None and staged is not None and diff_panel is not None
+
+    window.show()
+    window.open_repository(repository)
+    qtbot.waitUntil(
+        lambda: unstaged.topLevelItemCount() == 1 and staged.topLevelItemCount() == 1,
+        timeout=5000,
+    )
+    unstaged_item = unstaged.topLevelItem(0)
+    staged_item = staged.topLevelItem(0)
+    assert unstaged_item is not None and staged_item is not None
+    assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
+    assert staged_item.checkState(0) is Qt.CheckState.Checked
+    unstaged.setFocus()
+    unstaged.setCurrentItem(unstaged_item)
+    qtbot.waitUntil(lambda: "+working" in diff_panel.toPlainText(), timeout=5000)
+
+    staged.setFocus()
+    staged.setCurrentItem(staged_item)
+    qtbot.waitUntil(lambda: "+staged" in diff_panel.toPlainText(), timeout=5000)
 
 
 def test_diff_and_line_numbers_scroll_together(qapp: QApplication, qtbot: QtBot) -> None:
@@ -42,6 +98,80 @@ def test_diff_and_line_numbers_scroll_together(qapp: QApplication, qtbot: QtBot)
 
     diff_gutter.verticalScrollBar().setValue(80)
     assert diff_panel.verticalScrollBar().value() == 80
+    window.close()
+
+
+def test_split_staging_selected_lines_adds_file_to_staged_tree(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked.write_text("one\nTWO\nthree\nFOUR\nfive\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "split-lines.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/presentationMode", "split")
+    window = MainWindow(settings, Theme.SYSTEM)
+    unstaged = window.findChild(QTreeWidget, "unstagedChangesTree")
+    staged = window.findChild(QTreeWidget, "stagedChangesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    gutter = window.findChild(DiffGutter, "diffGutter")
+    apply_lines = window.findChild(QToolButton, "diffSelectedLinesButton")
+    assert unstaged is not None and staged is not None
+    assert diff_panel is not None and gutter is not None and apply_lines is not None
+
+    window.show()
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: unstaged.topLevelItemCount() == 1, timeout=5000)
+    item = unstaged.topLevelItem(0)
+    assert item is not None
+    unstaged.setFocus()
+    unstaged.setCurrentItem(item)
+    qtbot.waitUntil(lambda: "+TWO" in diff_panel.toPlainText(), timeout=5000)
+    assert apply_lines.isHidden()
+    hunk_header = diff_panel.document().find("Old lines")
+    assert not hunk_header.isNull()
+    gutter.line_activated.emit(hunk_header.blockNumber(), False)
+
+    qtbot.waitUntil(lambda: staged.topLevelItemCount() == 1, timeout=5000)
+    staged_item = staged.topLevelItem(0)
+    assert staged_item is not None
+    staged_file = staged_item.data(0, Qt.ItemDataRole.UserRole)
+    assert isinstance(staged_file, FileStatus)
+    assert staged_file.path == "tracked.txt"
+    assert unstaged.topLevelItemCount() == 0
+    qtbot.waitUntil(lambda: bool(staged.selectedItems()), timeout=5000)
+    assert staged.selectedItems()[0] is staged_item
+
+    staged_item.setCheckState(0, Qt.CheckState.Unchecked)
+    qtbot.waitUntil(lambda: staged.topLevelItemCount() == 0, timeout=5000)
+    cached = subprocess.run(
+        ["git", "diff", "--cached", "--", "tracked.txt"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert not cached
+    assert unstaged.topLevelItemCount() == 1
+    qtbot.waitUntil(lambda: bool(unstaged.selectedItems()), timeout=5000)
     window.close()
 
 
@@ -81,6 +211,7 @@ def test_selecting_changed_file_displays_diff(
     changes = window.findChild(QTreeWidget, "changesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     diff_gutter = window.findChild(QPlainTextEdit, "diffGutter")
+    apply_lines = window.findChild(QToolButton, "diffSelectedLinesButton")
     view_mode = window.findChild(QComboBox, "diffViewModeCombo")
     side_old = window.findChild(QPlainTextEdit, "sideBySideOld")
     side_new = window.findChild(QPlainTextEdit, "sideBySideNew")
@@ -88,6 +219,7 @@ def test_selecting_changed_file_displays_diff(
     assert changes is not None
     assert diff_panel is not None
     assert diff_gutter is not None
+    assert apply_lines is not None
     assert view_mode is not None
     assert side_old is not None
     assert side_new is not None
@@ -103,6 +235,7 @@ def test_selecting_changed_file_displays_diff(
     qtbot.waitUntil(lambda: "+after" in diff_panel.toPlainText(), timeout=5000)
 
     assert "-before" in diff_panel.toPlainText()
+    assert apply_lines.isHidden()
     assert "│" not in diff_panel.toPlainText()
     gutter_lines = [line.strip() for line in diff_gutter.toPlainText().splitlines()[-2:]]
     assert all(line.startswith("□") and line.endswith("1") for line in gutter_lines)
@@ -239,12 +372,17 @@ def test_selected_hunk_can_be_staged(qapp: QApplication, qtbot: QtBot, tmp_path:
     lines[20] = "second changed"
     tracked.write_text("\n".join(lines) + "\n", encoding="utf-8")
     settings = QSettings(str(tmp_path / "hunk.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/presentationMode", "split")
     window = MainWindow(settings, Theme.SYSTEM)
-    changes = window.findChild(QTreeWidget, "changesTree")
+    changes = window.findChild(QTreeWidget, "unstagedChangesTree")
+    staged_changes = window.findChild(QTreeWidget, "stagedChangesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    gutter = window.findChild(DiffGutter, "diffGutter")
     hunk_button = window.findChild(QToolButton, "diffHunkButton")
     assert changes is not None
+    assert staged_changes is not None
     assert diff_panel is not None
+    assert gutter is not None
     assert hunk_button is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
@@ -252,11 +390,10 @@ def test_selected_hunk_can_be_staged(qapp: QApplication, qtbot: QtBot, tmp_path:
     assert item is not None
     changes.setCurrentItem(item)
     qtbot.waitUntil(lambda: "+first changed" in diff_panel.toPlainText(), timeout=5000)
-    cursor = diff_panel.document().find("first changed")
-    assert not cursor.isNull()
-    diff_panel.setTextCursor(cursor)
-    assert hunk_button.isEnabled()
-    hunk_button.click()
+    assert hunk_button.isHidden()
+    hunk_header = diff_panel.document().find("Old lines")
+    assert not hunk_header.isNull()
+    gutter.line_activated.emit(hunk_header.blockNumber(), False)
 
     def first_hunk_is_staged() -> bool:
         result = subprocess.run(
@@ -280,14 +417,14 @@ def test_selected_hunk_can_be_staged(qapp: QApplication, qtbot: QtBot, tmp_path:
     window.close()
 
 
-def test_selected_diff_lines_can_be_staged(
+def test_diff_line_checkbox_applies_stage_and_unstage_immediately(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
     repository = tmp_path / "repository"
     repository.mkdir()
     subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
     tracked = repository / "tracked.txt"
-    tracked.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+    tracked.write_text("one\nthree\n", encoding="utf-8")
     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
     subprocess.run(
         [
@@ -304,50 +441,36 @@ def test_selected_diff_lines_can_be_staged(
         check=True,
         capture_output=True,
     )
-    tracked.write_text("one\nTWO\nthree\nFOUR\nfive\n", encoding="utf-8")
+    tracked.write_text("one\ntwo\nthree\n", encoding="utf-8")
     settings = QSettings(str(tmp_path / "lines.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/presentationMode", "split")
     window = MainWindow(settings, Theme.SYSTEM)
-    changes = window.findChild(QTreeWidget, "changesTree")
+    changes = window.findChild(QTreeWidget, "unstagedChangesTree")
+    staged_changes = window.findChild(QTreeWidget, "stagedChangesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     gutter = window.findChild(DiffGutter, "diffGutter")
     apply_lines = window.findChild(QToolButton, "diffSelectedLinesButton")
     clear_lines = window.findChild(QToolButton, "diffClearSelectionButton")
-    version_combo = window.findChild(QComboBox, "diffVersionCombo")
     assert changes is not None
+    assert staged_changes is not None
     assert diff_panel is not None
     assert gutter is not None
     assert apply_lines is not None
     assert clear_lines is not None
-    assert version_combo is not None
+    assert apply_lines.isHidden()
+    assert clear_lines.isHidden()
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     item = changes.topLevelItem(0)
     assert item is not None
     changes.setCurrentItem(item)
-    qtbot.waitUntil(lambda: "+TWO" in diff_panel.toPlainText(), timeout=5000)
+    qtbot.waitUntil(lambda: "+two" in diff_panel.toPlainText(), timeout=5000)
     assert "□" in gutter.toPlainText()
-    hunk_header = diff_panel.document().find("Old lines")
-    assert not hunk_header.isNull()
-    gutter.line_activated.emit(hunk_header.blockNumber(), False)
-    assert gutter.toPlainText().count("✓") == 4
-    assert "■" in gutter.toPlainText()
-    assert item.checkState(0) is Qt.CheckState.PartiallyChecked
-    clear_lines.click()
-    assert "✓" not in gutter.toPlainText()
-    assert item.checkState(0) is Qt.CheckState.Unchecked
-    deleted = diff_panel.document().find("-two")
-    added = diff_panel.document().find("+TWO")
-    assert not deleted.isNull()
+    added = diff_panel.document().find("+two")
     assert not added.isNull()
-    gutter.line_activated.emit(deleted.blockNumber(), False)
     gutter.line_activated.emit(added.blockNumber(), False)
-    assert apply_lines.isEnabled()
-    assert "✓" in gutter.toPlainText()
-    qtbot.wait(1800)
-    assert gutter.toPlainText().count("✓") == 2
-    apply_lines.click()
 
-    def selected_lines_are_staged() -> bool:
+    def line_is_staged() -> bool:
         cached = subprocess.run(
             ["git", "diff", "--cached", "--", "tracked.txt"],
             cwd=repository,
@@ -355,29 +478,17 @@ def test_selected_diff_lines_can_be_staged(
             capture_output=True,
             text=True,
         ).stdout
-        return "+TWO" in cached
+        return "+two" in cached
 
-    qtbot.waitUntil(selected_lines_are_staged, timeout=5000)
-    cached = subprocess.run(
-        ["git", "diff", "--cached", "--", "tracked.txt"],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    assert "+FOUR" not in cached
-
-    qtbot.waitUntil(lambda: version_combo.findData(True) >= 0, timeout=5000)
-    version_combo.setCurrentIndex(version_combo.findData(True))
-    qtbot.waitUntil(lambda: "+TWO" in diff_panel.toPlainText(), timeout=5000)
-    staged_deleted = diff_panel.document().find("-two")
-    staged_added = diff_panel.document().find("+TWO")
-    assert not staged_deleted.isNull()
+    qtbot.waitUntil(line_is_staged, timeout=5000)
+    qtbot.waitUntil(lambda: staged_changes.topLevelItemCount() == 1, timeout=5000)
+    current_staged = staged_changes.topLevelItem(0)
+    assert current_staged is not None
+    assert current_staged.checkState(0) is Qt.CheckState.Checked
+    qtbot.waitUntil(lambda: "+two" in diff_panel.toPlainText(), timeout=5000)
+    staged_added = diff_panel.document().find("+two")
     assert not staged_added.isNull()
-    gutter.line_activated.emit(staged_deleted.blockNumber(), False)
     gutter.line_activated.emit(staged_added.blockNumber(), False)
-    assert apply_lines.text() == "Unstage selected"
-    apply_lines.click()
 
     def selected_lines_are_unstaged() -> bool:
         result = subprocess.run(
@@ -387,9 +498,10 @@ def test_selected_diff_lines_can_be_staged(
             capture_output=True,
             text=True,
         )
-        return "+TWO" not in result.stdout
+        return "+two" not in result.stdout
 
     qtbot.waitUntil(selected_lines_are_unstaged, timeout=5000)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     window.close()
 
 
@@ -421,8 +533,9 @@ def test_unchanged_diff_refresh_preserves_scroll_position(
     lines = [f"changed line {number}\n" for number in range(250)]
     tracked.write_text("".join(lines), encoding="utf-8")
     settings = QSettings(str(tmp_path / "scroll-refresh.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/presentationMode", "split")
     window = MainWindow(settings, Theme.SYSTEM)
-    changes = window.findChild(QTreeWidget, "changesTree")
+    changes = window.findChild(QTreeWidget, "unstagedChangesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     gutter = window.findChild(DiffGutter, "diffGutter")
     assert changes is not None
@@ -440,13 +553,23 @@ def test_unchanged_diff_refresh_preserves_scroll_position(
     target = max(1, diff_panel.verticalScrollBar().maximum() // 2)
     diff_panel.verticalScrollBar().setValue(target)
     gutter.line_activated.emit(5, False)
-    assert item.checkState(0) is Qt.CheckState.PartiallyChecked
 
-    qtbot.wait(1800)
+    def line_is_staged() -> bool:
+        cached = subprocess.run(
+            ["git", "diff", "--cached", "--", "tracked.txt"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return bool(cached)
+
+    qtbot.waitUntil(line_is_staged, timeout=5000)
 
     assert diff_panel.verticalScrollBar().value() == target
-    assert gutter.toPlainText().count("✓") == 1
-    assert item.checkState(0) is Qt.CheckState.PartiallyChecked
+    current = changes.topLevelItem(0)
+    assert current is not None
+    assert current.checkState(0) is Qt.CheckState.Unchecked
     window.close()
 
 

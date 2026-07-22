@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QLabel, QPlainTextEdit, QStackedWidget, QToolButton
 from pytestqt.qtbot import QtBot
 
@@ -199,19 +199,47 @@ def test_diff_view_owns_line_selection_and_emits_request(
     )
 
     view.gutter.line_activated.emit(4, False)
-    view.gutter.line_activated.emit(5, True)
-    view.selected_lines_button.click()
+    view.gutter.line_activated.emit(5, False)
 
-    assert view.selection.selected_lines == {4, 5}
-    rendered = view.diff.extraSelections()
-    assert len(rendered) == 2
-    deletion_color = rendered[0].format.background().color()
-    addition_color = rendered[1].format.background().color()
-    assert deletion_color != addition_color
-    assert deletion_color.red() > deletion_color.green()
-    assert addition_color.green() > addition_color.red()
-    assert rendered[0].format.foreground().style() == Qt.BrushStyle.NoBrush
-    assert requests == [(diff, {4, 5})]
+    assert not view.selection.selected_lines
+    assert not view.diff.extraSelections()
+    assert view.selected_lines_button.isHidden()
+    assert view.clear_lines_button.isHidden()
+    assert requests == [(diff, {4}), (diff, {5})]
+
+
+def test_diff_hunk_checkbox_emits_immediate_request(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    view = DiffView(QSettings(str(tmp_path / "hunk.ini"), QSettings.Format.IniFormat))
+    qtbot.addWidget(view)
+    diff = parse_unified_diff(
+        b"diff --git a/file.txt b/file.txt\n"
+        b"--- a/file.txt\n"
+        b"+++ b/file.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-before\n"
+        b"+after\n",
+        "file.txt",
+        staged=False,
+    )
+    requests: list[tuple[object, int]] = []
+
+    def capture_request(value: object, index: int) -> None:
+        requests.append((value, index))
+
+    view.hunk_requested.connect(capture_request)
+    view.display_diff(
+        diff,
+        selection_key=(tmp_path, diff.path, diff.staged),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+
+    view.gutter.line_activated.emit(3, False)
+
+    assert requests == [(diff, 0)]
+    assert not view.selection.selected_lines
 
 
 def test_diff_selection_is_restored_per_file_and_version(

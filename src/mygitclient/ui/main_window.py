@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QToolBar,
     QToolButton,
+    QTreeWidget,
     QTreeWidgetItem,
     QWidget,
 )
@@ -186,6 +187,9 @@ class MainWindow(QMainWindow):
         self._commit_button.clicked.connect(self._create_commit)
         self._changes_panel.folder_stage_requested.connect(self._stage_folder)
         self._changes_panel.view_mode_changed.connect(self._changes_view_mode_changed)
+        self._changes_panel.presentation_mode_changed.connect(
+            self._changes_view_mode_changed
+        )
         self._update_commit_controls()
 
         self._history_panel = HistoryPanel()
@@ -219,6 +223,7 @@ class MainWindow(QMainWindow):
         self._workspace_tabs.hide()
 
         self._diff_view = DiffView(self._settings)
+        self._diff_view.set_auto_apply_hunks(True)
         self._diff_container = self._diff_view
         self._diff = self._diff_view.diff
         self._diff_gutter = self._diff_view.gutter
@@ -558,9 +563,11 @@ class MainWindow(QMainWindow):
         self._repositories_panel.repository_activated.connect(self._open_recent_repository)
         self._repositories_panel.remove_requested.connect(self._remove_recent_repository)
         self._repositories_panel.switch_requested.connect(self._repository_selected)
-        self._changes.itemSelectionChanged.connect(self._selected_file_changed)
-        self._changes.itemSelectionChanged.connect(self._update_file_actions)
-        self._changes.itemChanged.connect(self._stage_checkbox_changed)
+        for tree in self._changes_panel.all_trees:
+            tree.itemSelectionChanged.connect(self._selected_file_changed)
+            tree.focused.connect(self._selected_file_changed)
+            tree.itemSelectionChanged.connect(self._update_file_actions)
+            tree.itemChanged.connect(self._stage_checkbox_changed)
 
     def _apply_saved_ui_font(self) -> None:
         app = QApplication.instance()
@@ -1430,7 +1437,7 @@ class MainWindow(QMainWindow):
         self._set_network_busy(None)
         self._status_runner = None
         self._history_runner = None
-        self._changes.setEnabled(True)
+        self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
         self._status_label.setText("Operation cancelled")
 
@@ -1452,7 +1459,8 @@ class MainWindow(QMainWindow):
             self._request_diff(silent=True)
             return
         selected_path: str | None = None
-        selected_items = self._changes.selectedItems()
+        active_tree = self._changes_panel.active_tree()
+        selected_items = active_tree.selectedItems()
         if selected_items:
             selected_file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
             if isinstance(selected_file, FileStatus):
@@ -1472,7 +1480,11 @@ class MainWindow(QMainWindow):
             (file, self._file_check_state(value.repository, file))
             for file in files_to_show
         ]
-        item_to_restore = self._changes_panel.show_files(rendered_files, selected_path)
+        item_to_restore = self._changes_panel.show_files(
+            rendered_files,
+            selected_path,
+            amend=self._amend.isChecked(),
+        )
         stageable = [file for file in status_value.files if not file.unmerged]
         has_conflicts = any(file.unmerged for file in status_value.files)
         self._stage_all.setEnabled(bool(stageable) and not has_conflicts)
@@ -1484,14 +1496,28 @@ class MainWindow(QMainWindow):
             self._stage_all.setCheckState(Qt.CheckState.PartiallyChecked)
         del stage_all_blocker
         if item_to_restore is not None:
-            self._changes.setCurrentItem(item_to_restore)
+            self._changes_panel.active_tree().setCurrentItem(item_to_restore)
+        elif self._changes_panel.split_mode and selected_path is not None:
+            opposite_tree = (
+                self._changes_panel.staged_tree
+                if active_tree is self._changes_panel.unstaged_tree
+                else self._changes_panel.unstaged_tree
+            )
+            opposite_item = self._changes_panel.find_file_item(
+                opposite_tree, selected_path
+            )
+            if opposite_item is not None:
+                self._changes_panel.set_active_tree(opposite_tree)
+                opposite_tree.setFocus()
+                opposite_tree.setCurrentItem(opposite_item)
         elif (
             not self._amend.isChecked()
             and self._diff_view.current_diff is not None
             and self._diff_view.current_diff.path not in changed_paths
         ):
             self._diff_view.reset()
-        self._changes.resizeColumnToContents(0)
+        for tree in self._changes_panel.all_trees:
+            tree.resizeColumnToContents(0)
         self._amend_render_pending = False
 
         branch = status_value.branch.head or "detached HEAD"
@@ -1533,6 +1559,10 @@ class MainWindow(QMainWindow):
             return Qt.CheckState.PartiallyChecked
         return Qt.CheckState.Checked if file.is_staged else Qt.CheckState.Unchecked
 
+    def _set_changes_trees_enabled(self, enabled: bool) -> None:
+        for tree in self._changes_panel.all_trees:
+            tree.setEnabled(enabled)
+
     @Slot(object, bool)
     def _stage_folder(self, value: object, should_stage: bool) -> None:
         if self._repository is None or not isinstance(value, tuple):
@@ -1541,7 +1571,7 @@ class MainWindow(QMainWindow):
         files = tuple(file for file in objects if isinstance(file, FileStatus))
         if not files or len(files) != len(objects):
             return
-        self._changes.setEnabled(False)
+        self._set_changes_trees_enabled(False)
         action = "Staging" if should_stage else "Unstaging"
         self._status_label.setText(f"{action} {len(files)} files…")
         status = self._repository_status
@@ -1554,6 +1584,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _changes_view_mode_changed(self, _mode: str) -> None:
+        self._diff_view.set_auto_apply_hunks(True)
         if self._repository is None:
             return
         self._repository_status = None
@@ -1566,8 +1597,14 @@ class MainWindow(QMainWindow):
         file = item.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus) or file.unmerged:
             return
-        should_stage = item.checkState(0) != Qt.CheckState.Unchecked
-        self._changes.setEnabled(False)
+        sender = self.sender()
+        if self._changes_panel.split_mode and sender is self._changes_panel.unstaged_tree:
+            should_stage = True
+        elif self._changes_panel.split_mode and sender is self._changes_panel.staged_tree:
+            should_stage = False
+        else:
+            should_stage = item.checkState(0) != Qt.CheckState.Unchecked
+        self._set_changes_trees_enabled(False)
         if self._amend.isChecked() and self._repository_status is not None:
             commit_oid = self._repository_status.branch.oid
             if commit_oid is not None:
@@ -1603,7 +1640,7 @@ class MainWindow(QMainWindow):
     def _mutation_finished(self, path: str) -> None:
         if path in {"fetch", "pull", "push"}:
             self._set_network_busy(None)
-        self._changes.setEnabled(True)
+        self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
         self._history_panel.refs_panel.setEnabled(True)
         if path == "commit":
@@ -1786,8 +1823,17 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _selected_file_changed(self) -> None:
+        sender = self.sender()
+        selected_tree = (
+            sender if isinstance(sender, QTreeWidget) else self._changes_panel.active_tree()
+        )
+        if self._changes_panel.split_mode:
+            self._changes_panel.set_active_tree(selected_tree)
+            for tree in self._changes_panel.all_trees:
+                if tree is not selected_tree:
+                    tree.clearSelection()
         if self._amend.isChecked():
-            selected_items = self._changes.selectedItems()
+            selected_items = selected_tree.selectedItems()
             status = self._repository_status
             if (
                 not selected_items
@@ -1807,13 +1853,18 @@ class MainWindow(QMainWindow):
                 path=file.path,
             )
             return
-        selected_items = self._changes.selectedItems()
+        selected_items = selected_tree.selectedItems()
         if not selected_items:
             return
         file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus):
             return
         self._populate_diff_versions(file)
+        preferred_staged = self._changes_panel.preferred_staged(selected_tree)
+        if preferred_staged is not None:
+            index = self._diff_version.findData(preferred_staged)
+            if index >= 0:
+                self._diff_version.setCurrentIndex(index)
         self._request_selected_diff()
 
     @Slot()
@@ -1827,14 +1878,14 @@ class MainWindow(QMainWindow):
 
     def _selected_files(self) -> tuple[FileStatus, ...]:
         files: list[FileStatus] = []
-        for item in self._changes.selectedItems():
+        for item in self._changes_panel.active_tree().selectedItems():
             value = item.data(0, Qt.ItemDataRole.UserRole)
             if isinstance(value, FileStatus):
                 files.append(value)
         return tuple(files)
 
     def _selected_file(self) -> FileStatus | None:
-        selected_items = self._changes.selectedItems()
+        selected_items = self._changes_panel.active_tree().selectedItems()
         if not selected_items:
             return None
         value = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
@@ -1884,7 +1935,7 @@ class MainWindow(QMainWindow):
         self._request_diff(silent=False)
 
     def _request_diff(self, *, silent: bool) -> None:
-        selected_items = self._changes.selectedItems()
+        selected_items = self._changes_panel.active_tree().selectedItems()
         repository = self._repository
         if not selected_items or repository is None:
             return
@@ -1924,7 +1975,7 @@ class MainWindow(QMainWindow):
         if value.repository != self._repository:
             return
         diff_value = value.diff
-        selected_items = self._changes.selectedItems()
+        selected_items = self._changes_panel.active_tree().selectedItems()
         if not selected_items:
             return
         current = selected_items[0]
@@ -1934,9 +1985,7 @@ class MainWindow(QMainWindow):
         if self._diff_version.currentData() != diff_value.staged:
             return
         preserve_selection = diff_value == self._diff_view.current_diff
-        whole_file_staged = (
-            diff_value.staged and file.is_staged and not file.has_worktree_change
-        )
+        whole_file_staged = diff_value.staged and file.is_staged
         self._diff_view.display_diff(
             diff_value,
             selection_key=(value.repository, diff_value.path, diff_value.staged),
@@ -1947,24 +1996,31 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
 
     def _sync_selected_file_checkbox(self) -> None:
-        selected_items = self._changes.selectedItems()
+        if self._amend.isChecked():
+            return
+        active_tree = self._changes_panel.active_tree()
+        selected_items = active_tree.selectedItems()
         if not selected_items:
             return
         item = selected_items[0]
         file = item.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus) or file.unmerged:
             return
-        if self._diff_view.has_pending_partial_selection or (
-            file.is_staged and file.has_worktree_change
-        ):
+        if self._diff_view.has_pending_partial_selection:
+            state = Qt.CheckState.PartiallyChecked
+        elif self._changes_panel.split_mode:
+            state = (
+                Qt.CheckState.Checked
+                if active_tree is self._changes_panel.staged_tree
+                else Qt.CheckState.Unchecked
+            )
+        elif file.is_staged and file.has_worktree_change:
             state = Qt.CheckState.PartiallyChecked
         elif file.is_staged:
             state = Qt.CheckState.Checked
         else:
             state = Qt.CheckState.Unchecked
-        blocker = QSignalBlocker(self._changes)
-        item.setCheckState(0, state)
-        del blocker
+        self._changes_panel.set_file_check_state(active_tree, item, state)
 
     @Slot(object, object)
     def _apply_diff_lines(self, diff_value: object, selected_value: object) -> None:
@@ -2048,7 +2104,7 @@ class MainWindow(QMainWindow):
         self._set_network_busy(None)
         self._status_runner = None
         self._history_runner = None
-        self._changes.setEnabled(True)
+        self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
         self._history_panel.refs_panel.setEnabled(True)
         self._status_label.setText("Git operation failed")

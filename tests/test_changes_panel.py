@@ -26,6 +26,12 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
     assert panel.findChild(QTreeWidget, "changesTree") is panel.tree
     assert panel.findChild(QCheckBox, "stageAllCheckBox") is panel.stage_all
     assert panel.findChild(QComboBox, "changesViewModeCombo") is panel.view_mode
+    assert (
+        panel.findChild(QComboBox, "changesPresentationModeCombo")
+        is panel.presentation_mode
+    )
+    assert panel.findChild(QTreeWidget, "unstagedChangesTree") is panel.unstaged_tree
+    assert panel.findChild(QTreeWidget, "stagedChangesTree") is panel.staged_tree
     assert panel.findChild(QPlainTextEdit, "commitMessageEdit") is panel.commit_message
     assert (
         panel.findChild(QPlainTextEdit, "commitDescriptionEdit")
@@ -70,7 +76,7 @@ def test_clicking_file_text_does_not_toggle_checkbox(qtbot: QtBot) -> None:
         pos=indicator.center(),
     )
 
-    assert item.checkState(0) is Qt.CheckState.Checked
+    assert item.checkState(0) is Qt.CheckState.Unchecked
     assert item_changed.count() == 1
     tree.close()
 
@@ -213,3 +219,38 @@ def test_changes_view_mode_is_saved(qtbot: QtBot, tmp_path: Path) -> None:
     panel.view_mode.setCurrentIndex(panel.view_mode.findData("tree"))
 
     assert settings.value("changes/viewMode") == "tree"
+
+
+def test_split_presentation_separates_versions_and_is_saved(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "changes.ini"), QSettings.Format.IniFormat)
+    panel = ChangesPanel(settings)
+    qtbot.addWidget(panel)
+    staged_only = FileStatus("staged.py", "M", ".")
+    unstaged_only = FileStatus("unstaged.py", ".", "M")
+    partial = FileStatus("partial.py", "M", "M")
+
+    panel.presentation_mode.setCurrentIndex(
+        panel.presentation_mode.findData("split")
+    )
+    panel.show_files(
+        [
+            (staged_only, Qt.CheckState.Checked),
+            (unstaged_only, Qt.CheckState.Unchecked),
+            (partial, Qt.CheckState.PartiallyChecked),
+        ],
+        None,
+    )
+
+    assert panel.split_mode
+    assert settings.value("changes/presentationMode") == "split"
+    assert panel.unstaged_tree.topLevelItemCount() == 2
+    assert panel.staged_tree.topLevelItemCount() == 2
+    unstaged_item = panel.unstaged_tree.topLevelItem(0)
+    staged_item = panel.staged_tree.topLevelItem(0)
+    assert unstaged_item is not None and staged_item is not None
+    assert unstaged_item.text(0) == "partial.py"
+    assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
+    assert staged_item.text(0) == "partial.py"
+    assert staged_item.checkState(0) is Qt.CheckState.Checked
