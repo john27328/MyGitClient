@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from typing import cast
 
-from PySide6.QtCore import QDateTime, QModelIndex, QPersistentModelIndex, Qt, Signal, Slot
+from PySide6.QtCore import (
+    QByteArray,
+    QDateTime,
+    QModelIndex,
+    QPersistentModelIndex,
+    QSettings,
+    Qt,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -135,9 +144,15 @@ class HistoryPanel(QWidget):
     commit_selected = Signal(object)
     file_selected = Signal(object, object)
     comparison_file_selected = Signal(str, str, object)
+    focus_mode_changed = Signal(bool)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        settings: QSettings | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._settings = settings
         self.tree = QTreeWidget()
         self.tree.setObjectName("historyTree")
         self.tree.setHeaderLabels(
@@ -148,6 +163,10 @@ class HistoryPanel(QWidget):
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for column, width in enumerate((60, 230, 360, 150, 190, 90)):
             self.tree.setColumnWidth(column, width)
+        for column in (3, 4, 5):
+            self.tree.setColumnHidden(column, True)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.header().setSectionResizeMode(2, self.tree.header().ResizeMode.Stretch)
         self.tree.setItemDelegateForColumn(0, CommitGraphDelegate(self.tree))
         self.tree.setItemDelegateForColumn(1, RefBadgesDelegate(self.tree))
         for column in (2, 3, 5):
@@ -161,6 +180,11 @@ class HistoryPanel(QWidget):
         self.filter_edit.textChanged.connect(self._apply_filter)
         self.filter_count = QLabel("0 commits")
         self.filter_count.setObjectName("historyFilterCount")
+        self.focus_button = QPushButton("Focus on diff")
+        self.focus_button.setObjectName("historyFocusDiffButton")
+        self.focus_button.setCheckable(True)
+        self.focus_button.setToolTip("Hide refs and give more space to the diff")
+        self.focus_button.toggled.connect(self._focus_mode_toggled)
         clear_shortcut = QShortcut(QKeySequence.StandardKey.Cancel, self.filter_edit)
         clear_shortcut.activated.connect(self.filter_edit.clear)
 
@@ -175,6 +199,7 @@ class HistoryPanel(QWidget):
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(self.filter_edit, 1)
         filter_layout.addWidget(self.filter_count)
+        filter_layout.addWidget(self.focus_button)
         history_layout.addLayout(filter_layout)
         history_layout.addWidget(self.tree)
         history_layout.addWidget(self.load_more_button)
@@ -195,21 +220,33 @@ class HistoryPanel(QWidget):
         self._tag_labels: dict[str, list[tuple[str, str]]] = {}
         self._branch_point: BranchPointSnapshot | None = None
         details_layout = QVBoxLayout(self.details)
-        details_layout.setContentsMargins(8, 0, 0, 0)
+        details_layout.setContentsMargins(0, 8, 0, 0)
         details_layout.addWidget(self.details_label)
         details_layout.addWidget(self.files, 1)
+
+        self.content_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.content_splitter.setObjectName("historyContentSplitter")
+        self.content_splitter.addWidget(history_list)
+        self.content_splitter.addWidget(self.details)
+        self.content_splitter.setStretchFactor(0, 3)
+        self.content_splitter.setStretchFactor(1, 2)
+        self.content_splitter.setSizes([520, 280])
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setObjectName("historySplitter")
         self.refs_panel = RefsPanel()
         self.splitter.addWidget(self.refs_panel)
-        self.splitter.addWidget(history_list)
-        self.splitter.addWidget(self.details)
-        self.splitter.setSizes([240, 700, 360])
+        self.splitter.addWidget(self.content_splitter)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([250, 620])
+        self.splitter.splitterMoved.connect(self._save_splitter_states)
+        self.content_splitter.splitterMoved.connect(self._save_splitter_states)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.splitter)
+        self._restore_layout()
 
     @property
     def commit_count(self) -> int:
@@ -269,6 +306,42 @@ class HistoryPanel(QWidget):
         header.setStretchLastSection(False)
         mode = header.ResizeMode.Stretch if expanded else header.ResizeMode.Interactive
         header.setSectionResizeMode(2, mode)
+
+    @property
+    def focus_mode(self) -> bool:
+        return self.focus_button.isChecked()
+
+    @Slot(bool)
+    def _focus_mode_toggled(self, focused: bool) -> None:
+        self.refs_panel.setVisible(not focused)
+        self.focus_button.setText("Show navigation" if focused else "Focus on diff")
+        if self._settings is not None:
+            self._settings.setValue("history/focusDiff", focused)
+        self.focus_mode_changed.emit(focused)
+
+    @Slot(int, int)
+    def _save_splitter_states(self, _position: int, _index: int) -> None:
+        if self._settings is None:
+            return
+        if self.refs_panel.isVisible():
+            self._settings.setValue("history/splitterState", self.splitter.saveState())
+        self._settings.setValue(
+            "history/contentSplitterState", self.content_splitter.saveState()
+        )
+
+    def _restore_layout(self) -> None:
+        if self._settings is None:
+            return
+        splitter_state = self._settings.value("history/splitterState")
+        content_state = self._settings.value("history/contentSplitterState")
+        if isinstance(splitter_state, QByteArray):
+            self.splitter.restoreState(splitter_state)
+        if isinstance(content_state, QByteArray):
+            self.content_splitter.restoreState(content_state)
+        focused = self._settings.value("history/focusDiff", False)
+        self.focus_button.setChecked(
+            focused is True or focused == "true" or focused == 1
+        )
 
     def show_files(self, snapshot: CommitFilesSnapshot) -> None:
         commit = self.selected_commit

@@ -192,9 +192,10 @@ class MainWindow(QMainWindow):
         )
         self._update_commit_controls()
 
-        self._history_panel = HistoryPanel()
+        self._history_panel = HistoryPanel(self._settings)
         self._history_panel.load_more_requested.connect(self._load_more_history)
         self._history_panel.commit_selected.connect(self._history_commit_selected)
+        self._history_panel.focus_mode_changed.connect(self._history_focus_mode_changed)
         self._history_panel.file_selected.connect(self._history_file_selected)
         self._history_panel.comparison_file_selected.connect(
             self._history_comparison_file_selected
@@ -263,6 +264,7 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(1, 1)
         self._splitter.setStretchFactor(2, 0)
         self._splitter.setStretchFactor(3, 1)
+        self._splitter.splitterMoved.connect(self._main_splitter_moved)
         self._repositories_panel.hide()
         self._splitter.setSizes([0, 920, 0, 0])
         self.setCentralWidget(self._splitter)
@@ -705,7 +707,7 @@ class MainWindow(QMainWindow):
         diff_container.setVisible(show_diff)
         if showing_history:
             if commit_diff_visible:
-                self._splitter.setSizes([220, 0, 560, 840])
+                self._apply_history_splitter_sizes()
                 self._history_panel.set_expanded_layout(False)
             else:
                 available = max(
@@ -717,6 +719,48 @@ class MainWindow(QMainWindow):
             self._commit_diff_visible = False
             self._history_panel.set_expanded_layout(False)
             self._restore_workspace_splitter_sizes()
+
+    @Slot(bool)
+    def _history_focus_mode_changed(self, _focused: bool) -> None:
+        if (
+            self._workspace_tabs.currentIndex() == 1
+            and self._commit_diff_visible
+        ):
+            self._apply_history_splitter_sizes()
+
+    def _apply_history_splitter_sizes(self) -> None:
+        key = (
+            "history/focusMainSplitterSizes"
+            if self._history_panel.focus_mode
+            else "history/mainSplitterSizes"
+        )
+        saved: object = self._settings.value(key)
+        if isinstance(saved, list):
+            items = cast(list[object], saved)
+            sizes = [item for item in items if isinstance(item, int)]
+            if len(items) == 4 and len(sizes) == 4:
+                sizes[0] = 0
+                sizes[1] = 0
+                self._splitter.setSizes(sizes)
+                return
+        available = max(self._splitter.width(), 900)
+        history_width = 390 if self._history_panel.focus_mode else 650
+        diff_width = max(available - history_width, 500)
+        self._splitter.setSizes([0, 0, history_width, diff_width])
+
+    @Slot(int, int)
+    def _main_splitter_moved(self, _position: int, _index: int) -> None:
+        if (
+            self._workspace_tabs.currentIndex() != 1
+            or not self._commit_diff_visible
+        ):
+            return
+        key = (
+            "history/focusMainSplitterSizes"
+            if self._history_panel.focus_mode
+            else "history/mainSplitterSizes"
+        )
+        self._settings.setValue(key, self._splitter.sizes())
 
     @Slot()
     def _load_more_history(self) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QSettings, Qt
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
@@ -62,6 +63,35 @@ def test_history_panel_emits_load_more_request(qtbot: QtBot) -> None:
 
     with qtbot.waitSignal(panel.load_more_requested, timeout=1000):
         panel.load_more_button.click()
+
+
+def test_history_layout_stacks_commit_details_and_can_focus_diff(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "history.ini"), QSettings.Format.IniFormat)
+    panel = HistoryPanel(settings)
+    qtbot.addWidget(panel)
+
+    assert panel.splitter.count() == 2
+    assert panel.splitter.widget(0) is panel.refs_panel
+    assert panel.splitter.widget(1) is panel.content_splitter
+    assert panel.content_splitter.orientation() is Qt.Orientation.Vertical
+    assert panel.content_splitter.widget(1) is panel.details
+    assert panel.tree.isColumnHidden(3)
+    assert panel.tree.isColumnHidden(4)
+    assert panel.tree.isColumnHidden(5)
+
+    with qtbot.waitSignal(panel.focus_mode_changed, timeout=1000):
+        panel.focus_button.click()
+
+    assert panel.focus_mode
+    assert panel.refs_panel.isHidden()
+    assert settings.value("history/focusDiff", type=bool) is True
+
+    restored = HistoryPanel(settings)
+    qtbot.addWidget(restored)
+    assert restored.focus_mode
+    assert restored.refs_panel.isHidden()
 
 
 def test_history_panel_labels_branch_remote_tag_and_branch_point(qtbot: QtBot) -> None:

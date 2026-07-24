@@ -124,7 +124,7 @@ def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
     assert requests == [((first, second), True)]
 
 
-def test_tree_mode_compacts_a_single_file_path_and_preserves_selection(
+def test_tree_mode_compacts_directories_but_keeps_file_as_a_separate_leaf(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "changes.ini"), QSettings.Format.IniFormat)
@@ -136,14 +136,52 @@ def test_tree_mode_compacts_a_single_file_path_and_preserves_selection(
     selected = panel.show_files([(file, Qt.CheckState.Checked)], file.path)
 
     assert panel.tree.topLevelItemCount() == 1
-    item = panel.tree.topLevelItem(0)
-    assert item is not None
+    folder = panel.tree.topLevelItem(0)
+    assert folder is not None
+    assert folder.text(0) == "src/package"
+    assert folder.childCount() == 1
+    item = folder.child(0)
     assert item is selected
-    assert item.text(0) == "src/package/only.py"
+    assert item.text(0) == "only.py"
     assert item.childCount() == 0
     assert item.data(0, Qt.ItemDataRole.UserRole) == file
     assert item.checkState(0) is Qt.CheckState.Checked
     assert not item.icon(0).isNull()
+
+
+def test_split_folder_checkbox_emits_only_one_batched_change(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "changes.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/viewMode", "tree")
+    settings.setValue("changes/presentationMode", "split")
+    panel = ChangesPanel(settings)
+    qtbot.addWidget(panel)
+    first = FileStatus("src/package/first.py", ".", "M")
+    second = FileStatus("src/package/second.py", ".", "M")
+    requests: list[tuple[object, bool]] = []
+
+    def capture(files: object, staged: bool) -> None:
+        requests.append((files, staged))
+
+    panel.folder_stage_requested.connect(capture)
+    panel.show_files(
+        [
+            (first, Qt.CheckState.Unchecked),
+            (second, Qt.CheckState.Unchecked),
+        ],
+        None,
+    )
+    root = panel.unstaged_tree.topLevelItem(0)
+    assert root is not None
+    item_changed = QSignalSpy(panel.unstaged_tree.itemChanged)
+
+    root.setCheckState(0, Qt.CheckState.Checked)
+
+    assert item_changed.count() == 1
+    assert requests == [((first, second), True)]
+    assert root.child(0).checkState(0) is Qt.CheckState.Checked
+    assert root.child(1).checkState(0) is Qt.CheckState.Checked
 
 
 def test_status_refresh_preserves_changes_tree_scroll_position(

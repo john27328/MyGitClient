@@ -387,19 +387,13 @@ class ChangesPanel(QWidget):
 
     def _compact_folder_chain(self, item: QTreeWidgetItem) -> None:
         while item.data(0, _FOLDER_ROLE) is True and item.childCount() == 1:
+            child = item.child(0)
+            if child.data(0, _FOLDER_ROLE) is not True:
+                break
             child = item.takeChild(0)
             item.setText(0, f"{item.text(0)}/{child.text(0)}")
-            if child.data(0, _FOLDER_ROLE) is True:
-                while child.childCount():
-                    item.addChild(child.takeChild(0))
-                continue
-            item.setData(0, _FOLDER_ROLE, None)
-            item.setData(0, Qt.ItemDataRole.UserRole, child.data(0, Qt.ItemDataRole.UserRole))
-            item.setIcon(0, child.icon(0))
-            item.setToolTip(0, child.toolTip(0))
-            item.setFlags(child.flags())
-            if child.flags() & Qt.ItemFlag.ItemIsUserCheckable:
-                item.setCheckState(0, child.checkState(0))
+            while child.childCount():
+                item.addChild(child.takeChild(0))
         for index in range(item.childCount()):
             self._compact_folder_chain(item.child(index))
 
@@ -439,7 +433,9 @@ class ChangesPanel(QWidget):
         else:
             should_stage = item.checkState(0) != Qt.CheckState.Unchecked
         files = self._descendant_files(item)
-        blocker = QSignalBlocker(self.tree)
+        sender = self.sender()
+        tree = sender if isinstance(sender, QTreeWidget) else self.tree
+        blocker = QSignalBlocker(tree)
         target = Qt.CheckState.Checked if should_stage else Qt.CheckState.Unchecked
         self._set_descendant_state(item, target)
         del blocker
