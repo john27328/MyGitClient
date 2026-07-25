@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix (for example 0.2.7)
+        required: true
+        type: string
+      dry_run:
+        description: Validate and run CI without changing branches, tags, or releases
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      develop_sha: ${{ steps.validate.outputs.develop_sha }}
+      release_tag: ${{ steps.validate.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: develop
+          fetch-depth: 0
+      - id: validate
+        name: Validate release request
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ($env:VERSION -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Version must contain three numeric components, for example 0.2.7."
+          }
+          git fetch origin develop master --tags --prune
+          $developSha = git rev-parse HEAD
+          $remoteDevelopSha = git rev-parse origin/develop
+          if ($developSha -ne $remoteDevelopSha) {
+            throw "The checked-out develop branch is not synchronized with origin/develop."
+          }
+          git merge-base --is-ancestor origin/master $developSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "origin/master cannot be fast-forwarded to origin/develop."
+          }
+          $projectMatch = Select-String pyproject.toml -Pattern '^version = "(.+)"$'
+          $packageMatch = Select-String src/mygitclient/__init__.py `
+            -Pattern '^__version__ = "(.+)"$'
+          if (-not $projectMatch -or -not $packageMatch) {
+            throw "Could not read both project version files."
+          }
+          $projectVersion = $projectMatch.Matches[0].Groups[1].Value
+          $packageVersion = $packageMatch.Matches[0].Groups[1].Value
+          if ($projectVersion -ne $packageVersion) {
+            throw "pyproject.toml and mygitclient.__version__ disagree."
+          }
+          if ([version]$env:VERSION -lt [version]$projectVersion) {
+            throw "Requested version $env:VERSION is older than $projectVersion."
+          }
+          $releaseTag = "v$env:VERSION"
+          git show-ref --verify --quiet "refs/tags/$releaseTag"
+          if ($LASTEXITCODE -eq 0) {
+            throw "Tag $releaseTag already exists."
+          }
+          "develop_sha=$developSha" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          @"
+          ### Release request
+          - Version: ``$env:VERSION``
+          - Source: ``develop@$developSha``
+          - Tag: ``$releaseTag``
+          - Dry run: ``${{ inputs.dry_run }}``
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+  checks:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ needs.validate.outputs.develop_sha }}
+
+  promote:
+    if: ${{ !inputs.dry_run }}
+    needs: [validate, checks]
+    runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.promote.outputs.release_sha }}
+      release_tag: ${{ needs.validate.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: develop
+          fetch-depth: 0
+      - id: promote
+        name: Update version, fast-forward master, and create tag
+        shell: pwsh
+        env:
+          EXPECTED_DEVELOP_SHA: ${{ needs.validate.outputs.develop_sha }}
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          git fetch origin develop master --tags --prune
+          $developSha = git rev-parse origin/develop
+          if ($developSha -ne $env:EXPECTED_DEVELOP_SHA) {
+            throw "develop changed after CI started; run the release workflow again."
+          }
+          git checkout --detach $developSha
+          $project = Get-Content pyproject.toml -Raw
+          $project = $project -replace `
+            '(?m)^version = "[^"]+"$', "version = `"$env:VERSION`""
+          Set-Content pyproject.toml $project -NoNewline -Encoding utf8
+          $package = Get-Content src/mygitclient/__init__.py -Raw
+          $package = $package -replace `
+            '(?m)^__version__ = "[^"]+"$', "__version__ = `"$env:VERSION`""
+          Set-Content src/mygitclient/__init__.py $package -NoNewline -Encoding utf8
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add pyproject.toml src/mygitclient/__init__.py
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Release $env:RELEASE_TAG"
+          }
+          $releaseSha = git rev-parse HEAD
+          git push origin "${releaseSha}:refs/heads/develop"
+          git merge-base --is-ancestor origin/master $releaseSha
+          if ($LASTEXITCODE -ne 0) {
+            throw "master can no longer be fast-forwarded to the release commit."
+          }
+          git push origin "${releaseSha}:refs/heads/master"
+          git tag --annotate $env:RELEASE_TAG --message "MyGitClient $env:RELEASE_TAG"
+          git push origin "refs/tags/$env:RELEASE_TAG"
+          "release_sha=$releaseSha" >> $env:GITHUB_OUTPUT
+          @"
+          ### Promoted
+          - ``develop`` and ``master``: ``$releaseSha``
+          - Tag: ``$env:RELEASE_TAG``
+          "@ >> $env:GITHUB_STEP_SUMMARY
+
+  portable:
+    if: ${{ !inputs.dry_run }}
+    needs: [validate, promote]
+    uses: ./.github/workflows/windows-portable.yml
+    with:
+      checkout_ref: ${{ needs.promote.outputs.release_sha }}
+      release_tag: ${{ needs.promote.outputs.release_tag }}
+      publish: true
+
+  report:
+    if: always()
+    needs: [validate, checks, promote, portable]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write final report
+        shell: pwsh
+        run: |
+          @"
+          ### Result
+          | Phase | Status |
+          | --- | --- |
+          | Validate | ``${{ needs.validate.result }}`` |
+          | CI | ``${{ needs.checks.result }}`` |
+          | Promote and tag | ``${{ needs.promote.result }}`` |
+          | Portable release | ``${{ needs.portable.result }}`` |
+
+          Dry runs intentionally skip promotion and publication.
+          "@ >> $env:GITHUB_STEP_SUMMARY

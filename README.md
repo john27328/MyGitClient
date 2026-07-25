@@ -90,15 +90,19 @@ build dependencies are already installed.
 
 ## Release process
 
-1. Merge tested changes from `develop` into `master`.
-2. Set the release version in `pyproject.toml`.
-3. Create the matching tag on `master`, such as `v0.1.0` for version `0.1.0`.
-4. Push the tag.
+Use the `Release` workflow in GitHub Actions:
 
-The `Windows portable` workflow validates the tag and its `master` ancestry, builds and
-smoke-tests the archive, creates a GitHub Release with generated notes, and attaches
-the ZIP and checksum. A manual workflow run uploads an Actions artifact without
-creating a public Release.
+1. Run it from `develop` with the next version number, without the `v` prefix.
+2. Keep `dry_run` enabled first to validate the branches and run the full CI matrix.
+3. If the dry run is green, run it again with `dry_run` disabled.
+
+The workflow refuses stale or diverged branches and duplicate tags. A published run
+updates both version files, fast-forwards `develop` and `master`, creates the matching
+tag, builds and smoke-tests the portable Windows archive, and publishes a GitHub
+Release containing the ZIP and SHA-256 checksum.
+
+The lower-level `Windows portable` workflow remains available for an unpublished
+artifact build or as a fallback for an existing release tag.
 
 ## Status
 

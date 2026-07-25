@@ -5,6 +5,12 @@ on:
     branches: [master, develop]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        description: Commit or ref to check
+        required: false
+        type: string
 
 jobs:
   checks:
@@ -19,6 +25,8 @@ jobs:
       QT_QPA_PLATFORM: ${{ startsWith(matrix.os, 'ubuntu') && 'offscreen' || '' }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
       - name: Install Qt runtime libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes libegl1
