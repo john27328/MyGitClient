@@ -130,6 +130,7 @@ class MainWindow(QMainWindow):
         self._amend_diff_loaded = False
         self._status_runner: GitRunner | None = None
         self._history_runner: GitRunner | None = None
+        self._history_repository: Path | None = None
         self._history_refs: tuple[str, ...] = ()
         self._active_queue_operation: QueuedOperation | None = None
         self._queued_operation_count = 0
@@ -678,6 +679,7 @@ class MainWindow(QMainWindow):
         self._show_linked_repositories(repository)
         self._status_label.setText(f"Reading {repository.name}…")
         self._changes.clear()
+        self._history_repository = None
         self._history_panel.reset()
         self._history_refs = ()
         self._diff_view.reset()
@@ -810,13 +812,18 @@ class MainWindow(QMainWindow):
         if self._repository is None or value.repository != self._repository:
             return
         self._history_runner = None
+        self._history_repository = value.repository
         self._history_panel.show_page(value)
         count = self._history_panel.commit_count
         self._status_label.setText(f"Loaded {count} commits")
 
     @Slot(object)
     def _history_commit_selected(self, value: object) -> None:
-        if self._repository is None or not isinstance(value, CommitSummary):
+        if (
+            self._repository is None
+            or self._history_repository != self._repository
+            or not isinstance(value, CommitSummary)
+        ):
             return
         self._commit_diff_visible = False
         self._diff_view.reset()
@@ -850,6 +857,7 @@ class MainWindow(QMainWindow):
     def _history_file_selected(self, commit_value: object, file_value: object) -> None:
         if (
             self._repository is None
+            or self._history_repository != self._repository
             or not isinstance(commit_value, CommitSummary)
             or not isinstance(file_value, CommitFileChange)
         ):
@@ -869,7 +877,11 @@ class MainWindow(QMainWindow):
     def _history_comparison_file_selected(
         self, base_ref: str, compare_ref: str, file_value: object
     ) -> None:
-        if self._repository is None or not isinstance(file_value, CommitFileChange):
+        if (
+            self._repository is None
+            or self._history_repository != self._repository
+            or not isinstance(file_value, CommitFileChange)
+        ):
             return
         self._status_label.setText(f"Comparing {file_value.path}…")
         self._git.request_ref_comparison_diff(

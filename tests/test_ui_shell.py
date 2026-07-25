@@ -27,10 +27,13 @@ from mygitclient.git.models import (
     BranchesSnapshot,
     BranchInfo,
     BranchStatus,
+    CommitFileChange,
+    CommitSummary,
     RepositoryStatus,
 )
 from mygitclient.git.service import GitService
 from mygitclient.theme import Theme
+from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.main_window import MainWindow, push_requires_rewrite, sync_action_labels
 from mygitclient.ui.refs_panel import RefsPanel
 
@@ -504,6 +507,70 @@ def test_selected_commit_shows_details_files_and_diff(
     assert not diff_container.isHidden()
     assert tabs.currentIndex() == 1
     window.close()
+
+
+def test_repository_switch_ignores_stale_history_selection(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    identity = [
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    ]
+    for repository in (first, second):
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+        (repository / "tracked.txt").write_text(
+            f"{repository.name}\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+        subprocess.run(
+            ["git", *identity, "commit", "-m", f"Initial {repository.name}"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    old_oid = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=first,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    commit = CommitSummary(
+        old_oid,
+        (),
+        "MyGitClient Test",
+        "test@example.invalid",
+        "2026-07-25T12:00:00+00:00",
+        "Old repository commit",
+    )
+    change = CommitFileChange("M", "old.txt")
+    settings = QSettings(str(tmp_path / "stale-history.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
+    history = window.findChild(HistoryPanel)
+    service = window.findChild(GitService)
+    assert history is not None and service is not None
+    errors: list[str] = []
+    service.operation_failed.connect(errors.append)
+
+    window.open_repository(first)
+    qtbot.waitUntil(lambda: history.commit_count == 1, timeout=5000)
+    window.open_repository(second)
+    history.commit_selected.emit(commit)
+    history.file_selected.emit(commit, change)
+    qtbot.wait(500)
+
+    assert errors == []
 
 
 def test_branches_tab_can_checkout_and_create_branch(
