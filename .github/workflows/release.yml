@@ -43,8 +43,9 @@ jobs:
           if ($developSha -ne $remoteDevelopSha) {
             throw "The checked-out develop branch is not synchronized with origin/develop."
           }
-          git merge-base --is-ancestor origin/master $developSha
-          if ($LASTEXITCODE -ne 0) {
+          $masterSha = git rev-parse origin/master
+          $mergeBase = git merge-base $masterSha $developSha
+          if ($mergeBase -ne $masterSha) {
             throw "origin/master cannot be fast-forwarded to origin/develop."
           }
           $projectMatch = Select-String pyproject.toml -Pattern '^version = "(.+)"$'
@@ -62,8 +63,8 @@ jobs:
             throw "Requested version $env:VERSION is older than $projectVersion."
           }
           $releaseTag = "v$env:VERSION"
-          git show-ref --verify --quiet "refs/tags/$releaseTag"
-          if ($LASTEXITCODE -eq 0) {
+          $existingTag = git tag --list $releaseTag
+          if ($existingTag -eq $releaseTag) {
             throw "Tag $releaseTag already exists."
           }
           "develop_sha=$developSha" >> $env:GITHUB_OUTPUT
@@ -120,14 +121,15 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add pyproject.toml src/mygitclient/__init__.py
-          git diff --cached --quiet
-          if ($LASTEXITCODE -ne 0) {
+          $stagedFiles = git diff --cached --name-only
+          if ($stagedFiles) {
             git commit -m "Release $env:RELEASE_TAG"
           }
           $releaseSha = git rev-parse HEAD
           git push origin "${releaseSha}:refs/heads/develop"
-          git merge-base --is-ancestor origin/master $releaseSha
-          if ($LASTEXITCODE -ne 0) {
+          $masterSha = git rev-parse origin/master
+          $mergeBase = git merge-base $masterSha $releaseSha
+          if ($mergeBase -ne $masterSha) {
             throw "master can no longer be fast-forwarded to the release commit."
           }
           git push origin "${releaseSha}:refs/heads/master"

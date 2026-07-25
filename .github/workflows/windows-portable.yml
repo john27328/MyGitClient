@@ -62,12 +62,13 @@ jobs:
           git fetch origin master --tags
           $checkedOutCommit = git rev-parse HEAD
           $tagCommit = git rev-list -n 1 $releaseTag
-          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $checkedOutCommit) {
+          if ($tagCommit -ne $checkedOutCommit) {
             throw "Tag $releaseTag must point to the checked-out commit $checkedOutCommit."
           }
           git fetch origin master --no-tags
-          git merge-base --is-ancestor $checkedOutCommit origin/master
-          if ($LASTEXITCODE -ne 0) {
+          $masterSha = git rev-parse origin/master
+          $mergeBase = git merge-base $checkedOutCommit $masterSha
+          if ($mergeBase -ne $checkedOutCommit) {
             throw "Release tag must point to a commit reachable from master."
           }
       - name: Build and smoke-test portable archive
