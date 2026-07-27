@@ -69,6 +69,7 @@ from mygitclient.git.models import (
     RepositoryOperationSnapshot,
     RepositoryStatus,
     RepositoryStatusSnapshot,
+    RevertPreviewSnapshot,
     StashesSnapshot,
     StashInfo,
     TagInfo,
@@ -208,6 +209,7 @@ class MainWindow(QMainWindow):
         self._history_panel.cherry_pick_requested.connect(
             self._preview_cherry_pick
         )
+        self._history_panel.revert_requested.connect(self._preview_revert)
         self._history_panel.focus_mode_changed.connect(self._history_focus_mode_changed)
         self._history_panel.file_selected.connect(self._history_file_selected)
         self._history_panel.comparison_file_selected.connect(
@@ -597,6 +599,7 @@ class MainWindow(QMainWindow):
         self._git.branches_ready.connect(self._show_branches)
         self._git.branch_point_ready.connect(self._show_branch_point)
         self._git.cherry_pick_preview_ready.connect(self._show_cherry_pick_preview)
+        self._git.revert_preview_ready.connect(self._show_revert_preview)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
         self._git.commit_files_ready.connect(self._show_commit_files)
@@ -974,6 +977,89 @@ class MainWindow(QMainWindow):
             value.commits,
             autostash=dirty and autostash.isChecked(),
         )
+
+    @Slot(object)
+    def _preview_revert(self, value: object) -> None:
+        if (
+            self._repository is None
+            or not isinstance(value, tuple)
+            or not value
+        ):
+            return
+        raw_commits = cast(tuple[object, ...], value)
+        if not all(isinstance(commit, CommitSummary) for commit in raw_commits):
+            return
+        commits = cast(tuple[CommitSummary, ...], raw_commits)
+        if any(len(commit.parent_oids) > 1 for commit in commits):
+            QMessageBox.warning(
+                self,
+                "Revert unavailable",
+                "Merge commits need a mainline parent and cannot be reverted "
+                "from this action.",
+            )
+            return
+        if self._repository_status and self._repository_status.files:
+            QMessageBox.warning(
+                self,
+                "Clean working tree required",
+                "Commit, stash, or discard local changes before reverting commits.",
+            )
+            return
+        self._status_label.setText(
+            f"Preparing revert of {len(commits)} commit(s)…"
+        )
+        self._git.request_revert_preview(self._repository, commits)
+
+    @Slot(object)
+    def _show_revert_preview(self, value: object) -> None:
+        if (
+            not isinstance(value, RevertPreviewSnapshot)
+            or value.repository != self._repository
+        ):
+            return
+        dialog = QDialog(self)
+        dialog.setObjectName("revertPreviewDialog")
+        dialog.setWindowTitle("Revert commits")
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(
+            f"Create {len(value.commits)} reverse commit(s)? "
+            "The commits will be reverted newest first."
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        preview = QPlainTextEdit()
+        preview.setObjectName("revertPreviewEdit")
+        preview.setReadOnly(True)
+        commit_lines = [
+            f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits
+        ]
+        file_lines = [f"  {path}" for path in value.files]
+        preview.setPlainText(
+            "Commits (revert order):\n"
+            + "\n".join(commit_lines)
+            + "\n\nChanged files:\n"
+            + ("\n".join(file_lines) if file_lines else "  No changed files")
+            + "\n\nChanges below will be reversed:\n\n"
+            + value.diff.text
+        )
+        layout.addWidget(preview, 1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Revert")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(760, 560)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._status_label.setText("Revert cancelled")
+            return
+        self._status_label.setText(
+            f"Queueing revert of {len(value.commits)} commit(s)…"
+        )
+        self._git.request_revert(value.repository, value.commits)
 
     @Slot(object)
     def _show_commit_files(self, value: object) -> None:
@@ -1922,6 +2008,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Push completed")
         elif path == "cherry-pick":
             self._status_label.setText("Cherry-pick completed")
+        elif path == "revert":
+            self._status_label.setText("Revert completed")
         elif path == "repository-operation:changed":
             self._status_label.setText("Repository operation updated")
         elif path == "stash":
@@ -1935,6 +2023,7 @@ class MainWindow(QMainWindow):
                 "pull",
                 "push",
                 "cherry-pick",
+                "revert",
                 "repository-operation:changed",
             }
             branch_changed = path.startswith("branch:") or path.startswith("branches:")

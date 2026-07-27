@@ -26,6 +26,7 @@ from mygitclient.git.models import (
     RepositoryOperation,
     RepositoryOperationSnapshot,
     RepositoryStatusSnapshot,
+    RevertPreviewSnapshot,
     StashesSnapshot,
     StashInfo,
     TagsSnapshot,
@@ -63,6 +64,12 @@ class _CherryPickWorkflow:
     stashed: bool = False
 
 
+@dataclass(slots=True)
+class _RevertWorkflow:
+    repository: Path
+    commits: tuple[CommitSummary, ...]
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
@@ -76,6 +83,7 @@ class GitService(QObject):
     comparison_diff_ready = Signal(object)
     status_ready = Signal(object)
     repository_operation_ready = Signal(object)
+    revert_preview_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
     operation_cancelled = Signal()
@@ -130,6 +138,11 @@ class GitService(QObject):
         self._latest_cherry_pick_preview_request: dict[Path, int] = {}
         self._cherry_pick_workflows: dict[GitRunner, _CherryPickWorkflow] = {}
         self._pending_cherry_pick_autostash: set[Path] = set()
+        self._revert_preview_requests: dict[
+            GitRunner, tuple[Path, tuple[CommitSummary, ...], int]
+        ] = {}
+        self._latest_revert_preview_request: dict[Path, int] = {}
+        self._revert_workflows: dict[GitRunner, _RevertWorkflow] = {}
         self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
         self._operation_queue = GitOperationQueue(self)
         self._operation_queue.changed.connect(self.queue_changed)
@@ -533,6 +546,57 @@ class GitService(QObject):
             runner,
             GitCommand(arguments, workflow.repository, operation),
             continuation=workflow.step != "stash",
+        )
+        return runner
+
+    def request_revert_preview(
+        self, repository: Path, commits: tuple[CommitSummary, ...]
+    ) -> GitRunner:
+        if not commits:
+            raise ValueError("At least one commit is required")
+        if any(len(commit.parent_oids) > 1 for commit in commits):
+            raise ValueError("Merge commits require an explicit mainline parent")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_revert_preview_request[repository] = request_id
+        self._revert_preview_requests[runner] = (repository, commits, request_id)
+        runner.completed.connect(self._handle_revert_preview)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "show",
+                    "--format=",
+                    "--no-color",
+                    "--find-renames",
+                    *(commit.oid for commit in commits),
+                ),
+                repository,
+                "preview revert",
+            )
+        )
+        return runner
+
+    def request_revert(
+        self, repository: Path, commits: tuple[CommitSummary, ...]
+    ) -> GitRunner:
+        if not commits:
+            raise ValueError("At least one commit is required")
+        if any(len(commit.parent_oids) > 1 for commit in commits):
+            raise ValueError("Merge commits require an explicit mainline parent")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._revert_workflows[runner] = _RevertWorkflow(repository, commits)
+        runner.completed.connect(self._handle_revert_workflow)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(
+                ("revert", "--no-edit", "--", *(commit.oid for commit in commits)),
+                repository,
+                "revert commits",
+            ),
         )
         return runner
 
@@ -1178,6 +1242,8 @@ class GitService(QObject):
         self._comparison_diff_requests.pop(runner, None)
         self._cherry_pick_preview_requests.pop(runner, None)
         self._cherry_pick_workflows.pop(runner, None)
+        self._revert_preview_requests.pop(runner, None)
+        self._revert_workflows.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(
                 f"Could not {checkout.step} during checkout: {message}"
@@ -1579,6 +1645,59 @@ class GitService(QObject):
         )
         self.cherry_pick_preview_ready.emit(
             CherryPickPreviewSnapshot(repository, commits, files)
+        )
+
+    @Slot(object)
+    def _handle_revert_workflow(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown revert result")
+            return
+        workflow = self._revert_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected revert result")
+            return
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                format_git_error(result.error_text, operation="revert commits")
+            )
+            self.mutation_ready.emit("repository-operation:changed")
+            return
+        self.mutation_ready.emit("revert")
+
+    @Slot(object)
+    def _handle_revert_preview(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown revert preview")
+            return
+        request = self._revert_preview_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected revert preview")
+            return
+        repository, commits, request_id = request
+        if self._latest_revert_preview_request.get(repository) != request_id:
+            return
+        self._latest_revert_preview_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not preview revert")
+            return
+        diff = parse_unified_diff(result.stdout, "", staged=True)
+        self.revert_preview_ready.emit(
+            RevertPreviewSnapshot(
+                repository,
+                commits,
+                tuple(sorted(diff_paths(diff))),
+                diff,
+            )
         )
 
     @Slot(object)

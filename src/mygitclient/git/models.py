@@ -138,6 +138,14 @@ class CherryPickPreviewSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RevertPreviewSnapshot:
+    repository: Path
+    commits: tuple[CommitSummary, ...]
+    files: tuple[str, ...]
+    diff: UnifiedDiff
+
+
+@dataclass(frozen=True, slots=True)
 class CommitSummary:
     oid: str
     parent_oids: tuple[str, ...]

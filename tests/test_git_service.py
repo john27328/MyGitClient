@@ -20,6 +20,7 @@ from mygitclient.git.models import (
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
     RepositoryOperationSnapshot,
+    RevertPreviewSnapshot,
     StashesSnapshot,
     TagsSnapshot,
 )
@@ -799,6 +800,56 @@ def test_cherry_pick_conflict_exposes_recovery_and_can_be_aborted(
 
     assert not (tmp_path / ".git" / "CHERRY_PICK_HEAD").exists()
     assert tracked.read_text(encoding="utf-8") == "main\n"
+
+
+def test_revert_range_preview_and_reverse_commits(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    base = tmp_path / "base.txt"
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    base.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "base.txt")
+    _git(tmp_path, *identity, "commit", "-m", "initial")
+    first.write_text("first\n", encoding="utf-8")
+    _git(tmp_path, "add", "first.txt")
+    _git(tmp_path, *identity, "commit", "-m", "first")
+    first_commit = _summary(tmp_path, "HEAD")
+    second.write_text("second\n", encoding="utf-8")
+    _git(tmp_path, "add", "second.txt")
+    _git(tmp_path, *identity, "commit", "-m", "second")
+    second_commit = _summary(tmp_path, "HEAD")
+    commits = (second_commit, first_commit)
+    service = GitService()
+    previews: list[object] = []
+    service.revert_preview_ready.connect(previews.append)
+
+    with qtbot.waitSignal(service.revert_preview_ready, timeout=5000):
+        service.request_revert_preview(tmp_path, commits)
+
+    preview = previews[-1]
+    assert isinstance(preview, RevertPreviewSnapshot)
+    assert preview.commits == commits
+    assert preview.files == ("first.txt", "second.txt")
+    assert "+first" in preview.diff.text
+    assert "+second" in preview.diff.text
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_revert(tmp_path, commits)
+
+    assert not first.exists()
+    assert not second.exists()
+    subjects = subprocess.check_output(
+        ["git", "log", "-2", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert subjects == ['Revert "first"', 'Revert "second"']
 
 
 def test_checkout_autostash_stops_when_attributes_rewrite_worktree(

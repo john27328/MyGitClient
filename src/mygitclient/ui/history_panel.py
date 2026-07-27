@@ -149,6 +149,7 @@ class HistoryPanel(QWidget):
     comparison_file_selected = Signal(str, str, object)
     focus_mode_changed = Signal(bool)
     cherry_pick_requested = Signal(object)
+    revert_requested = Signal(object)
 
     def __init__(
         self,
@@ -421,9 +422,21 @@ class HistoryPanel(QWidget):
         action = menu.addAction(label)
         action.setObjectName("historyCherryPickAction")
         action.setEnabled(all(len(commit.parent_oids) <= 1 for commit in commits))
+        revert_label = (
+            "Revert commit…"
+            if len(commits) == 1
+            else f"Revert {len(commits)} commits…"
+        )
+        revert_action = menu.addAction(revert_label)
+        revert_action.setObjectName("historyRevertAction")
+        revert_action.setEnabled(
+            all(len(commit.parent_oids) <= 1 for commit in commits)
+        )
         chosen = menu.exec(self.tree.viewport().mapToGlobal(position))
         if chosen is action:
             self.cherry_pick_requested.emit(commits)
+        elif chosen is revert_action:
+            self.revert_requested.emit(tuple(reversed(commits)))
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def _commit_changed(
