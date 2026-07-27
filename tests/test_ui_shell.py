@@ -29,6 +29,8 @@ from mygitclient.git.models import (
     BranchStatus,
     CommitFileChange,
     CommitSummary,
+    RepositoryOperation,
+    RepositoryOperationSnapshot,
     RepositoryStatus,
 )
 from mygitclient.git.service import GitService
@@ -104,6 +106,36 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     )
     assert not refresh_action.icon().isNull()
 
+    window.close()
+
+
+def test_repository_operation_banner_restores(
+    qapp: QApplication, tmp_path: Path
+) -> None:
+    settings = QSettings(
+        QSettings.Format.IniFormat, QSettings.Scope.UserScope, "test", "operation-banner"
+    )
+    settings.clear()
+    window = MainWindow(settings, Theme.SYSTEM)
+    window.__dict__["_repository"] = tmp_path
+    service = window.findChild(GitService)
+    assert service is not None
+    service.repository_operation_ready.emit(
+        RepositoryOperationSnapshot(tmp_path, RepositoryOperation("rebase", 2, 5))
+    )
+    banner = window.findChild(QWidget, "repositoryOperationBanner")
+    label = window.findChild(QLabel, "repositoryOperationLabel")
+    continue_button = window.findChild(
+        QPushButton, "repositoryOperationContinueButton"
+    )
+    skip_button = window.findChild(QPushButton, "repositoryOperationSkipButton")
+    assert banner is not None and not banner.isHidden()
+    assert label is not None and "step 2 of 5" in label.text()
+    assert continue_button is not None
+    assert skip_button is not None and not skip_button.isHidden()
+
+    service.repository_operation_ready.emit(RepositoryOperationSnapshot(tmp_path, None))
+    assert banner.isHidden()
     window.close()
 
 

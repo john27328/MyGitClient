@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
@@ -33,6 +35,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressDialog,
+    QPushButton,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -40,6 +43,7 @@ from PySide6.QtWidgets import (
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -59,6 +63,8 @@ from mygitclient.git.models import (
     FileStatus,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
+    RepositoryOperation,
+    RepositoryOperationSnapshot,
     RepositoryStatus,
     RepositoryStatusSnapshot,
     StashesSnapshot,
@@ -117,6 +123,7 @@ class MainWindow(QMainWindow):
         self._repository: Path | None = None
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
+        self._repository_operation: RepositoryOperation | None = None
         self._commit_diff_visible = False
         self._generated_commit_message = ""
         self._generated_commit_description = ""
@@ -222,7 +229,40 @@ class MainWindow(QMainWindow):
         self._workspace_tabs.addTab(self._history_panel, "History")
         self._workspace_tabs.setMinimumWidth(360)
         self._workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
-        self._workspace_tabs.hide()
+        self._operation_banner = QFrame()
+        self._operation_banner.setObjectName("repositoryOperationBanner")
+        operation_layout = QHBoxLayout(self._operation_banner)
+        operation_layout.setContentsMargins(8, 4, 8, 4)
+        self._operation_label = QLabel()
+        self._operation_label.setObjectName("repositoryOperationLabel")
+        operation_layout.addWidget(self._operation_label, 1)
+        self._operation_continue = QPushButton("Continue")
+        self._operation_continue.setObjectName("repositoryOperationContinueButton")
+        self._operation_skip = QPushButton("Skip")
+        self._operation_skip.setObjectName("repositoryOperationSkipButton")
+        self._operation_abort = QPushButton("Abort…")
+        self._operation_abort.setObjectName("repositoryOperationAbortButton")
+        operation_layout.addWidget(self._operation_continue)
+        operation_layout.addWidget(self._operation_skip)
+        operation_layout.addWidget(self._operation_abort)
+        self._operation_continue.clicked.connect(
+            lambda: self._run_repository_operation_action("continue")
+        )
+        self._operation_skip.clicked.connect(
+            lambda: self._run_repository_operation_action("skip")
+        )
+        self._operation_abort.clicked.connect(
+            lambda: self._run_repository_operation_action("abort")
+        )
+        self._operation_banner.hide()
+
+        self._workspace_container = QWidget()
+        workspace_layout = QVBoxLayout(self._workspace_container)
+        workspace_layout.setContentsMargins(0, 0, 0, 0)
+        workspace_layout.setSpacing(0)
+        workspace_layout.addWidget(self._operation_banner)
+        workspace_layout.addWidget(self._workspace_tabs, 1)
+        self._workspace_container.hide()
 
         self._diff_view = DiffView(self._settings)
         self._diff_view.set_auto_apply_hunks(True)
@@ -259,7 +299,7 @@ class MainWindow(QMainWindow):
         self._splitter.setObjectName("mainSplitter")
         self._splitter.addWidget(self._repositories_panel)
         self._splitter.addWidget(self._welcome)
-        self._splitter.addWidget(self._workspace_tabs)
+        self._splitter.addWidget(self._workspace_container)
         self._splitter.addWidget(self._diff_container)
         self._splitter.setStretchFactor(0, 0)
         self._splitter.setStretchFactor(1, 1)
@@ -545,6 +585,7 @@ class MainWindow(QMainWindow):
         self._git.amend_diff_ready.connect(self._show_amend_diff)
         self._git.amend_preview_ready.connect(self._show_amend_preview)
         self._git.status_ready.connect(self._show_status)
+        self._git.repository_operation_ready.connect(self._show_repository_operation)
         self._git.history_ready.connect(self._show_history)
         self._git.comparison_ready.connect(self._show_ref_comparison)
         self._git.comparison_diff_ready.connect(self._show_ref_comparison_diff)
@@ -670,6 +711,8 @@ class MainWindow(QMainWindow):
             self._populate_repository_switcher()
         self._repository = repository
         self._repository_status = None
+        self._repository_operation = None
+        self._operation_banner.hide()
         self._commit_diff_visible = False
         self._workspace.set_last_repository(repository)
         self._repositories_panel.select_repository(repository)
@@ -685,6 +728,7 @@ class MainWindow(QMainWindow):
         self._diff_view.reset()
         self._welcome.hide()
         self._workspace_tabs.show()
+        self._workspace_container.show()
         self._diff_view.refresh_version_selector()
         self._diff_view_mode.show()
         self._diff_gutter.setVisible(not self._wrap_button.isChecked())
@@ -1495,7 +1539,54 @@ class MainWindow(QMainWindow):
         self._history_runner = None
         self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
+        self._operation_banner.setEnabled(True)
         self._status_label.setText("Operation cancelled")
+
+    @Slot(object)
+    def _show_repository_operation(self, value: object) -> None:
+        if not isinstance(value, RepositoryOperationSnapshot):
+            return
+        if self._repository is None or value.repository != self._repository:
+            return
+        self._repository_operation = value.operation
+        operation = value.operation
+        if operation is None:
+            self._operation_banner.hide()
+            return
+        name = {
+            "merge": "Merge",
+            "rebase": "Rebase",
+            "cherry-pick": "Cherry-pick",
+            "revert": "Revert",
+        }[operation.kind]
+        progress = ""
+        if operation.current_step is not None and operation.total_steps is not None:
+            progress = f" · step {operation.current_step} of {operation.total_steps}"
+        self._operation_label.setText(
+            f"{name} in progress{progress}. Resolve conflicts, then continue."
+        )
+        self._operation_skip.setVisible(operation.kind != "merge")
+        self._operation_banner.setEnabled(True)
+        self._operation_banner.show()
+
+    def _run_repository_operation_action(self, action: str) -> None:
+        repository = self._repository
+        operation = self._repository_operation
+        if repository is None or operation is None:
+            return
+        if action == "abort":
+            answer = QMessageBox.question(
+                self,
+                f"Abort {operation.kind}?",
+                f"Abort the current {operation.kind} and restore its previous state?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._operation_banner.setEnabled(False)
+        self._status_label.setText(f"{action.title()}ing {operation.kind}…")
+        self._git.request_repository_operation_action(
+            repository, kind=operation.kind, action=action
+        )
 
     @Slot(object)
     def _show_status(self, value: object) -> None:
@@ -1703,6 +1794,7 @@ class MainWindow(QMainWindow):
         self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
         self._history_panel.refs_panel.setEnabled(True)
+        self._operation_banner.setEnabled(True)
         if path == "commit":
             self._commit_message.clear()
             self._commit_description.clear()

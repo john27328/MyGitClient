@@ -118,6 +118,19 @@ class RepositoryStatusSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RepositoryOperation:
+    kind: Literal["merge", "rebase", "cherry-pick", "revert"]
+    current_step: int | None = None
+    total_steps: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryOperationSnapshot:
+    repository: Path
+    operation: RepositoryOperation | None
+
+
+@dataclass(frozen=True, slots=True)
 class CommitSummary:
     oid: str
     parent_oids: tuple[str, ...]

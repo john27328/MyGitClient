@@ -17,11 +17,12 @@ from mygitclient.git.models import (
     FileStatus,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
+    RepositoryOperationSnapshot,
     StashesSnapshot,
     TagsSnapshot,
 )
 from mygitclient.git.runner import GitRunner
-from mygitclient.git.service import GitService
+from mygitclient.git.service import GitService, detect_repository_operation
 
 
 def _git(repository: Path, *arguments: str) -> None:
@@ -38,6 +39,70 @@ def test_completed_runner_is_released(qtbot: QtBot, tmp_path: Path) -> None:
         service.request_status(tmp_path)
 
     qtbot.waitUntil(lambda: not service.findChildren(GitRunner), timeout=5000)
+
+
+def test_rebase_operation_progress_is_detected(tmp_path: Path) -> None:
+    rebase = tmp_path / "rebase-merge"
+    rebase.mkdir()
+    (rebase / "msgnum").write_text("2\n", encoding="ascii")
+    (rebase / "end").write_text("4\n", encoding="ascii")
+
+    operation = detect_repository_operation(tmp_path)
+
+    assert operation is not None
+    assert operation.kind == "rebase"
+    assert operation.current_step == 2
+    assert operation.total_steps == 4
+
+
+def test_merge_conflict_is_detected_and_can_be_aborted(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "base")
+    _git(tmp_path, "switch", "-c", "feature")
+    tracked.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "feature")
+    _git(tmp_path, "switch", "main")
+    tracked.write_text("main\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "main")
+    merge = subprocess.run(
+        ["git", "merge", "feature"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+    )
+    assert merge.returncode != 0
+    service = GitService()
+    snapshots: list[object] = []
+    service.repository_operation_ready.connect(snapshots.append)
+
+    with qtbot.waitSignal(service.repository_operation_ready, timeout=5000):
+        service.request_repository_operation(tmp_path)
+
+    snapshot = snapshots[-1]
+    assert isinstance(snapshot, RepositoryOperationSnapshot)
+    assert snapshot.operation is not None
+    assert snapshot.operation.kind == "merge"
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_repository_operation_action(
+            tmp_path, kind="merge", action="abort"
+        )
+
+    assert not (tmp_path / ".git" / "MERGE_HEAD").exists()
+    assert tracked.read_text(encoding="utf-8") == "main\n"
 
 
 def test_history_excludes_stash_commits(qtbot: QtBot, tmp_path: Path) -> None:

@@ -21,6 +21,8 @@ from mygitclient.git.models import (
     GitResult,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
+    RepositoryOperation,
+    RepositoryOperationSnapshot,
     RepositoryStatusSnapshot,
     StashesSnapshot,
     StashInfo,
@@ -62,6 +64,7 @@ class GitService(QObject):
     comparison_ready = Signal(object)
     comparison_diff_ready = Signal(object)
     status_ready = Signal(object)
+    repository_operation_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
     operation_cancelled = Signal()
@@ -78,6 +81,8 @@ class GitService(QObject):
         self._request_ids = count(1)
         self._status_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_status_request: dict[Path, int] = {}
+        self._operation_state_requests: dict[GitRunner, tuple[Path, int]] = {}
+        self._latest_operation_state_request: dict[Path, int] = {}
         self._diff_requests: dict[GitRunner, tuple[Path, str, bool, bool, int]] = {}
         self._latest_diff_request: dict[tuple[Path, str, bool], int] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
@@ -644,6 +649,12 @@ class GitService(QObject):
         return runner
 
     def request_status(self, repository: Path) -> GitRunner:
+        self.repository_operation_ready.emit(
+            RepositoryOperationSnapshot(
+                repository,
+                detect_repository_operation(resolve_git_dir(repository)),
+            )
+        )
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
@@ -663,6 +674,48 @@ class GitService(QObject):
                 working_directory=repository,
                 operation="read repository status",
             )
+        )
+        return runner
+
+    def request_repository_operation(self, repository: Path) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_operation_state_request[repository] = request_id
+        self._operation_state_requests[runner] = (repository, request_id)
+        runner.completed.connect(self._handle_repository_operation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                ("rev-parse", "--absolute-git-dir"),
+                repository,
+                "read repository operation",
+            )
+        )
+        return runner
+
+    def request_repository_operation_action(
+        self, repository: Path, *, kind: str, action: str
+    ) -> GitRunner:
+        supported: dict[str, frozenset[str]] = {
+            "merge": frozenset({"continue", "abort"}),
+            "rebase": frozenset({"continue", "skip", "abort"}),
+            "cherry-pick": frozenset({"continue", "skip", "abort"}),
+            "revert": frozenset({"continue", "skip", "abort"}),
+        }
+        if kind not in supported or action not in supported[kind]:
+            raise ValueError(f"Unsupported {kind} action: {action}")
+        arguments = (kind, f"--{action}")
+        if action == "continue":
+            arguments = ("-c", "core.editor=true", *arguments)
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "repository-operation:changed"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(arguments, repository, f"{action} {kind}"),
         )
         return runner
 
@@ -932,6 +985,38 @@ class GitService(QObject):
             return
         self.status_ready.emit(RepositoryStatusSnapshot(repository, status))
 
+    @Slot(object)
+    def _handle_repository_operation(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit(
+                "Git returned an operation state from an unknown request"
+            )
+            return
+        request = self._operation_state_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected operation state")
+            return
+        repository, request_id = request
+        if self._latest_operation_state_request.get(repository) != request_id:
+            return
+        self._latest_operation_state_request.pop(repository, None)
+        if result.cancelled:
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                result.error_text or "Could not read repository operation"
+            )
+            return
+        git_dir = Path(
+            result.stdout.decode("utf-8", errors="surrogateescape").strip()
+        )
+        operation = detect_repository_operation(git_dir)
+        self.repository_operation_ready.emit(
+            RepositoryOperationSnapshot(repository, operation)
+        )
+
     @Slot(str)
     def _handle_start_error(self, message: str) -> None:
         runner = self.sender()
@@ -939,6 +1024,7 @@ class GitService(QObject):
             return
         self._release_runner(runner)
         self._status_requests.pop(runner, None)
+        self._operation_state_requests.pop(runner, None)
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
@@ -1405,3 +1491,47 @@ class GitService(QObject):
             )
             return
         self.mutation_ready.emit(path)
+
+
+def detect_repository_operation(git_dir: Path) -> RepositoryOperation | None:
+    for directory_name in ("rebase-merge", "rebase-apply"):
+        directory = git_dir / directory_name
+        if directory.is_dir():
+            return RepositoryOperation(
+                "rebase",
+                _read_operation_number(directory / "msgnum", directory / "next"),
+                _read_operation_number(directory / "end", directory / "last"),
+            )
+    if (git_dir / "CHERRY_PICK_HEAD").is_file():
+        return RepositoryOperation("cherry-pick")
+    if (git_dir / "REVERT_HEAD").is_file():
+        return RepositoryOperation("revert")
+    if (git_dir / "MERGE_HEAD").is_file():
+        return RepositoryOperation("merge")
+    return None
+
+
+def resolve_git_dir(repository: Path) -> Path:
+    dot_git = repository / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    try:
+        marker = dot_git.read_text(
+            encoding="utf-8", errors="surrogateescape"
+        ).strip()
+    except OSError:
+        return dot_git
+    prefix = "gitdir:"
+    if not marker.casefold().startswith(prefix):
+        return dot_git
+    path = Path(marker[len(prefix) :].strip())
+    return path if path.is_absolute() else (repository / path).resolve()
+
+
+def _read_operation_number(*paths: Path) -> int | None:
+    for path in paths:
+        try:
+            return int(path.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            continue
+    return None
