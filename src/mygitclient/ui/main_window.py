@@ -2414,6 +2414,7 @@ class MainWindow(QMainWindow):
         self._splitter.setSizes([240, 0, 360, 900])
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self._git.shutdown()
         self._workspace_discovery.shutdown()
         self._settings.setValue("window/geometry", self.saveGeometry())
         self._settings.setValue("window/state", self.saveState())

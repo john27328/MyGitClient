@@ -68,6 +68,19 @@ class GitRunner(QObject):
         self._process.terminate()
         QTimer.singleShot(1500, self._kill_if_running)
 
+    def shutdown(self) -> None:
+        """Stop the child process without delivering callbacks during teardown."""
+        if not self.is_running:
+            return
+        logger.info("Stopping git operation during shutdown")
+        self._process.finished.disconnect(self._on_finished)
+        self._process.errorOccurred.disconnect(self._on_error)
+        self._process.terminate()
+        if not self._process.waitForFinished(1000):
+            self._process.kill()
+            self._process.waitForFinished(1000)
+        self._command = None
+
     def cancel_queued(self, command: GitCommand) -> None:
         if self.is_running:
             raise RuntimeError("Cannot cancel a queued command after it has started")

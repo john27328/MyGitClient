@@ -186,7 +186,7 @@ def test_branch_delete_requires_confirmation_and_preserves_force_choice(
     subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_path, check=True)
     settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)
-    window.open_repository(tmp_path)
+    window.__dict__["_repository"] = tmp_path
     branch = BranchInfo(
         "refs/heads/old-feature",
         "old-feature",

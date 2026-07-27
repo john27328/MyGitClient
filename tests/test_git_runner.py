@@ -79,3 +79,19 @@ def test_runner_reports_user_cancellation(qtbot: QtBot, tmp_path: Path) -> None:
     result = results[0]
     assert isinstance(result, GitResult)
     assert result.cancelled
+
+
+def test_runner_shutdown_stops_process_without_completion_callback(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    runner = GitRunner()
+    results: list[object] = []
+    runner.completed.connect(results.append)
+    runner.run(GitCommand(("cat-file", "--batch"), tmp_path, "wait for objects"))
+    qtbot.waitUntil(lambda: runner.is_running, timeout=5000)
+
+    runner.shutdown()
+
+    assert not runner.is_running
+    assert results == []

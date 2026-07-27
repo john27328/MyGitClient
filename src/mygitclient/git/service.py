@@ -1052,6 +1052,11 @@ class GitService(QObject):
     def cancel_operation(self, operation_id: int) -> None:
         self._operation_queue.cancel(operation_id)
 
+    def shutdown(self) -> None:
+        for runner in tuple(self._runners):
+            runner.shutdown()
+        self._runners.clear()
+
     def _release_runner(self, runner: GitRunner) -> None:
         self._runners.discard(runner)
         runner.deleteLater()
