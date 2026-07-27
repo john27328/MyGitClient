@@ -3,8 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,6 +20,47 @@ from pytestqt.qtbot import QtBot
 from mygitclient.theme import Theme
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.main_window import MainWindow
+
+
+def test_changed_file_can_be_opened_with_the_system_application(
+    qapp: QApplication,
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = tmp_path / "open-file"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    tracked.write_text("after\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "open.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    open_action = window.findChild(QAction, "openChangedFileAction")
+    open_with_action = window.findChild(QAction, "openChangedFileWithAction")
+    assert changes is not None
+    assert open_action is not None
+    assert open_with_action is not None
+    opened: list[str] = []
+
+    def open_url(url: QUrl) -> bool:
+        opened.append(url.toLocalFile())
+        return True
+
+    monkeypatch.setattr(QDesktopServices, "openUrl", open_url)
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    item = changes.topLevelItem(0)
+    assert item is not None
+    changes.setCurrentItem(item)
+
+    assert open_action.isEnabled()
+    assert open_with_action.isEnabled()
+    open_action.trigger()
+    assert [Path(path) for path in opened] == [tracked.resolve()]
+    window.close()
 
 
 def test_file_checkbox_stages_and_unstages_changes(

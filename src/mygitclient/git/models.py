@@ -146,6 +146,15 @@ class RevertPreviewSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RebasePreviewSnapshot:
+    repository: Path
+    target: BranchInfo
+    base_oid: str
+    commits: tuple[CommitSummary, ...]
+    files: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CommitSummary:
     oid: str
     parent_oids: tuple[str, ...]

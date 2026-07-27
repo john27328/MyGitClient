@@ -109,6 +109,26 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     window.close()
 
 
+def test_git_error_burst_opens_only_one_dialog(
+    qapp: QApplication, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    settings = QSettings(str(tmp_path / "errors.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    messages: list[str] = []
+
+    def show_error(_parent: QWidget, _title: str, message: str) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr(QMessageBox, "critical", show_error)
+    service = window.findChild(GitService)
+    assert service is not None
+    service.operation_failed.emit("first failure")
+    service.operation_failed.emit("second failure from the same request burst")
+
+    assert messages == ["first failure"]
+    window.close()
+
+
 def test_repository_operation_banner_restores(
     qapp: QApplication, tmp_path: Path
 ) -> None:

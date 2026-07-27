@@ -17,6 +17,7 @@ from mygitclient.git.models import (
     CommitSummary,
     DiffSnapshot,
     FileStatus,
+    RebasePreviewSnapshot,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
     RepositoryOperationSnapshot,
@@ -850,6 +851,69 @@ def test_revert_range_preview_and_reverse_commits(
         ["git", "log", "-2", "--format=%s"], cwd=tmp_path, text=True
     ).splitlines()
     assert subjects == ['Revert "first"', 'Revert "second"']
+
+
+def test_rebase_preview_and_autostash_replays_current_branch(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    base = tmp_path / "base.txt"
+    local = tmp_path / "local.txt"
+    feature_file = tmp_path / "feature.txt"
+    upstream_file = tmp_path / "upstream.txt"
+    base.write_text("base\n", encoding="utf-8")
+    local.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "base.txt", "local.txt")
+    _git(tmp_path, *identity, "commit", "-m", "initial")
+    base_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    _git(tmp_path, "switch", "-c", "feature")
+    feature_file.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "add", "feature.txt")
+    _git(tmp_path, *identity, "commit", "-m", "feature")
+    _git(tmp_path, "switch", "main")
+    upstream_file.write_text("upstream\n", encoding="utf-8")
+    _git(tmp_path, "add", "upstream.txt")
+    _git(tmp_path, *identity, "commit", "-m", "upstream")
+    main_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    _git(tmp_path, "switch", "feature")
+    local.write_text("local change\n", encoding="utf-8")
+    target = BranchInfo("refs/heads/main", "main", main_oid, False)
+    service = GitService()
+    previews: list[object] = []
+    service.rebase_preview_ready.connect(previews.append)
+
+    with qtbot.waitSignal(service.rebase_preview_ready, timeout=5000):
+        service.request_rebase_preview(tmp_path, target)
+
+    preview = previews[-1]
+    assert isinstance(preview, RebasePreviewSnapshot)
+    assert preview.target == target
+    assert preview.base_oid == base_oid
+    assert [commit.subject for commit in preview.commits] == ["feature"]
+    assert preview.files == ("feature.txt",)
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_rebase(tmp_path, target, autostash=True)
+
+    assert local.read_text(encoding="utf-8") == "local change\n"
+    assert feature_file.read_text(encoding="utf-8") == "feature\n"
+    assert upstream_file.read_text(encoding="utf-8") == "upstream\n"
+    assert subprocess.check_output(
+        ["git", "merge-base", "HEAD", "main"], cwd=tmp_path, text=True
+    ).strip() == main_oid
+    assert subprocess.check_output(
+        ["git", "stash", "list"], cwd=tmp_path, text=True
+    ).strip() == ""
 
 
 def test_checkout_autostash_stops_when_attributes_rewrite_worktree(

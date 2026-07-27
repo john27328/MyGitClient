@@ -21,6 +21,7 @@ from mygitclient.git.models import (
     FileStatus,
     GitCommand,
     GitResult,
+    RebasePreviewSnapshot,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
     RepositoryOperation,
@@ -70,6 +71,16 @@ class _RevertWorkflow:
     commits: tuple[CommitSummary, ...]
 
 
+@dataclass(slots=True)
+class _RebasePreviewWorkflow:
+    repository: Path
+    target: BranchInfo
+    request_id: int
+    step: str = "base"
+    base_oid: str = ""
+    commits: tuple[CommitSummary, ...] = ()
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
@@ -84,6 +95,7 @@ class GitService(QObject):
     status_ready = Signal(object)
     repository_operation_ready = Signal(object)
     revert_preview_ready = Signal(object)
+    rebase_preview_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
     operation_cancelled = Signal()
@@ -143,6 +155,9 @@ class GitService(QObject):
         ] = {}
         self._latest_revert_preview_request: dict[Path, int] = {}
         self._revert_workflows: dict[GitRunner, _RevertWorkflow] = {}
+        self._rebase_preview_workflows: dict[GitRunner, _RebasePreviewWorkflow] = {}
+        self._latest_rebase_preview_request: dict[Path, int] = {}
+        self._rebase_requests: dict[GitRunner, tuple[Path, BranchInfo]] = {}
         self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
         self._operation_queue = GitOperationQueue(self)
         self._operation_queue.changed.connect(self.queue_changed)
@@ -597,6 +612,54 @@ class GitService(QObject):
                 repository,
                 "revert commits",
             ),
+        )
+        return runner
+
+    def request_rebase_preview(
+        self, repository: Path, target: BranchInfo
+    ) -> GitRunner:
+        if target.current:
+            raise ValueError("Cannot rebase a branch onto itself")
+        request_id = next(self._request_ids)
+        self._latest_rebase_preview_request[repository] = request_id
+        workflow = _RebasePreviewWorkflow(repository, target, request_id)
+        return self._run_rebase_preview(
+            workflow,
+            ("merge-base", "HEAD", target.full_name),
+            "find rebase base",
+        )
+
+    def _run_rebase_preview(
+        self,
+        workflow: _RebasePreviewWorkflow,
+        arguments: tuple[str, ...],
+        operation: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._rebase_preview_workflows[runner] = workflow
+        runner.completed.connect(self._handle_rebase_preview)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, workflow.repository, operation))
+        return runner
+
+    def request_rebase(
+        self, repository: Path, target: BranchInfo, *, autostash: bool
+    ) -> GitRunner:
+        if target.current:
+            raise ValueError("Cannot rebase a branch onto itself")
+        arguments = ["rebase"]
+        if autostash:
+            arguments.append("--autostash")
+        arguments.append(target.full_name)
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._rebase_requests[runner] = (repository, target)
+        runner.completed.connect(self._handle_rebase)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(tuple(arguments), repository, f"rebase onto {target.name}"),
         )
         return runner
 
@@ -1244,6 +1307,8 @@ class GitService(QObject):
         self._cherry_pick_workflows.pop(runner, None)
         self._revert_preview_requests.pop(runner, None)
         self._revert_workflows.pop(runner, None)
+        self._rebase_preview_workflows.pop(runner, None)
+        self._rebase_requests.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(
                 f"Could not {checkout.step} during checkout: {message}"
@@ -1697,6 +1762,108 @@ class GitService(QObject):
                 commits,
                 tuple(sorted(diff_paths(diff))),
                 diff,
+            )
+        )
+
+    @Slot(object)
+    def _handle_rebase(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown rebase result")
+            return
+        request = self._rebase_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected rebase result")
+            return
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                format_git_error(result.error_text, operation="rebase branch")
+            )
+            self.mutation_ready.emit("repository-operation:changed")
+            return
+        self.mutation_ready.emit("rebase")
+
+    @Slot(object)
+    def _handle_rebase_preview(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown rebase preview")
+            return
+        workflow = self._rebase_preview_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected rebase preview")
+            return
+        if (
+            self._latest_rebase_preview_request.get(workflow.repository)
+            != workflow.request_id
+        ):
+            return
+        if result.cancelled:
+            self._latest_rebase_preview_request.pop(workflow.repository, None)
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self._latest_rebase_preview_request.pop(workflow.repository, None)
+            self.operation_failed.emit(
+                result.error_text or "Could not prepare rebase preview"
+            )
+            return
+        if workflow.step == "base":
+            workflow.base_oid = (
+                result.stdout.decode("ascii", errors="replace").strip()
+            )
+            workflow.step = "commits"
+            self._run_rebase_preview(
+                workflow,
+                (
+                    "log",
+                    "--reverse",
+                    "--date=iso-strict",
+                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    f"{workflow.target.full_name}..HEAD",
+                ),
+                "read commits to rebase",
+            )
+            return
+        if workflow.step == "commits":
+            try:
+                workflow.commits = parse_commit_log(result.stdout)
+            except (ValueError, RuntimeError) as error:
+                self._latest_rebase_preview_request.pop(workflow.repository, None)
+                self.operation_failed.emit(str(error))
+                return
+            workflow.step = "files"
+            self._run_rebase_preview(
+                workflow,
+                (
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    f"{workflow.target.full_name}...HEAD",
+                ),
+                "read files to rebase",
+            )
+            return
+        self._latest_rebase_preview_request.pop(workflow.repository, None)
+        files = tuple(
+            sorted(
+                part.decode("utf-8", errors="surrogateescape")
+                for part in result.stdout.split(b"\0")
+                if part
+            )
+        )
+        self.rebase_preview_ready.emit(
+            RebasePreviewSnapshot(
+                workflow.repository,
+                workflow.target,
+                workflow.base_oid,
+                workflow.commits,
+                files,
             )
         )
 

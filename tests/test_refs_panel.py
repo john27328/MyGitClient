@@ -73,14 +73,18 @@ def test_refs_panel_exposes_branch_context_actions(qtbot: QtBot) -> None:
     panel.tree.setCurrentItem(branches.child(0))
     deleted: list[object] = []
     forced: list[object] = []
+    rebased: list[object] = []
     panel.delete_requested.connect(deleted.append)
     panel.force_delete_requested.connect(forced.append)
+    panel.rebase_requested.connect(rebased.append)
 
     panel.delete_action.trigger()
     panel.force_delete_action.trigger()
+    panel.rebase_action.trigger()
 
     assert deleted == [branch]
     assert forced == [branch]
+    assert rebased == [branch]
 
 
 def test_refs_panel_shows_stashes_and_submodules(qtbot: QtBot, tmp_path: Path) -> None:

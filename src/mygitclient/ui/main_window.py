@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from time import monotonic
 from typing import cast
 
 from PySide6.QtCore import (
     QByteArray,
     QElapsedTimer,
+    QProcess,
     QSettings,
     QSignalBlocker,
     Qt,
@@ -63,6 +66,7 @@ from mygitclient.git.models import (
     CommitSummary,
     DiffSnapshot,
     FileStatus,
+    RebasePreviewSnapshot,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
     RepositoryOperation,
@@ -115,6 +119,8 @@ class MainWindow(QMainWindow):
         self._update_downloader = UpdateDownloader(self)
         self._update_progress: QProgressDialog | None = None
         self._manual_update_check = False
+        self._git_error_dialog_open = False
+        self._last_git_error_at = 0.0
         self._update_checker.update_available.connect(self._update_available)
         self._update_checker.up_to_date.connect(self._update_is_current)
         self._update_checker.failed.connect(self._update_check_failed)
@@ -179,6 +185,8 @@ class MainWindow(QMainWindow):
         self._changes_panel = ChangesPanel(self._settings)
         self._changes_container = self._changes_panel
         self._changes = self._changes_panel.tree
+        self._open_file_action = self._changes_panel.open_action
+        self._open_file_with_action = self._changes_panel.open_with_action
         self._discard_action = self._changes_panel.discard_action
         self._stash_action = self._changes_panel.stash_action
         self._ignore_action = self._changes_panel.ignore_action
@@ -189,6 +197,8 @@ class MainWindow(QMainWindow):
         self._commit_button = self._changes_panel.commit_button
         self._commit_error = self._changes_panel.commit_error
 
+        self._open_file_action.triggered.connect(self._open_selected_file)
+        self._open_file_with_action.triggered.connect(self._open_selected_file_with)
         self._discard_action.triggered.connect(self._discard_selected_file)
         self._stash_action.triggered.connect(self._stash_selected_files)
         self._ignore_action.triggered.connect(self._ignore_selected_file)
@@ -221,6 +231,7 @@ class MainWindow(QMainWindow):
         refs_panel.rename_requested.connect(self._rename_branch)
         refs_panel.delete_requested.connect(self._delete_branch)
         refs_panel.force_delete_requested.connect(self._force_delete_branch)
+        refs_panel.rebase_requested.connect(self._preview_rebase)
         refs_panel.create_branch_requested.connect(self._create_branch)
         refs_panel.create_tag_requested.connect(self._create_tag)
         refs_panel.delete_tag_requested.connect(self._delete_tag)
@@ -600,6 +611,7 @@ class MainWindow(QMainWindow):
         self._git.branch_point_ready.connect(self._show_branch_point)
         self._git.cherry_pick_preview_ready.connect(self._show_cherry_pick_preview)
         self._git.revert_preview_ready.connect(self._show_revert_preview)
+        self._git.rebase_preview_ready.connect(self._show_rebase_preview)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
         self._git.commit_files_ready.connect(self._show_commit_files)
@@ -1353,6 +1365,113 @@ class MainWindow(QMainWindow):
     def _force_delete_branch(self, value: object) -> None:
         self._confirm_delete_branch(value, force=True)
 
+    @Slot(object)
+    def _preview_rebase(self, value: object) -> None:
+        status = self._repository_status
+        if (
+            self._repository is None
+            or status is None
+            or not isinstance(value, BranchInfo)
+            or value.current
+        ):
+            return
+        current_branch = status.branch.head
+        if current_branch is None or current_branch in {"(detached)", "HEAD"}:
+            QMessageBox.warning(
+                self,
+                "Rebase unavailable",
+                "Check out a local branch before starting a rebase.",
+            )
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(
+            f"Preparing rebase of {current_branch} onto {value.name}…"
+        )
+        self._git.request_rebase_preview(self._repository, value)
+
+    @Slot(object)
+    def _show_rebase_preview(self, value: object) -> None:
+        self._history_panel.refs_panel.setEnabled(True)
+        if (
+            not isinstance(value, RebasePreviewSnapshot)
+            or value.repository != self._repository
+        ):
+            return
+        status = self._repository_status
+        if status is None or status.branch.head is None:
+            return
+        if not value.commits:
+            QMessageBox.information(
+                self,
+                "Nothing to rebase",
+                f"The current branch has no commits to replay onto {value.target.name}.",
+            )
+            self._status_label.setText("Nothing to rebase")
+            return
+        dirty = bool(status.files)
+        dialog = QDialog(self)
+        dialog.setObjectName("rebasePreviewDialog")
+        dialog.setWindowTitle("Rebase branch")
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(
+            f"Rebase {status.branch.head} onto {value.target.name}?\n"
+            f"Base: {value.base_oid[:8]} · {len(value.commits)} commit(s) to replay"
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        preview = QPlainTextEdit()
+        preview.setObjectName("rebasePreviewEdit")
+        preview.setReadOnly(True)
+        preview.setPlainText(
+            "Commits (replay order):\n"
+            + "\n".join(
+                f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits
+            )
+            + "\n\nChanged files:\n"
+            + (
+                "\n".join(f"  {path}" for path in value.files)
+                if value.files
+                else "  No changed files"
+            )
+        )
+        layout.addWidget(preview, 1)
+        autostash = QCheckBox("Stash local changes and restore them after rebase")
+        autostash.setObjectName("rebaseAutostashCheckBox")
+        autostash.setChecked(dirty)
+        autostash.setVisible(dirty)
+        layout.addWidget(autostash)
+        if dirty:
+            warning = QLabel(
+                "The working tree contains local changes. Auto-stash is required "
+                "to start this rebase safely."
+            )
+            warning.setWordWrap(True)
+            layout.addWidget(warning)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_button.setText("Rebase")
+        if dirty:
+            ok_button.setEnabled(autostash.isChecked())
+            autostash.toggled.connect(ok_button.setEnabled)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(700, 500)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._status_label.setText("Rebase cancelled")
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Rebasing onto {value.target.name}…")
+        self._git.request_rebase(
+            value.repository,
+            value.target,
+            autostash=dirty and autostash.isChecked(),
+        )
+
     def _confirm_delete_branch(self, value: object, *, force: bool) -> None:
         if self._repository is None or not isinstance(value, BranchInfo):
             return
@@ -2010,6 +2129,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Cherry-pick completed")
         elif path == "revert":
             self._status_label.setText("Revert completed")
+        elif path == "rebase":
+            self._status_label.setText("Rebase completed")
         elif path == "repository-operation:changed":
             self._status_label.setText("Repository operation updated")
         elif path == "stash":
@@ -2024,6 +2145,7 @@ class MainWindow(QMainWindow):
                 "push",
                 "cherry-pick",
                 "revert",
+                "rebase",
                 "repository-operation:changed",
             }
             branch_changed = path.startswith("branch:") or path.startswith("branches:")
@@ -2223,10 +2345,44 @@ class MainWindow(QMainWindow):
     def _update_file_actions(self) -> None:
         files = self._selected_files()
         file = files[0] if len(files) == 1 else None
+        path = self._selected_file_path(file)
+        self._open_file_action.setEnabled(path is not None and path.exists())
+        self._open_file_with_action.setEnabled(
+            path is not None and path.exists() and sys.platform == "win32"
+        )
         safe_files = bool(files) and all(not selected.unmerged for selected in files)
         self._discard_action.setEnabled(safe_files)
         self._stash_action.setEnabled(safe_files)
         self._ignore_action.setEnabled(file is not None and file.index_status == "?")
+
+    def _selected_file_path(self, file: FileStatus | None) -> Path | None:
+        repository = self._repository
+        if repository is None or file is None:
+            return None
+        repository = repository.resolve()
+        path = (repository / file.path).resolve()
+        return path if path.is_relative_to(repository) else None
+
+    @Slot()
+    def _open_selected_file(self) -> None:
+        path = self._selected_file_path(self._selected_file())
+        if path is None or not path.exists():
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "Open file", f"Could not open:\n{path}")
+
+    @Slot()
+    def _open_selected_file_with(self) -> None:
+        path = self._selected_file_path(self._selected_file())
+        if path is None or not path.exists() or sys.platform != "win32":
+            return
+        started, _process_id = QProcess.startDetached(
+            "rundll32.exe",
+            ["shell32.dll,OpenAs_RunDLL", str(path)],
+            str(path.parent),
+        )
+        if not started:
+            QMessageBox.warning(self, "Open with", f"Could not show applications for:\n{path}")
 
     def _selected_files(self) -> tuple[FileStatus, ...]:
         files: list[FileStatus] = []
@@ -2471,7 +2627,16 @@ class MainWindow(QMainWindow):
         self._changes_container.setEnabled(True)
         self._history_panel.refs_panel.setEnabled(True)
         self._status_label.setText("Git operation failed")
-        QMessageBox.critical(self, "Git error", message)
+        now = monotonic()
+        if self._git_error_dialog_open or now - self._last_git_error_at < 1.0:
+            return
+        self._git_error_dialog_open = True
+        self._last_git_error_at = now
+        try:
+            QMessageBox.critical(self, "Git error", message)
+        finally:
+            self._git_error_dialog_open = False
+            self._last_git_error_at = monotonic()
 
     @Slot(QAction)
     def _theme_selected(self, action: QAction) -> None:

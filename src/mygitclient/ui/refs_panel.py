@@ -33,6 +33,7 @@ class RefsPanel(QWidget):
     rename_requested = Signal(object)
     delete_requested = Signal(object)
     force_delete_requested = Signal(object)
+    rebase_requested = Signal(object)
     create_tag_requested = Signal()
     create_branch_requested = Signal()
     delete_tag_requested = Signal(object)
@@ -87,6 +88,11 @@ class RefsPanel(QWidget):
         self.delete_action.triggered.connect(self._delete_selected)
         self.force_delete_action = self.context_menu.addAction("Force delete…")
         self.force_delete_action.triggered.connect(self._force_delete_selected)
+        self.rebase_action = self.context_menu.addAction(
+            "Rebase current branch onto this…"
+        )
+        self.rebase_action.setObjectName("rebaseOntoBranchAction")
+        self.rebase_action.triggered.connect(self._rebase_selected)
         self.context_menu.addSeparator()
         self.create_tag_action = self.context_menu.addAction("New tag…")
         self.create_tag_action.triggered.connect(self.create_tag_requested)
@@ -331,6 +337,8 @@ class RefsPanel(QWidget):
         self.delete_action.setEnabled(editable)
         self.force_delete_action.setVisible(branch is not None)
         self.force_delete_action.setEnabled(editable)
+        self.rebase_action.setVisible(branch is not None)
+        self.rebase_action.setEnabled(branch is not None and not branch.current)
         self.create_tag_action.setVisible(tag is not None or root_label == "Tags")
         self.delete_tag_action.setVisible(tag is not None)
         self.push_tag_action.setVisible(tag is not None)
@@ -370,6 +378,12 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo) and not branch.remote and not branch.current:
             self.force_delete_requested.emit(branch)
+
+    @Slot()
+    def _rebase_selected(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo) and not branch.current:
+            self.rebase_requested.emit(branch)
 
     @Slot()
     def _delete_tag_selected(self) -> None:

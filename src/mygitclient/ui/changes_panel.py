@@ -100,6 +100,14 @@ class ChangesPanel(QWidget):
         for tree in self.all_trees:
             tree.itemChanged.connect(self._item_changed)
 
+        self.open_action = QAction("Open", self.tree)
+        self.open_action.setObjectName("openChangedFileAction")
+        self.open_action.setEnabled(False)
+        self.open_with_action = QAction("Open with…", self.tree)
+        self.open_with_action.setObjectName("openChangedFileWithAction")
+        self.open_with_action.setEnabled(False)
+        self.file_actions_separator = QAction(self.tree)
+        self.file_actions_separator.setSeparator(True)
         self.discard_action = QAction("Discard changes…", self.tree)
         self.discard_action.setObjectName("discardChangesAction")
         self.discard_action.setEnabled(False)
@@ -110,6 +118,9 @@ class ChangesPanel(QWidget):
         self.stash_action.setObjectName("stashSelectedAction")
         self.stash_action.setEnabled(False)
         for tree in self.all_trees:
+            tree.addAction(self.open_action)
+            tree.addAction(self.open_with_action)
+            tree.addAction(self.file_actions_separator)
             tree.addAction(self.discard_action)
             tree.addAction(self.stash_action)
             tree.addAction(self.ignore_action)
