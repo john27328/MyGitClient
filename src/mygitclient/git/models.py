@@ -131,6 +131,13 @@ class RepositoryOperationSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class CherryPickPreviewSnapshot:
+    repository: Path
+    commits: tuple[CommitSummary, ...]
+    files: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CommitSummary:
     oid: str
     parent_oids: tuple[str, ...]

@@ -7,6 +7,7 @@ from PySide6.QtCore import (
     QDateTime,
     QModelIndex,
     QPersistentModelIndex,
+    QPoint,
     QSettings,
     Qt,
     Signal,
@@ -14,9 +15,11 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QSplitter,
     QStyle,
@@ -145,6 +148,7 @@ class HistoryPanel(QWidget):
     file_selected = Signal(object, object)
     comparison_file_selected = Signal(str, str, object)
     focus_mode_changed = Signal(bool)
+    cherry_pick_requested = Signal(object)
 
     def __init__(
         self,
@@ -160,6 +164,9 @@ class HistoryPanel(QWidget):
         )
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_commit_context_menu)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for column, width in enumerate((60, 230, 360, 150, 190, 90)):
             self.tree.setColumnWidth(column, width)
@@ -384,6 +391,39 @@ class HistoryPanel(QWidget):
             return None
         value = item.data(0, Qt.ItemDataRole.UserRole)
         return value if isinstance(value, CommitSummary) else None
+
+    @property
+    def selected_commits(self) -> tuple[CommitSummary, ...]:
+        rows: list[tuple[int, CommitSummary]] = []
+        for item in self.tree.selectedItems():
+            value = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(value, CommitSummary):
+                rows.append((self.tree.indexOfTopLevelItem(item), value))
+        rows.sort(key=lambda entry: entry[0], reverse=True)
+        return tuple(commit for _row, commit in rows)
+
+    @Slot(QPoint)
+    def _show_commit_context_menu(self, position: QPoint) -> None:
+        item = self.tree.itemAt(position)
+        if item is not None and not item.isSelected():
+            self.tree.clearSelection()
+            self.tree.setCurrentItem(item)
+            item.setSelected(True)
+        commits = self.selected_commits
+        if not commits:
+            return
+        menu = QMenu(self.tree)
+        label = (
+            "Cherry-pick commit…"
+            if len(commits) == 1
+            else f"Cherry-pick {len(commits)} commits…"
+        )
+        action = menu.addAction(label)
+        action.setObjectName("historyCherryPickAction")
+        action.setEnabled(all(len(commit.parent_oids) <= 1 for commit in commits))
+        chosen = menu.exec(self.tree.viewport().mapToGlobal(position))
+        if chosen is action:
+            self.cherry_pick_requested.emit(commits)
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def _commit_changed(

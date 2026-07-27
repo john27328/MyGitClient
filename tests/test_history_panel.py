@@ -65,6 +65,24 @@ def test_history_panel_emits_load_more_request(qtbot: QtBot) -> None:
         panel.load_more_button.click()
 
 
+def test_history_panel_orders_selected_cherry_pick_commits_oldest_first(
+    qtbot: QtBot,
+) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    newest = _commit("newest", "Newest", "older")
+    older = _commit("older", "Older", "root")
+    panel.show_page(CommitPage(Path("repository"), (newest, older), 0, False))
+    newest_item = panel.tree.topLevelItem(0)
+    older_item = panel.tree.topLevelItem(1)
+    assert newest_item is not None and older_item is not None
+
+    newest_item.setSelected(True)
+    older_item.setSelected(True)
+
+    assert panel.selected_commits == (older, newest)
+
+
 def test_history_layout_stacks_commit_details_and_can_focus_diff(
     qtbot: QtBot, tmp_path: Path
 ) -> None:

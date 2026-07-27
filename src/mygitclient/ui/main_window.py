@@ -22,6 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -54,6 +55,7 @@ from mygitclient.git.models import (
     BranchesSnapshot,
     BranchInfo,
     BranchPointSnapshot,
+    CherryPickPreviewSnapshot,
     CommitDiffSnapshot,
     CommitFileChange,
     CommitFilesSnapshot,
@@ -203,6 +205,9 @@ class MainWindow(QMainWindow):
         self._history_panel = HistoryPanel(self._settings)
         self._history_panel.load_more_requested.connect(self._load_more_history)
         self._history_panel.commit_selected.connect(self._history_commit_selected)
+        self._history_panel.cherry_pick_requested.connect(
+            self._preview_cherry_pick
+        )
         self._history_panel.focus_mode_changed.connect(self._history_focus_mode_changed)
         self._history_panel.file_selected.connect(self._history_file_selected)
         self._history_panel.comparison_file_selected.connect(
@@ -591,6 +596,7 @@ class MainWindow(QMainWindow):
         self._git.comparison_diff_ready.connect(self._show_ref_comparison_diff)
         self._git.branches_ready.connect(self._show_branches)
         self._git.branch_point_ready.connect(self._show_branch_point)
+        self._git.cherry_pick_preview_ready.connect(self._show_cherry_pick_preview)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
         self._git.commit_files_ready.connect(self._show_commit_files)
@@ -874,6 +880,100 @@ class MainWindow(QMainWindow):
         self._workspace_tab_changed(self._workspace_tabs.currentIndex())
         self._status_label.setText(f"Reading files for {value.oid[:8]}…")
         self._git.request_commit_files(self._repository, value.oid)
+
+    @Slot(object)
+    def _preview_cherry_pick(self, value: object) -> None:
+        if (
+            self._repository is None
+            or not isinstance(value, tuple)
+            or not value
+        ):
+            return
+        raw_commits = cast(tuple[object, ...], value)
+        if not all(isinstance(commit, CommitSummary) for commit in raw_commits):
+            return
+        commits = cast(tuple[CommitSummary, ...], raw_commits)
+        if any(len(commit.parent_oids) > 1 for commit in commits):
+            QMessageBox.warning(
+                self,
+                "Cherry-pick unavailable",
+                "Merge commits need a mainline parent and cannot be cherry-picked "
+                "from this action.",
+            )
+            return
+        self._status_label.setText(
+            f"Preparing cherry-pick of {len(commits)} commit(s)…"
+        )
+        self._git.request_cherry_pick_preview(self._repository, commits)
+
+    @Slot(object)
+    def _show_cherry_pick_preview(self, value: object) -> None:
+        if (
+            not isinstance(value, CherryPickPreviewSnapshot)
+            or value.repository != self._repository
+        ):
+            return
+        dirty = bool(self._repository_status and self._repository_status.files)
+        dialog = QDialog(self)
+        dialog.setObjectName("cherryPickPreviewDialog")
+        dialog.setWindowTitle("Cherry-pick commits")
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(
+            f"Apply {len(value.commits)} commit(s) to the current branch?"
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        preview = QPlainTextEdit()
+        preview.setObjectName("cherryPickPreviewEdit")
+        preview.setReadOnly(True)
+        commit_lines = [
+            f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits
+        ]
+        file_lines = [f"  {path}" for path in value.files]
+        preview.setPlainText(
+            "Commits (oldest first):\n"
+            + "\n".join(commit_lines)
+            + "\n\nChanged files:\n"
+            + ("\n".join(file_lines) if file_lines else "  No changed files")
+        )
+        layout.addWidget(preview, 1)
+        autostash = QCheckBox("Stash local changes and restore them afterwards")
+        autostash.setObjectName("cherryPickAutostashCheckBox")
+        autostash.setChecked(dirty)
+        autostash.setVisible(dirty)
+        layout.addWidget(autostash)
+        if dirty:
+            warning = QLabel(
+                "The working tree contains local changes. Auto-stash is required "
+                "to start this cherry-pick safely."
+            )
+            warning.setWordWrap(True)
+            layout.addWidget(warning)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_button.setText("Cherry-pick")
+        if dirty:
+            ok_button.setEnabled(autostash.isChecked())
+            autostash.toggled.connect(ok_button.setEnabled)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(680, 460)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._status_label.setText("Cherry-pick cancelled")
+            return
+        self._status_label.setText(
+            f"Queueing cherry-pick of {len(value.commits)} commit(s)…"
+        )
+        self._git.request_cherry_pick(
+            value.repository,
+            value.commits,
+            autostash=dirty and autostash.isChecked(),
+        )
 
     @Slot(object)
     def _show_commit_files(self, value: object) -> None:
@@ -1820,12 +1920,23 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Fetch completed")
         elif path == "push":
             self._status_label.setText("Push completed")
+        elif path == "cherry-pick":
+            self._status_label.setText("Cherry-pick completed")
+        elif path == "repository-operation:changed":
+            self._status_label.setText("Repository operation updated")
         elif path == "stash":
             self._status_label.setText("Selected changes stashed")
         else:
             self._status_label.setText(f"Updated staging area for {path}")
         if self._repository is not None:
-            history_changed = path in {"commit", "fetch", "pull", "push"}
+            history_changed = path in {
+                "commit",
+                "fetch",
+                "pull",
+                "push",
+                "cherry-pick",
+                "repository-operation:changed",
+            }
             branch_changed = path.startswith("branch:") or path.startswith("branches:")
             if history_changed and self._history_refs:
                 self._history_panel.clear_commits()

@@ -12,9 +12,11 @@ from mygitclient.git.models import (
     AmendPreview,
     BranchInfo,
     BranchPointSnapshot,
+    CherryPickPreviewSnapshot,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
     CommitPage,
+    CommitSummary,
     DiffSnapshot,
     FileStatus,
     GitCommand,
@@ -53,12 +55,21 @@ class _CheckoutWorkflow:
     pending_error: str | None = None
 
 
+@dataclass(slots=True)
+class _CherryPickWorkflow:
+    repository: Path
+    commits: tuple[CommitSummary, ...]
+    step: str
+    stashed: bool = False
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
     history_ready = Signal(object)
     branches_ready = Signal(object)
     branch_point_ready = Signal(object)
+    cherry_pick_preview_ready = Signal(object)
     commit_files_ready = Signal(object)
     commit_diff_ready = Signal(object)
     comparison_ready = Signal(object)
@@ -113,6 +124,13 @@ class GitService(QObject):
         ] = {}
         self._latest_amend_diff_request: dict[tuple[Path, str | None], int] = {}
         self._checkout_workflows: dict[GitRunner, _CheckoutWorkflow] = {}
+        self._cherry_pick_preview_requests: dict[
+            GitRunner, tuple[Path, tuple[CommitSummary, ...], int]
+        ] = {}
+        self._latest_cherry_pick_preview_request: dict[Path, int] = {}
+        self._cherry_pick_workflows: dict[GitRunner, _CherryPickWorkflow] = {}
+        self._pending_cherry_pick_autostash: set[Path] = set()
+        self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
         self._operation_queue = GitOperationQueue(self)
         self._operation_queue.changed.connect(self.queue_changed)
 
@@ -434,6 +452,90 @@ class GitService(QObject):
         )
         return runner
 
+    def request_cherry_pick_preview(
+        self, repository: Path, commits: tuple[CommitSummary, ...]
+    ) -> GitRunner:
+        if not commits:
+            raise ValueError("At least one commit is required")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_cherry_pick_preview_request[repository] = request_id
+        self._cherry_pick_preview_requests[runner] = (
+            repository,
+            commits,
+            request_id,
+        )
+        runner.completed.connect(self._handle_cherry_pick_preview)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "show",
+                    "--format=",
+                    "--name-only",
+                    "--find-renames",
+                    "-z",
+                    *(commit.oid for commit in commits),
+                ),
+                repository,
+                "preview cherry-pick",
+            )
+        )
+        return runner
+
+    def request_cherry_pick(
+        self,
+        repository: Path,
+        commits: tuple[CommitSummary, ...],
+        *,
+        autostash: bool,
+    ) -> GitRunner:
+        if not commits:
+            raise ValueError("At least one commit is required")
+        if any(len(commit.parent_oids) > 1 for commit in commits):
+            raise ValueError("Merge commits require an explicit mainline parent")
+        workflow = _CherryPickWorkflow(
+            repository,
+            commits,
+            "stash" if autostash else "cherry-pick",
+        )
+        if autostash:
+            return self._run_cherry_pick_workflow(
+                workflow,
+                (
+                    "stash",
+                    "push",
+                    "-u",
+                    "-m",
+                    "MyGitClient automatic stash before cherry-pick",
+                ),
+                "stash changes before cherry-pick",
+            )
+        return self._run_cherry_pick_workflow(
+            workflow,
+            ("cherry-pick", "--", *(commit.oid for commit in commits)),
+            "cherry-pick commits",
+        )
+
+    def _run_cherry_pick_workflow(
+        self,
+        workflow: _CherryPickWorkflow,
+        arguments: tuple[str, ...],
+        operation: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._cherry_pick_workflows[runner] = workflow
+        runner.completed.connect(self._handle_cherry_pick_workflow)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(arguments, workflow.repository, operation),
+            continuation=workflow.step != "stash",
+        )
+        return runner
+
     def request_amend_preview(self, repository: Path, commit_oid: str) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
@@ -710,8 +812,8 @@ class GitService(QObject):
             arguments = ("-c", "core.editor=true", *arguments)
         runner = GitRunner(parent=self)
         self._runners.add(runner)
-        self._mutation_requests[runner] = "repository-operation:changed"
-        runner.completed.connect(self._handle_mutation)
+        self._operation_action_requests[runner] = (repository, kind, action)
+        runner.completed.connect(self._handle_repository_operation_action)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
             runner,
@@ -1017,6 +1119,39 @@ class GitService(QObject):
             RepositoryOperationSnapshot(repository, operation)
         )
 
+    @Slot(object)
+    def _handle_repository_operation_action(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown operation action")
+            return
+        request = self._operation_action_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected operation action")
+            return
+        repository, kind, action = request
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                format_git_error(result.error_text, operation=f"{action} {kind}")
+            )
+            return
+        operation = detect_repository_operation(resolve_git_dir(repository))
+        if operation is None and repository in self._pending_cherry_pick_autostash:
+            workflow = _CherryPickWorkflow(
+                repository, (), "restore-stash", stashed=True
+            )
+            self._run_cherry_pick_workflow(
+                workflow,
+                ("stash", "pop", "--index"),
+                "restore automatic stash",
+            )
+            return
+        self.mutation_ready.emit("repository-operation:changed")
+
     @Slot(str)
     def _handle_start_error(self, message: str) -> None:
         runner = self.sender()
@@ -1027,6 +1162,7 @@ class GitService(QObject):
         self._operation_state_requests.pop(runner, None)
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
+        self._operation_action_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
         self._branch_requests.pop(runner, None)
         self._tag_requests.pop(runner, None)
@@ -1035,6 +1171,8 @@ class GitService(QObject):
         self._commit_diff_requests.pop(runner, None)
         self._comparison_requests.pop(runner, None)
         self._comparison_diff_requests.pop(runner, None)
+        self._cherry_pick_preview_requests.pop(runner, None)
+        self._cherry_pick_workflows.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(
                 f"Could not {checkout.step} during checkout: {message}"
@@ -1334,6 +1472,109 @@ class GitService(QObject):
             self.operation_failed.emit(workflow.pending_error)
         else:
             self.mutation_ready.emit(f"branch:{workflow.branch.name}")
+
+    @Slot(object)
+    def _handle_cherry_pick_workflow(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown cherry-pick result")
+            return
+        workflow = self._cherry_pick_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected cherry-pick result")
+            return
+        if result.cancelled:
+            if workflow.stashed:
+                self.operation_failed.emit(
+                    "Cherry-pick was cancelled. The automatic stash was kept so no "
+                    "local changes are lost."
+                )
+            else:
+                self.operation_cancelled.emit()
+            return
+        if workflow.step == "stash":
+            if not result.succeeded:
+                self.operation_failed.emit(
+                    format_git_error(
+                        result.error_text, operation="stash local changes"
+                    )
+                )
+                return
+            workflow.stashed = b"No local changes to save" not in result.stdout
+            workflow.step = "cherry-pick"
+            self._run_cherry_pick_workflow(
+                workflow,
+                ("cherry-pick", "--", *(commit.oid for commit in workflow.commits)),
+                "cherry-pick commits",
+            )
+            return
+        if workflow.step == "cherry-pick":
+            if not result.succeeded:
+                if workflow.stashed:
+                    self._pending_cherry_pick_autostash.add(workflow.repository)
+                self.operation_failed.emit(
+                    format_git_error(result.error_text, operation="cherry-pick commits")
+                )
+                self.mutation_ready.emit("repository-operation:changed")
+                return
+            if workflow.stashed:
+                workflow.step = "restore-stash"
+                self._run_cherry_pick_workflow(
+                    workflow,
+                    ("stash", "pop", "--index"),
+                    "restore automatic stash",
+                )
+                return
+            self.mutation_ready.emit("cherry-pick")
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                "Cherry-pick completed, but the automatic stash could not be restored. "
+                "It was kept in the stash list.\n\n"
+                + format_git_error(
+                    result.error_text, operation="restore automatic stash"
+                )
+            )
+        else:
+            self._pending_cherry_pick_autostash.discard(workflow.repository)
+        self.mutation_ready.emit("cherry-pick")
+
+    @Slot(object)
+    def _handle_cherry_pick_preview(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown cherry-pick preview")
+            return
+        request = self._cherry_pick_preview_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected cherry-pick preview")
+            return
+        repository, commits, request_id = request
+        if self._latest_cherry_pick_preview_request.get(repository) != request_id:
+            return
+        self._latest_cherry_pick_preview_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                result.error_text or "Could not preview cherry-pick"
+            )
+            return
+        files = tuple(
+            sorted(
+                {
+                    part.decode("utf-8", errors="surrogateescape")
+                    for part in result.stdout.split(b"\0")
+                    if part
+                }
+            )
+        )
+        self.cherry_pick_preview_ready.emit(
+            CherryPickPreviewSnapshot(repository, commits, files)
+        )
 
     @Slot(object)
     def _handle_commit_files(self, result: object) -> None:

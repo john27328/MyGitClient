@@ -10,9 +10,11 @@ from mygitclient.git.models import (
     BranchesSnapshot,
     BranchInfo,
     BranchPointSnapshot,
+    CherryPickPreviewSnapshot,
     CommitDiffSnapshot,
     CommitFilesSnapshot,
     CommitPage,
+    CommitSummary,
     DiffSnapshot,
     FileStatus,
     RefComparisonDiffSnapshot,
@@ -28,6 +30,27 @@ from mygitclient.git.service import GitService, detect_repository_operation
 def _git(repository: Path, *arguments: str) -> None:
     subprocess.run(
         ["git", *arguments], cwd=repository, check=True, capture_output=True
+    )
+
+
+def _summary(repository: Path, revision: str) -> CommitSummary:
+    fields = subprocess.check_output(
+        [
+            "git",
+            "show",
+            "-s",
+            "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+            revision,
+        ],
+        cwd=repository,
+    ).decode("utf-8").rstrip("\n").split("\0")
+    return CommitSummary(
+        oid=fields[0],
+        parent_oids=tuple(fields[1].split()),
+        author_name=fields[2],
+        author_email=fields[3],
+        authored_at=fields[4],
+        subject=fields[5],
     )
 
 
@@ -673,6 +696,109 @@ def test_checkout_autostash_restores_local_changes(qtbot: QtBot, tmp_path: Path)
     assert subprocess.check_output(
         ["git", "stash", "list"], cwd=tmp_path, text=True
     ).strip() == ""
+
+
+def test_cherry_pick_range_preview_and_autostash(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    local = tmp_path / "local.txt"
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    local.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "local.txt")
+    _git(tmp_path, *identity, "commit", "-m", "initial")
+    _git(tmp_path, "switch", "-c", "feature")
+    first.write_text("first\n", encoding="utf-8")
+    _git(tmp_path, "add", "first.txt")
+    _git(tmp_path, *identity, "commit", "-m", "first")
+    first_commit = _summary(tmp_path, "HEAD")
+    second.write_text("second\n", encoding="utf-8")
+    _git(tmp_path, "add", "second.txt")
+    _git(tmp_path, *identity, "commit", "-m", "second")
+    second_commit = _summary(tmp_path, "HEAD")
+    _git(tmp_path, "switch", "main")
+    local.write_text("local change\n", encoding="utf-8")
+
+    service = GitService()
+    previews: list[object] = []
+    service.cherry_pick_preview_ready.connect(previews.append)
+    commits = (first_commit, second_commit)
+
+    with qtbot.waitSignal(service.cherry_pick_preview_ready, timeout=5000):
+        service.request_cherry_pick_preview(tmp_path, commits)
+
+    preview = previews[-1]
+    assert isinstance(preview, CherryPickPreviewSnapshot)
+    assert preview.commits == commits
+    assert preview.files == ("first.txt", "second.txt")
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_cherry_pick(tmp_path, commits, autostash=True)
+
+    assert first.read_text(encoding="utf-8") == "first\n"
+    assert second.read_text(encoding="utf-8") == "second\n"
+    assert local.read_text(encoding="utf-8") == "local change\n"
+    subjects = subprocess.check_output(
+        ["git", "log", "-2", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert subjects == ["second", "first"]
+    assert subprocess.check_output(
+        ["git", "stash", "list"], cwd=tmp_path, text=True
+    ).strip() == ""
+
+
+def test_cherry_pick_conflict_exposes_recovery_and_can_be_aborted(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "initial")
+    _git(tmp_path, "switch", "-c", "feature")
+    tracked.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "feature")
+    feature_commit = _summary(tmp_path, "HEAD")
+    _git(tmp_path, "switch", "main")
+    tracked.write_text("main\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, *identity, "commit", "-m", "main")
+    service = GitService()
+    errors: list[str] = []
+    service.operation_failed.connect(errors.append)
+
+    with qtbot.waitSignal(service.operation_failed, timeout=5000):
+        service.request_cherry_pick(
+            tmp_path, (feature_commit,), autostash=False
+        )
+
+    assert errors
+    assert (tmp_path / ".git" / "CHERRY_PICK_HEAD").exists()
+    operation = detect_repository_operation(tmp_path / ".git")
+    assert operation is not None
+    assert operation.kind == "cherry-pick"
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_repository_operation_action(
+            tmp_path, kind="cherry-pick", action="abort"
+        )
+
+    assert not (tmp_path / ".git" / "CHERRY_PICK_HEAD").exists()
+    assert tracked.read_text(encoding="utf-8") == "main\n"
 
 
 def test_checkout_autostash_stops_when_attributes_rewrite_worktree(
