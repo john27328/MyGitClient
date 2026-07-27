@@ -916,6 +916,61 @@ def test_rebase_preview_and_autostash_replays_current_branch(
     ).strip() == ""
 
 
+def test_rebase_conflict_can_be_staged_and_continued(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    shared = tmp_path / "shared.txt"
+    shared.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "shared.txt")
+    _git(tmp_path, *identity, "commit", "-m", "base")
+    _git(tmp_path, "switch", "-c", "feature")
+    shared.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "add", "shared.txt")
+    _git(tmp_path, *identity, "commit", "-m", "feature")
+    _git(tmp_path, "switch", "main")
+    shared.write_text("main\n", encoding="utf-8")
+    _git(tmp_path, "add", "shared.txt")
+    _git(tmp_path, *identity, "commit", "-m", "main")
+    main_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    _git(tmp_path, "switch", "feature")
+    service = GitService()
+    target = BranchInfo("refs/heads/main", "main", main_oid, False)
+
+    with qtbot.waitSignal(service.operation_failed, timeout=5000):
+        service.request_rebase(tmp_path, target, autostash=False)
+
+    operation = detect_repository_operation(tmp_path / ".git")
+    assert operation is not None and operation.kind == "rebase"
+    shared.write_text("resolved\n", encoding="utf-8")
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_stage(
+            tmp_path,
+            FileStatus("shared.txt", "U", "U", unmerged=True),
+            staged=True,
+        )
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_repository_operation_action(
+            tmp_path,
+            kind="rebase",
+            action="continue",
+        )
+
+    assert detect_repository_operation(tmp_path / ".git") is None
+    assert shared.read_text(encoding="utf-8") == "resolved\n"
+    assert subprocess.check_output(
+        ["git", "merge-base", "HEAD", "main"], cwd=tmp_path, text=True
+    ).strip() == main_oid
+
+
 def test_checkout_autostash_stops_when_attributes_rewrite_worktree(
     qtbot: QtBot, tmp_path: Path
 ) -> None:

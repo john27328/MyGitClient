@@ -2051,7 +2051,7 @@ class MainWindow(QMainWindow):
         if column != 0 or self._repository is None:
             return
         file = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(file, FileStatus) or file.unmerged:
+        if not isinstance(file, FileStatus):
             return
         sender = self.sender()
         if self._changes_panel.split_mode and sender is self._changes_panel.unstaged_tree:
@@ -2060,6 +2060,8 @@ class MainWindow(QMainWindow):
             should_stage = False
         else:
             should_stage = item.checkState(0) != Qt.CheckState.Unchecked
+        if file.unmerged and not should_stage:
+            return
         self._set_changes_trees_enabled(False)
         if self._amend.isChecked() and self._repository_status is not None:
             commit_oid = self._repository_status.branch.oid

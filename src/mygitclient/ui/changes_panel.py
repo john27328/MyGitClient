@@ -282,8 +282,7 @@ class ChangesPanel(QWidget):
             (file, Qt.CheckState.Checked)
             for file, state in files
             if (amend and state is not Qt.CheckState.Unchecked)
-            or file.is_staged
-            or file.unmerged
+            or (file.is_staged and not file.unmerged)
         ]
         unstaged_selected = self._render_tree(
             self.unstaged_tree,
@@ -352,7 +351,7 @@ class ChangesPanel(QWidget):
             item.setIcon(0, load_icon(_status_icon(file)))
             item.setToolTip(0, _status_tooltip(file))
             item.setData(0, Qt.ItemDataRole.UserRole, file)
-            if checkable and not file.unmerged:
+            if checkable:
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(0, state)
             else:

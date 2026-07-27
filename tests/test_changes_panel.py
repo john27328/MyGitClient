@@ -292,3 +292,23 @@ def test_split_presentation_separates_versions_and_is_saved(
     assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
     assert staged_item.text(0) == "partial.py"
     assert staged_item.checkState(0) is Qt.CheckState.Checked
+
+
+def test_conflicted_file_is_checkable_only_in_unstaged_split_tree(
+    qtbot: QtBot,
+) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    panel.presentation_mode.setCurrentIndex(
+        panel.presentation_mode.findData("split")
+    )
+    conflict = FileStatus("conflict.txt", "U", "U", unmerged=True)
+
+    panel.show_files([(conflict, Qt.CheckState.Unchecked)], None)
+
+    assert panel.unstaged_tree.topLevelItemCount() == 1
+    assert panel.staged_tree.topLevelItemCount() == 0
+    item = panel.unstaged_tree.topLevelItem(0)
+    assert item is not None
+    assert item.flags() & Qt.ItemFlag.ItemIsUserCheckable
+    assert item.checkState(0) is Qt.CheckState.Unchecked
