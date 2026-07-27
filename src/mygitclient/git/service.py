@@ -1009,6 +1009,28 @@ class GitService(QObject):
         self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
+    def request_conflict_side(
+        self, repository: Path, file: FileStatus, *, side: str
+    ) -> GitRunner:
+        if not file.unmerged:
+            raise ValueError("Conflict sides are available only for unmerged files")
+        if side not in {"ours", "theirs"}:
+            raise ValueError(f"Unsupported conflict side: {side}")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = file.path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(
+                ("checkout", f"--{side}", "--", file.path),
+                repository,
+                f"use {side} conflict side",
+            ),
+        )
+        return runner
+
     def request_stage_all(
         self, repository: Path, *, staged: bool, has_head: bool
     ) -> GitRunner:

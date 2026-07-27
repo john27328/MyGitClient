@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient import __version__
+from mygitclient.git.conflicts import conflict_marker_lines
 from mygitclient.git.models import (
     AmendDiffSnapshot,
     AmendPreview,
@@ -187,6 +188,11 @@ class MainWindow(QMainWindow):
         self._changes = self._changes_panel.tree
         self._open_file_action = self._changes_panel.open_action
         self._open_file_with_action = self._changes_panel.open_with_action
+        self._use_ours_action = self._changes_panel.use_ours_action
+        self._use_theirs_action = self._changes_panel.use_theirs_action
+        self._conflict_actions_separator = (
+            self._changes_panel.conflict_actions_separator
+        )
         self._discard_action = self._changes_panel.discard_action
         self._stash_action = self._changes_panel.stash_action
         self._ignore_action = self._changes_panel.ignore_action
@@ -199,6 +205,12 @@ class MainWindow(QMainWindow):
 
         self._open_file_action.triggered.connect(self._open_selected_file)
         self._open_file_with_action.triggered.connect(self._open_selected_file_with)
+        self._use_ours_action.triggered.connect(
+            lambda: self._use_selected_conflict_side("ours")
+        )
+        self._use_theirs_action.triggered.connect(
+            lambda: self._use_selected_conflict_side("theirs")
+        )
         self._discard_action.triggered.connect(self._discard_selected_file)
         self._stash_action.triggered.connect(self._stash_selected_files)
         self._ignore_action.triggered.connect(self._ignore_selected_file)
@@ -2062,6 +2074,25 @@ class MainWindow(QMainWindow):
             should_stage = item.checkState(0) != Qt.CheckState.Unchecked
         if file.unmerged and not should_stage:
             return
+        if file.unmerged:
+            path = self._selected_file_path(file)
+            markers = conflict_marker_lines(path) if path is not None else ()
+            if markers:
+                line_list = ", ".join(str(line) for line in markers[:8])
+                answer = QMessageBox.warning(
+                    self,
+                    "Conflict markers remain",
+                    f"{file.path} still contains conflict markers on line(s) {line_list}.\n\n"
+                    "Mark this file as resolved anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    tree = sender if isinstance(sender, QTreeWidget) else self._changes
+                    blocker = QSignalBlocker(tree)
+                    item.setCheckState(0, Qt.CheckState.Unchecked)
+                    del blocker
+                    return
         self._set_changes_trees_enabled(False)
         if self._amend.isChecked() and self._repository_status is not None:
             commit_oid = self._repository_status.branch.oid
@@ -2352,6 +2383,17 @@ class MainWindow(QMainWindow):
         self._open_file_with_action.setEnabled(
             path is not None and path.exists() and sys.platform == "win32"
         )
+        conflict_selected = file is not None and file.unmerged
+        self._use_ours_action.setVisible(conflict_selected)
+        self._use_theirs_action.setVisible(conflict_selected)
+        self._conflict_actions_separator.setVisible(conflict_selected)
+        operation = self._repository_operation
+        if operation is not None and operation.kind in {"rebase", "cherry-pick"}:
+            self._use_ours_action.setText("Use target branch version")
+            self._use_theirs_action.setText("Use replayed commit version")
+        else:
+            self._use_ours_action.setText("Use current branch version")
+            self._use_theirs_action.setText("Use incoming branch version")
         safe_files = bool(files) and all(not selected.unmerged for selected in files)
         self._discard_action.setEnabled(safe_files)
         self._stash_action.setEnabled(safe_files)
@@ -2385,6 +2427,15 @@ class MainWindow(QMainWindow):
         )
         if not started:
             QMessageBox.warning(self, "Open with", f"Could not show applications for:\n{path}")
+
+    def _use_selected_conflict_side(self, side: str) -> None:
+        file = self._selected_file()
+        repository = self._repository
+        if repository is None or file is None or not file.unmerged:
+            return
+        self._set_changes_trees_enabled(False)
+        self._status_label.setText(f"Using {side} version of {file.path}…")
+        self._git.request_conflict_side(repository, file, side=side)
 
     def _selected_files(self) -> tuple[FileStatus, ...]:
         files: list[FileStatus] = []

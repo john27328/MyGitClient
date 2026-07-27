@@ -121,6 +121,14 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
     assert snapshot.operation is not None
     assert snapshot.operation.kind == "merge"
 
+    conflict = FileStatus("tracked.txt", "U", "U", unmerged=True)
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_conflict_side(tmp_path, conflict, side="ours")
+    assert tracked.read_text(encoding="utf-8") == "main\n"
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_conflict_side(tmp_path, conflict, side="theirs")
+    assert tracked.read_text(encoding="utf-8") == "feature\n"
+
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_repository_operation_action(
             tmp_path, kind="merge", action="abort"
