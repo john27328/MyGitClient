@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QTabWidget,
     QToolBar,
     QToolButton,
@@ -88,6 +89,7 @@ from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
 from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.commit_text import generated_commit_text
+from mygitclient.ui.conflict_editor import ConflictEditor
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.operation_output import OperationOutputDialog
@@ -295,8 +297,14 @@ class MainWindow(QMainWindow):
         self._workspace_container.hide()
 
         self._diff_view = DiffView(self._settings)
+        self._diff_view.setObjectName("diffView")
         self._diff_view.set_auto_apply_hunks(True)
-        self._diff_container = self._diff_view
+        self._conflict_editor = ConflictEditor()
+        self._conflict_editor.save_requested.connect(self._save_conflict_result)
+        self._diff_container = QStackedWidget()
+        self._diff_container.setObjectName("diffContainer")
+        self._diff_container.addWidget(self._diff_view)
+        self._diff_container.addWidget(self._conflict_editor)
         self._diff = self._diff_view.diff
         self._diff_gutter = self._diff_view.gutter
         self._diff_version = self._diff_view.version_combo
@@ -759,6 +767,8 @@ class MainWindow(QMainWindow):
         self._history_panel.reset()
         self._history_refs = ()
         self._diff_view.reset()
+        self._conflict_editor.clear()
+        self._diff_container.setCurrentWidget(self._diff_view)
         self._welcome.hide()
         self._workspace_tabs.show()
         self._workspace_container.show()
@@ -1175,6 +1185,7 @@ class MainWindow(QMainWindow):
         )
         del blocker
         self._diff_view.refresh_version_selector()
+        self._diff_container.setCurrentWidget(self._diff_view)
         self._diff_view.display_diff(
             value.diff,
             selection_key=None,
@@ -1203,6 +1214,7 @@ class MainWindow(QMainWindow):
         self._diff_version.addItem(f"Commit {value.commit_oid[:8]}", None)
         del blocker
         self._diff_view.refresh_version_selector()
+        self._diff_container.setCurrentWidget(self._diff_view)
         self._diff_view.display_diff(
             value.diff,
             selection_key=None,
@@ -1856,6 +1868,7 @@ class MainWindow(QMainWindow):
         self._history_runner = None
         self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
+        self._conflict_editor.setEnabled(True)
         self._operation_banner.setEnabled(True)
         self._status_label.setText("Operation cancelled")
 
@@ -2131,6 +2144,7 @@ class MainWindow(QMainWindow):
             self._set_network_busy(None)
         self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
+        self._conflict_editor.setEnabled(True)
         self._history_panel.refs_panel.setEnabled(True)
         self._operation_banner.setEnabled(True)
         if path == "commit":
@@ -2297,6 +2311,7 @@ class MainWindow(QMainWindow):
         self._diff_version.addItem(label, None)
         del version_blocker
         self._diff_view.refresh_version_selector()
+        self._diff_container.setCurrentWidget(self._diff_view)
         self._diff_view.display_diff(
             value.diff,
             selection_key=None,
@@ -2366,6 +2381,15 @@ class MainWindow(QMainWindow):
         file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, FileStatus):
             return
+        if file.unmerged:
+            path = self._selected_file_path(file)
+            if path is None:
+                return
+            self._conflict_editor.load_file(path, file.path)
+            self._diff_container.setCurrentWidget(self._conflict_editor)
+            self._status_label.setText(f"Resolving conflicts in {file.path}")
+            return
+        self._diff_container.setCurrentWidget(self._diff_view)
         self._populate_diff_versions(file)
         preferred_staged = self._changes_panel.preferred_staged(selected_tree)
         if preferred_staged is not None:
@@ -2437,6 +2461,24 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Using {side} version of {file.path}…")
         self._git.request_conflict_side(repository, file, side=side)
 
+    @Slot(object, str)
+    def _save_conflict_result(self, value: object, content: str) -> None:
+        repository = self._repository
+        file = self._selected_file()
+        path = self._selected_file_path(file)
+        if (
+            repository is None
+            or file is None
+            or not file.unmerged
+            or not isinstance(value, Path)
+            or path != value
+        ):
+            return
+        self._set_changes_trees_enabled(False)
+        self._conflict_editor.setEnabled(False)
+        self._status_label.setText(f"Marking {file.path} resolved…")
+        self._git.request_resolve_conflict(repository, file, content)
+
     def _selected_files(self) -> tuple[FileStatus, ...]:
         files: list[FileStatus] = []
         for item in self._changes_panel.active_tree().selectedItems():
@@ -2502,7 +2544,7 @@ class MainWindow(QMainWindow):
             return
         item = selected_items[0]
         file = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(file, FileStatus):
+        if not isinstance(file, FileStatus) or file.unmerged:
             return
         staged = self._diff_version.currentData()
         if not isinstance(staged, bool):
@@ -2558,6 +2600,7 @@ class MainWindow(QMainWindow):
             and current_diff.staged == diff_value.staged
         )
         whole_file_staged = diff_value.staged and file.is_staged
+        self._diff_container.setCurrentWidget(self._diff_view)
         self._diff_view.display_diff(
             diff_value,
             selection_key=(value.repository, diff_value.path, diff_value.staged),
@@ -2678,6 +2721,7 @@ class MainWindow(QMainWindow):
         self._history_runner = None
         self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)
+        self._conflict_editor.setEnabled(True)
         self._history_panel.refs_panel.setEnabled(True)
         self._status_label.setText("Git operation failed")
         now = monotonic()

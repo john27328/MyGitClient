@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from mygitclient.git.conflicts import parse_conflict_blocks
 from mygitclient.git.errors import format_git_error
 from mygitclient.git.models import (
     AmendDiffSnapshot,
@@ -1030,6 +1031,24 @@ class GitService(QObject):
             ),
         )
         return runner
+
+    def request_resolve_conflict(
+        self, repository: Path, file: FileStatus, content: str
+    ) -> GitRunner | None:
+        if not file.unmerged:
+            raise ValueError("Only unmerged files can be marked resolved")
+        if parse_conflict_blocks(content):
+            raise ValueError("Conflict result still contains unresolved blocks")
+        repository = repository.resolve()
+        path = (repository / file.path).resolve()
+        if not path.is_relative_to(repository):
+            raise ValueError("Conflict path is outside the repository")
+        try:
+            path.write_text(content, encoding="utf-8", newline="")
+        except OSError as error:
+            self.operation_failed.emit(f"Could not save resolved file: {error}")
+            return None
+        return self.request_stage(repository, file, staged=True)
 
     def request_stage_all(
         self, repository: Path, *, staged: bool, has_head: bool

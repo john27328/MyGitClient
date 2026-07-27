@@ -128,6 +128,17 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_conflict_side(tmp_path, conflict, side="theirs")
     assert tracked.read_text(encoding="utf-8") == "feature\n"
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_resolve_conflict(tmp_path, conflict, "resolved\n")
+    assert tracked.read_text(encoding="utf-8") == "resolved\n"
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert staged.stdout.strip() == "tracked.txt"
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_repository_operation_action(
