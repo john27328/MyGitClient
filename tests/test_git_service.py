@@ -35,6 +35,11 @@ def _git(repository: Path, *arguments: str) -> None:
     )
 
 
+def _configure_identity(repository: Path) -> None:
+    _git(repository, "config", "user.name", "MyGitClient Test")
+    _git(repository, "config", "user.email", "test@example.invalid")
+
+
 def _summary(repository: Path, revision: str) -> CommitSummary:
     fields = subprocess.check_output(
         [
@@ -84,6 +89,7 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
     identity = (
         "-c",
         "user.name=MyGitClient Test",
@@ -766,6 +772,7 @@ def test_cherry_pick_range_preview_and_autostash(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
     identity = (
         "-c",
         "user.name=MyGitClient Test",
@@ -875,6 +882,7 @@ def test_revert_range_preview_and_reverse_commits(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
     identity = (
         "-c",
         "user.name=MyGitClient Test",
@@ -929,6 +937,7 @@ def test_rebase_preview_and_autostash_replays_current_branch(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
     identity = (
         "-c",
         "user.name=MyGitClient Test",
@@ -998,6 +1007,7 @@ def test_rebase_conflict_can_be_staged_and_continued(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
     identity = (
         "-c",
         "user.name=MyGitClient Test",
