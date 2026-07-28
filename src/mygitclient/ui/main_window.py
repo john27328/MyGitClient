@@ -133,6 +133,7 @@ class MainWindow(QMainWindow):
         self._update_downloader.cancelled.connect(self._update_download_cancelled)
         self._git = GitService(self)
         self._repository: Path | None = None
+        self._repository_activation = 0
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
         self._repository_operation: RepositoryOperation | None = None
@@ -190,6 +191,7 @@ class MainWindow(QMainWindow):
         self._changes = self._changes_panel.tree
         self._open_file_action = self._changes_panel.open_action
         self._open_file_with_action = self._changes_panel.open_with_action
+        self._reveal_file_action = self._changes_panel.reveal_action
         self._use_ours_action = self._changes_panel.use_ours_action
         self._use_theirs_action = self._changes_panel.use_theirs_action
         self._conflict_actions_separator = (
@@ -207,6 +209,7 @@ class MainWindow(QMainWindow):
 
         self._open_file_action.triggered.connect(self._open_selected_file)
         self._open_file_with_action.triggered.connect(self._open_selected_file_with)
+        self._reveal_file_action.triggered.connect(self._reveal_selected_file)
         self._use_ours_action.triggered.connect(
             lambda: self._use_selected_conflict_side("ours")
         )
@@ -748,6 +751,9 @@ class MainWindow(QMainWindow):
         self._activate_repository(repository, remember=remember)
 
     def _activate_repository(self, repository: Path, *, remember: bool = False) -> None:
+        self._refresh_timer.stop()
+        self._repository_activation += 1
+        activation = self._repository_activation
         if repository not in self._open_repositories:
             self._open_repositories.append(repository)
             self._workspace.save_open_repositories(self._open_repositories)
@@ -779,6 +785,16 @@ class MainWindow(QMainWindow):
         self._diff_gutter.setVisible(not self._wrap_button.isChecked())
         self._diff.show()
         self._workspace_tab_changed(self._workspace_tabs.currentIndex())
+        QTimer.singleShot(
+            0,
+            lambda: self._request_activated_repository(repository, activation),
+        )
+
+    def _request_activated_repository(
+        self, repository: Path, activation: int
+    ) -> None:
+        if repository != self._repository or activation != self._repository_activation:
+            return
         self._status_runner = self._git.request_status(repository)
         self._history_runner = None
         self._git.request_branches(repository)
@@ -2411,6 +2427,9 @@ class MainWindow(QMainWindow):
         self._open_file_with_action.setEnabled(
             path is not None and path.exists() and sys.platform == "win32"
         )
+        self._reveal_file_action.setEnabled(
+            path is not None and (path.exists() or path.parent.exists())
+        )
         conflict_selected = file is not None and file.unmerged
         self._use_ours_action.setVisible(conflict_selected)
         self._use_theirs_action.setVisible(conflict_selected)
@@ -2455,6 +2474,35 @@ class MainWindow(QMainWindow):
         )
         if not started:
             QMessageBox.warning(self, "Open with", f"Could not show applications for:\n{path}")
+
+    @Slot()
+    def _reveal_selected_file(self) -> None:
+        path = self._selected_file_path(self._selected_file())
+        if path is None:
+            return
+        existing_target = path if path.exists() else path.parent
+        if not existing_target.exists():
+            return
+        folder = existing_target.parent if existing_target.is_file() else existing_target
+        if sys.platform == "win32":
+            arguments = (
+                ["/select,", str(path)]
+                if path.exists() and not path.is_dir()
+                else [str(folder)]
+            )
+            started, _process_id = QProcess.startDetached(
+                "explorer.exe",
+                arguments,
+                str(folder),
+            )
+        else:
+            started = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        if not started:
+            QMessageBox.warning(
+                self,
+                "Show in File Manager",
+                f"Could not show:\n{path}",
+            )
 
     def _use_selected_conflict_side(self, side: str) -> None:
         file = self._selected_file()

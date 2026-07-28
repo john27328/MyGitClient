@@ -106,6 +106,9 @@ class ChangesPanel(QWidget):
         self.open_with_action = QAction("Open with…", self.tree)
         self.open_with_action.setObjectName("openChangedFileWithAction")
         self.open_with_action.setEnabled(False)
+        self.reveal_action = QAction("Show in File Manager", self.tree)
+        self.reveal_action.setObjectName("revealChangedFileAction")
+        self.reveal_action.setEnabled(False)
         self.file_actions_separator = QAction(self.tree)
         self.file_actions_separator.setSeparator(True)
         self.use_ours_action = QAction("Use current side", self.tree)
@@ -129,6 +132,7 @@ class ChangesPanel(QWidget):
         for tree in self.all_trees:
             tree.addAction(self.open_action)
             tree.addAction(self.open_with_action)
+            tree.addAction(self.reveal_action)
             tree.addAction(self.file_actions_separator)
             tree.addAction(self.use_ours_action)
             tree.addAction(self.use_theirs_action)

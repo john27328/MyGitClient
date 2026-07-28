@@ -157,6 +157,67 @@ def test_diff_context_menu_expands_file_and_shows_overview(
     window.close()
 
 
+def test_switching_repository_clears_visible_diff_overview(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repositories = [tmp_path / "first", tmp_path / "second"]
+    for repository in repositories:
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "--initial-branch=main"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+        tracked = repository / "tracked.txt"
+        tracked.write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=MyGitClient Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "-m",
+                "initial",
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+    (repositories[0] / "tracked.txt").write_text("changed\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "switch.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    overview = window.findChild(DiffOverview, "diffOverview")
+    assert changes is not None and diff_panel is not None and overview is not None
+
+    window.show()
+    window.open_repository(repositories[0])
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    item = changes.topLevelItem(0)
+    assert item is not None
+    changes.setCurrentItem(item)
+    qtbot.waitUntil(lambda: "+changed" in diff_panel.toPlainText(), timeout=5000)
+    assert overview.isVisible()
+
+    for index in range(12):
+        target = repositories[(index + 1) % 2]
+        window.open_repository(target)
+        qtbot.waitUntil(
+            lambda target=target: window.windowTitle().startswith(target.name),
+            timeout=5000,
+        )
+        qtbot.wait(100)
+
+    assert diff_panel.toPlainText() == ""
+    assert overview.isHidden()
+    window.close()
+
+
 def test_split_staging_selected_lines_adds_file_to_staged_tree(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:

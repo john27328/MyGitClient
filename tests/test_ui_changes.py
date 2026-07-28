@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QProcess, QSettings, Qt, QUrl
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,16 +41,27 @@ def test_changed_file_can_be_opened_with_the_system_application(
     changes = window.findChild(QTreeWidget, "changesTree")
     open_action = window.findChild(QAction, "openChangedFileAction")
     open_with_action = window.findChild(QAction, "openChangedFileWithAction")
+    reveal_action = window.findChild(QAction, "revealChangedFileAction")
     assert changes is not None
     assert open_action is not None
     assert open_with_action is not None
+    assert reveal_action is not None
     opened: list[str] = []
+    detached: list[tuple[str, list[str], str]] = []
 
     def open_url(url: QUrl) -> bool:
         opened.append(url.toLocalFile())
         return True
 
     monkeypatch.setattr(QDesktopServices, "openUrl", open_url)
+
+    def start_detached(
+        program: str, arguments: list[str], working_directory: str
+    ) -> tuple[bool, int]:
+        detached.append((program, arguments, working_directory))
+        return True, 1
+
+    monkeypatch.setattr(QProcess, "startDetached", start_detached)
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     item = changes.topLevelItem(0)
@@ -58,8 +70,23 @@ def test_changed_file_can_be_opened_with_the_system_application(
 
     assert open_action.isEnabled()
     assert open_with_action.isEnabled()
+    assert reveal_action.isEnabled()
     open_action.trigger()
     assert [Path(path) for path in opened] == [tracked.resolve()]
+    reveal_action.trigger()
+    if sys.platform == "win32":
+        assert detached == [
+            (
+                "explorer.exe",
+                ["/select,", str(tracked.resolve())],
+                str(repository.resolve()),
+            )
+        ]
+    else:
+        assert [Path(path) for path in opened] == [
+            tracked.resolve(),
+            repository.resolve(),
+        ]
     window.close()
 
 
