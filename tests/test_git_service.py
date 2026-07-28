@@ -109,6 +109,12 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
         capture_output=True,
     )
     assert merge.returncode != 0
+    qtbot.waitUntil(
+        lambda: (operation := detect_repository_operation(tmp_path / ".git"))
+        is not None
+        and operation.kind == "merge",
+        timeout=5000,
+    )
     service = GitService()
     snapshots: list[object] = []
     service.repository_operation_ready.connect(snapshots.append)
@@ -800,6 +806,12 @@ def test_cherry_pick_range_preview_and_autostash(
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_cherry_pick(tmp_path, commits, autostash=True)
 
+    qtbot.waitUntil(
+        lambda: first.exists()
+        and second.exists()
+        and local.read_text(encoding="utf-8") == "local change\n",
+        timeout=5000,
+    )
     assert first.read_text(encoding="utf-8") == "first\n"
     assert second.read_text(encoding="utf-8") == "second\n"
     assert local.read_text(encoding="utf-8") == "local change\n"
@@ -901,6 +913,10 @@ def test_revert_range_preview_and_reverse_commits(
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_revert(tmp_path, commits)
 
+    qtbot.waitUntil(
+        lambda: not first.exists() and not second.exists(),
+        timeout=5000,
+    )
     assert not first.exists()
     assert not second.exists()
     subjects = subprocess.check_output(
@@ -961,6 +977,12 @@ def test_rebase_preview_and_autostash_replays_current_branch(
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_rebase(tmp_path, target, autostash=True)
 
+    qtbot.waitUntil(
+        lambda: local.read_text(encoding="utf-8") == "local change\n"
+        and feature_file.exists()
+        and upstream_file.exists(),
+        timeout=5000,
+    )
     assert local.read_text(encoding="utf-8") == "local change\n"
     assert feature_file.read_text(encoding="utf-8") == "feature\n"
     assert upstream_file.read_text(encoding="utf-8") == "upstream\n"
@@ -1013,6 +1035,15 @@ def test_rebase_conflict_can_be_staged_and_continued(
             FileStatus("shared.txt", "U", "U", unmerged=True),
             staged=True,
         )
+    qtbot.waitUntil(
+        lambda: subprocess.check_output(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=tmp_path,
+            text=True,
+        ).strip()
+        == "shared.txt",
+        timeout=5000,
+    )
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_repository_operation_action(
             tmp_path,

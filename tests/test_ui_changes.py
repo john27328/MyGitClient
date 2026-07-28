@@ -69,7 +69,7 @@ def test_changed_file_can_be_opened_with_the_system_application(
     changes.setCurrentItem(item)
 
     assert open_action.isEnabled()
-    assert open_with_action.isEnabled()
+    assert open_with_action.isEnabled() is (sys.platform == "win32")
     assert reveal_action.isEnabled()
     open_action.trigger()
     assert [Path(path) for path in opened] == [tracked.resolve()]
