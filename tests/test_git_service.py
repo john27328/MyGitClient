@@ -352,6 +352,43 @@ def test_diff_can_ignore_whitespace_changes(qtbot: QtBot, tmp_path: Path) -> Non
     assert not any(line.kind in {"addition", "deletion"} for line in result.diff.lines)
 
 
+def test_diff_can_load_expanded_context(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    lines = [f"line {number}\n" for number in range(60)]
+    tracked.write_text("".join(lines), encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    lines[30] = "changed line\n"
+    tracked.write_text("".join(lines), encoding="utf-8")
+    service = GitService()
+    results: list[object] = []
+    service.diff_ready.connect(results.append)
+
+    with qtbot.waitSignal(service.diff_ready, timeout=5000):
+        service.request_diff(
+            tmp_path,
+            FileStatus("tracked.txt", ".", "M"),
+            staged=False,
+            context_lines=20,
+        )
+
+    result = results[0]
+    assert isinstance(result, DiffSnapshot)
+    rendered = "\n".join(line.text for line in result.diff.lines)
+    assert "line 10" in rendered
+    assert "line 50" in rendered
+
+
 def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     tracked = tmp_path / "tracked.txt"

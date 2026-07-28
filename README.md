@@ -51,6 +51,12 @@ installation must still be available in `PATH`.
 
 Requirements: Python 3.12 or newer and Git.
 
+On Windows, double-click `run-mygitclient.cmd`. It creates `.venv`, installs the
+application on the first run, and reuses that environment afterwards. Run
+`run-mygitclient.cmd --reinstall` after intentionally changing dependencies.
+
+Manual setup:
+
 ```powershell
 git clone https://github.com/john27328/MyGitClient.git
 cd MyGitClient

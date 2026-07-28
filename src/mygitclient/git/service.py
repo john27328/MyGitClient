@@ -753,7 +753,10 @@ class GitService(QObject):
         *,
         parent_oid: str | None,
         ignore_whitespace: bool = False,
+        context_lines: int = 3,
     ) -> GitRunner:
+        if context_lines < 0:
+            raise ValueError("Diff context cannot be negative")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
@@ -777,6 +780,7 @@ class GitService(QObject):
         )
         if ignore_whitespace:
             arguments.insert(1, "--ignore-all-space")
+        arguments.insert(1, f"--unified={context_lines}")
         runner.run(GitCommand(tuple(arguments), repository, "read commit diff"))
         return runner
 
@@ -845,7 +849,10 @@ class GitService(QObject):
         path: str,
         *,
         ignore_whitespace: bool = False,
+        context_lines: int = 3,
     ) -> GitRunner:
+        if context_lines < 0:
+            raise ValueError("Diff context cannot be negative")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
@@ -869,6 +876,7 @@ class GitService(QObject):
         ]
         if ignore_whitespace:
             arguments.insert(1, "--ignore-all-space")
+        arguments.insert(1, f"--unified={context_lines}")
         runner.run(
             GitCommand(
                 tuple(arguments),
@@ -956,7 +964,10 @@ class GitService(QObject):
         *,
         staged: bool,
         ignore_whitespace: bool = False,
+        context_lines: int = 3,
     ) -> GitRunner:
+        if context_lines < 0:
+            raise ValueError("Diff context cannot be negative")
         untracked = file.index_status == "?"
         if untracked:
             arguments = ["diff", "--no-index", "--no-color", "--", "/dev/null", file.path]
@@ -966,6 +977,7 @@ class GitService(QObject):
                 arguments.append("--cached")
         if ignore_whitespace:
             arguments.insert(1, "--ignore-all-space")
+        arguments.insert(1, f"--unified={context_lines}")
         if not untracked:
             arguments.extend(("--", file.path))
 

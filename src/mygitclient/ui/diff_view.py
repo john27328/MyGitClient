@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
     QColor,
     QFont,
     QFontDatabase,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPlainTextEdit,
     QSplitter,
     QStackedWidget,
@@ -29,6 +32,7 @@ from PySide6.QtWidgets import (
 from mygitclient.git.models import DiffLine, DiffLineKind, UnifiedDiff
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_highlighter import DiffHighlighter
+from mygitclient.ui.diff_overview import DiffOverview
 from mygitclient.ui.diff_selection import DiffSelection, LineFingerprint
 
 SelectionKey = tuple[Path, str, bool]
@@ -40,6 +44,7 @@ class DiffView(QWidget):
     selection_changed = Signal()
     lines_requested = Signal(object, object)
     hunk_requested = Signal(object, int)
+    context_requested = Signal(int)
 
     def __init__(self, settings: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -135,6 +140,8 @@ class DiffView(QWidget):
         diff_body_layout.setSpacing(0)
         diff_body_layout.addWidget(self.gutter)
         diff_body_layout.addWidget(self.diff, 1)
+        self.overview = DiffOverview(self.diff)
+        diff_body_layout.addWidget(self.overview)
 
         self.side_old = self._make_side_editor("sideBySideOld")
         self.side_new = self._make_side_editor("sideBySideNew")
@@ -171,12 +178,18 @@ class DiffView(QWidget):
         old_layout.setSpacing(0)
         old_layout.addWidget(self.side_old_gutter)
         old_layout.addWidget(self.side_old, 1)
+        self.side_old_overview = DiffOverview(self.side_old)
+        self.side_old_overview.setObjectName("sideBySideOldOverview")
+        old_layout.addWidget(self.side_old_overview)
         new_body = QWidget()
         new_layout = QHBoxLayout(new_body)
         new_layout.setContentsMargins(0, 0, 0, 0)
         new_layout.setSpacing(0)
         new_layout.addWidget(self.side_new_gutter)
         new_layout.addWidget(self.side_new, 1)
+        self.side_new_overview = DiffOverview(self.side_new)
+        self.side_new_overview.setObjectName("sideBySideNewOverview")
+        new_layout.addWidget(self.side_new_overview)
         side_splitter = QSplitter(Qt.Orientation.Horizontal)
         side_splitter.addWidget(old_body)
         side_splitter.addWidget(new_body)
@@ -194,6 +207,26 @@ class DiffView(QWidget):
         self.ignore_whitespace_button.setToolTip(
             "Ignore whitespace changes when loading the diff"
         )
+        self.context_button = QToolButton()
+        self.context_button.setObjectName("diffContextButton")
+        self.context_button.setText("Context")
+        self.context_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        context_menu = QMenu(self.context_button)
+        self._context_actions = QActionGroup(self.context_button)
+        self._context_actions.setExclusive(True)
+        for label, lines in (
+            ("Default context", 3),
+            ("Expand blocks", 20),
+            ("Show full file", 999_999),
+        ):
+            action = context_menu.addAction(label)
+            action.setCheckable(True)
+            action.setData(lines)
+            self._context_actions.addAction(action)
+            if lines == 3:
+                action.setChecked(True)
+        self.context_button.setMenu(context_menu)
+        self._context_actions.triggered.connect(self._context_action_triggered)
         self.hunk_button = QToolButton()
         self.hunk_button.setObjectName("diffHunkButton")
         self.hunk_button.setText("Stage hunk")
@@ -219,6 +252,7 @@ class DiffView(QWidget):
         toolbar_layout.addWidget(self.wrap_button)
         toolbar_layout.addWidget(self.whitespace_button)
         toolbar_layout.addWidget(self.ignore_whitespace_button)
+        toolbar_layout.addWidget(self.context_button)
         toolbar_layout.addWidget(self.hunk_button)
         toolbar_layout.addWidget(self.selected_lines_button)
         toolbar_layout.addWidget(self.clear_lines_button)
@@ -355,6 +389,7 @@ class DiffView(QWidget):
         self._render_gutter(diff, self.selection)
         self._hide_unified_service_blocks(diff)
         self._render_side_by_side(diff)
+        self.overview.set_line_kinds(tuple(line.kind for line in diff.lines))
         if preserve_scroll:
             self._restore_scroll_positions(positions)
             # Headless Qt platforms may update scrollbar ranges on the next event-loop
@@ -386,6 +421,9 @@ class DiffView(QWidget):
         self.side_new_highlighter.set_inline_ranges({})
         self.side_old_highlighter.set_line_kinds(())
         self.side_new_highlighter.set_line_kinds(())
+        self.overview.set_line_kinds(())
+        self.side_old_overview.set_line_kinds(())
+        self.side_new_overview.set_line_kinds(())
         self.diff.setExtraSelections([])
         self.side_old.setExtraSelections([])
         self.side_new.setExtraSelections([])
@@ -562,6 +600,16 @@ class DiffView(QWidget):
             self.diff.lineWrapMode() != QPlainTextEdit.LineWrapMode.NoWrap
         )
 
+    @Slot(QAction)
+    def _context_action_triggered(self, action: QAction) -> None:
+        lines = action.data()
+        if not isinstance(lines, int):
+            return
+        self.context_button.setText(
+            "Full file" if lines > 100_000 else ("Expanded" if lines > 3 else "Context")
+        )
+        self.context_requested.emit(lines)
+
     def rehighlight(self) -> None:
         self.diff_highlighter.rehighlight()
         self.side_old_highlighter.rehighlight()
@@ -651,6 +699,8 @@ class DiffView(QWidget):
         self.side_new_highlighter.set_line_kinds(tuple(new_kinds))
         self.side_old.setPlainText("\n".join(old_lines))
         self.side_new.setPlainText("\n".join(new_lines))
+        self.side_old_overview.set_line_kinds(tuple(old_kinds))
+        self.side_new_overview.set_line_kinds(tuple(new_kinds))
 
     def _render_side_selection(self, diff: UnifiedDiff) -> None:
         self.side_old_gutter.setPlainText(

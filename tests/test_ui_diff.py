@@ -17,6 +17,7 @@ from pytestqt.qtbot import QtBot
 from mygitclient.git.models import FileStatus
 from mygitclient.theme import Theme
 from mygitclient.ui.diff_gutter import DiffGutter
+from mygitclient.ui.diff_overview import DiffOverview
 from mygitclient.ui.main_window import MainWindow
 
 
@@ -98,6 +99,61 @@ def test_diff_and_line_numbers_scroll_together(qapp: QApplication, qtbot: QtBot)
 
     diff_gutter.verticalScrollBar().setValue(80)
     assert diff_panel.verticalScrollBar().value() == 80
+    window.close()
+
+
+def test_diff_context_menu_expands_file_and_shows_overview(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "context-repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    tracked = repository / "tracked.txt"
+    lines = [f"line {number}\n" for number in range(60)]
+    tracked.write_text("".join(lines), encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    lines[30] = "changed line\n"
+    tracked.write_text("".join(lines), encoding="utf-8")
+    settings = QSettings(str(tmp_path / "context.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    context_button = window.findChild(QToolButton, "diffContextButton")
+    overview = window.findChild(DiffOverview, "diffOverview")
+    assert changes is not None and diff_panel is not None
+    assert context_button is not None and overview is not None
+
+    window.show()
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    item = changes.topLevelItem(0)
+    assert item is not None
+    changes.setCurrentItem(item)
+    qtbot.waitUntil(lambda: "+changed line" in diff_panel.toPlainText(), timeout=5000)
+    assert " line 10" not in diff_panel.toPlainText()
+    assert overview.isVisible()
+
+    menu = context_button.menu()
+    assert menu is not None
+    expanded = next(action for action in menu.actions() if action.text() == "Expand blocks")
+    expanded.trigger()
+    qtbot.waitUntil(lambda: " line 10" in diff_panel.toPlainText(), timeout=5000)
+    assert context_button.text() == "Expanded"
     window.close()
 
 

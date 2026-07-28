@@ -318,6 +318,8 @@ class MainWindow(QMainWindow):
         self._diff_view.selection_changed.connect(self._sync_selected_file_checkbox)
         self._diff_view.lines_requested.connect(self._apply_diff_lines)
         self._diff_view.hunk_requested.connect(self._apply_diff_hunk)
+        self._diff_view.context_requested.connect(self._diff_context_changed)
+        self._diff_context_lines = 3
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
         self._wrap_button.toggled.connect(self._diff_wrap_changed)
         self._whitespace_button.setChecked(
@@ -1135,6 +1137,7 @@ class MainWindow(QMainWindow):
             file_value.path,
             parent_oid=commit_value.parent_oids[0] if commit_value.parent_oids else None,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
+            context_lines=self._diff_context_lines,
         )
 
     @Slot(str, str, object)
@@ -1154,6 +1157,7 @@ class MainWindow(QMainWindow):
             compare_ref,
             file_value.path,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
+            context_lines=self._diff_context_lines,
         )
 
     @Slot(object)
@@ -2563,6 +2567,7 @@ class MainWindow(QMainWindow):
             file,
             staged=staged,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
+            context_lines=self._diff_context_lines,
         )
 
     def _populate_diff_versions(self, file: FileStatus) -> None:
@@ -2698,6 +2703,25 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _diff_ignore_whitespace_changed(self, enabled: bool) -> None:
         self._settings.setValue("diff/ignoreWhitespace", enabled)
+        if self._workspace_tabs.currentIndex() != 1:
+            self._request_diff(silent=False)
+            return
+        item = cast(QTreeWidgetItem | None, self._history_panel.files.currentItem())
+        if item is None:
+            return
+        file = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(file, CommitFileChange):
+            return
+        if len(self._history_refs) == 2:
+            self._history_comparison_file_selected(*self._history_refs, file)
+            return
+        commit = self._history_panel.selected_commit
+        if commit is not None:
+            self._history_file_selected(commit, file)
+
+    @Slot(int)
+    def _diff_context_changed(self, context_lines: int) -> None:
+        self._diff_context_lines = context_lines
         if self._workspace_tabs.currentIndex() != 1:
             self._request_diff(silent=False)
             return
