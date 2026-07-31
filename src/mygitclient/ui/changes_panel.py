@@ -81,13 +81,20 @@ class ChangesTreeWidget(QTreeWidget):
 class ChangesPanel(QWidget):
     """Owns the changed-files tree and commit form widgets."""
 
-    folder_stage_requested = Signal(object, bool)
+    selection_changed = Signal()
+    stage_requested = Signal()
+    unstage_requested = Signal()
+    stash_requested = Signal()
+    discard_requested = Signal()
     view_mode_changed = Signal(str)
     presentation_mode_changed = Signal(str)
 
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
+        self._selected_paths: set[str] = set()
+        self._visible_files: dict[str, FileStatus] = {}
+        self._amend_mode = False
         self._render_generation = 0
         self._pending_scroll_restore: tuple[int, int, int] | None = None
         self._scroll_restore_timer = QTimer(self)
@@ -141,9 +148,24 @@ class ChangesPanel(QWidget):
             tree.addAction(self.stash_action)
             tree.addAction(self.ignore_action)
 
-        self.stage_all = QCheckBox("Stage all changes")
+        self.stage_all = QCheckBox("Select all changes")
         self.stage_all.setObjectName("stageAllCheckBox")
         self.stage_all.setTristate(True)
+        self.stage_all.stateChanged.connect(self._select_all_changed)
+
+        self.stage_button = QPushButton("Stage")
+        self.stage_button.setObjectName("stageSelectedButton")
+        self.stage_button.clicked.connect(self.stage_requested)
+        self.stash_button = QPushButton("Stash")
+        self.stash_button.setObjectName("stashSelectedButton")
+        self.stash_button.clicked.connect(self.stash_requested)
+        self.unstage_button = QPushButton("Unstage")
+        self.unstage_button.setObjectName("unstageSelectedButton")
+        self.unstage_button.clicked.connect(self.unstage_requested)
+        self.discard_button = QPushButton("Discard")
+        self.discard_button.setObjectName("discardSelectedButton")
+        self.discard_button.clicked.connect(self.discard_requested)
+        self._update_selection_controls()
 
         self.view_mode = QComboBox()
         self.view_mode.setObjectName("changesViewModeCombo")
@@ -212,6 +234,13 @@ class ChangesPanel(QWidget):
         options.addWidget(self.presentation_mode)
         options.addWidget(self.view_mode)
         layout.addLayout(options)
+        selection_actions = QHBoxLayout()
+        selection_actions.addWidget(self.stage_button)
+        selection_actions.addWidget(self.stash_button)
+        selection_actions.addWidget(self.unstage_button)
+        selection_actions.addWidget(self.discard_button)
+        selection_actions.addStretch(1)
+        layout.addLayout(selection_actions)
         layout.addWidget(self.tree_stack)
         layout.addWidget(self.commit_message)
         layout.addWidget(self.commit_description)
@@ -280,22 +309,44 @@ class ChangesPanel(QWidget):
         *,
         amend: bool = False,
     ) -> QTreeWidgetItem | None:
+        self._amend_mode = amend
+        self._visible_files = {file.path: file for file, _state in files}
+        self._selected_paths.intersection_update(self._visible_files)
+        selected_files = [
+            (
+                file,
+                Qt.CheckState.Checked
+                if file.path in self._selected_paths
+                else Qt.CheckState.Unchecked,
+            )
+            for file, _state in files
+        ]
         selected = self._render_tree(
             self.tree,
-            files,
+            selected_files,
             selected_path,
             preserve_scroll=True,
             checkable=True,
         )
         unstaged = [
-            (file, Qt.CheckState.Unchecked)
+            (
+                file,
+                Qt.CheckState.Checked
+                if file.path in self._selected_paths
+                else Qt.CheckState.Unchecked,
+            )
             for file, state in files
             if (amend and state is not Qt.CheckState.Checked)
             or file.has_worktree_change
             or file.unmerged
         ]
         staged = [
-            (file, Qt.CheckState.Checked)
+            (
+                file,
+                Qt.CheckState.Checked
+                if file.path in self._selected_paths
+                else Qt.CheckState.Unchecked,
+            )
             for file, state in files
             if (amend and state is not Qt.CheckState.Unchecked)
             or (file.is_staged and not file.unmerged)
@@ -315,8 +366,29 @@ class ChangesPanel(QWidget):
             checkable=True,
         )
         if not self.split_mode:
+            self._update_selection_controls()
             return selected
+        self._update_selection_controls()
         return staged_selected if self.active_tree() is self.staged_tree else unstaged_selected
+
+    def checked_files(self) -> tuple[FileStatus, ...]:
+        return tuple(
+            file
+            for path, file in self._visible_files.items()
+            if path in self._selected_paths
+        )
+
+    def clear_checked_files(self) -> None:
+        self._selected_paths.clear()
+        for tree in self.all_trees:
+            blocker = QSignalBlocker(tree)
+            self._set_all_tree_states(tree, Qt.CheckState.Unchecked)
+            del blocker
+        self._update_selection_controls()
+        self.selection_changed.emit()
+
+    def refresh_selection_controls(self) -> None:
+        self._update_selection_controls()
 
     def _render_tree(
         self,
@@ -449,24 +521,98 @@ class ChangesPanel(QWidget):
 
     @Slot(QTreeWidgetItem, int)
     def _item_changed(self, item: QTreeWidgetItem, column: int) -> None:
-        if column != 0 or item.data(0, _FOLDER_ROLE) is not True:
+        if column != 0:
             return
         sender = self.sender()
-        if self.split_mode and sender is self.unstaged_tree:
-            should_stage = True
-        elif self.split_mode and sender is self.staged_tree:
-            should_stage = False
-        else:
-            should_stage = item.checkState(0) != Qt.CheckState.Unchecked
-        files = self._descendant_files(item)
-        sender = self.sender()
         tree = sender if isinstance(sender, QTreeWidget) else self.tree
-        blocker = QSignalBlocker(tree)
-        target = Qt.CheckState.Checked if should_stage else Qt.CheckState.Unchecked
-        self._set_descendant_state(item, target)
+        checked = item.checkState(0) != Qt.CheckState.Unchecked
+        if item.data(0, _FOLDER_ROLE) is True:
+            blocker = QSignalBlocker(tree)
+            target = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            self._set_descendant_state(item, target)
+            del blocker
+            files = self._descendant_files(item)
+        else:
+            value = item.data(0, Qt.ItemDataRole.UserRole)
+            files = (value,) if isinstance(value, FileStatus) else ()
+        for file in files:
+            if checked:
+                self._selected_paths.add(file.path)
+            else:
+                self._selected_paths.discard(file.path)
+        self._sync_matching_items()
+        self._update_selection_controls()
+        self.selection_changed.emit()
+
+    @Slot(int)
+    def _select_all_changed(self, state: int) -> None:
+        if Qt.CheckState(state) == Qt.CheckState.PartiallyChecked:
+            return
+        if Qt.CheckState(state) == Qt.CheckState.Checked:
+            self._selected_paths = set(self._visible_files)
+        else:
+            self._selected_paths.clear()
+        self._sync_matching_items()
+        self._update_selection_controls()
+        self.selection_changed.emit()
+
+    def _sync_matching_items(self) -> None:
+        for tree in self.all_trees:
+            blocker = QSignalBlocker(tree)
+            pending = [
+                tree.topLevelItem(index) for index in range(tree.topLevelItemCount())
+            ]
+            for item in pending:
+                if item is not None:
+                    self._sync_item_state(item)
+            del blocker
+
+    def _sync_item_state(self, item: QTreeWidgetItem) -> Qt.CheckState:
+        value = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(value, FileStatus):
+            state = (
+                Qt.CheckState.Checked
+                if value.path in self._selected_paths
+                else Qt.CheckState.Unchecked
+            )
+            item.setCheckState(0, state)
+            return state
+        states = [self._sync_item_state(item.child(index)) for index in range(item.childCount())]
+        if states and all(state == Qt.CheckState.Checked for state in states):
+            state = Qt.CheckState.Checked
+        elif states and all(state == Qt.CheckState.Unchecked for state in states):
+            state = Qt.CheckState.Unchecked
+        else:
+            state = Qt.CheckState.PartiallyChecked
+        item.setCheckState(0, state)
+        return state
+
+    def _set_all_tree_states(self, tree: QTreeWidget, state: Qt.CheckState) -> None:
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            if item is not None:
+                item.setCheckState(0, state)
+                self._set_descendant_state(item, state)
+
+    def _update_selection_controls(self) -> None:
+        files = self.checked_files()
+        selected = bool(files)
+        has_unstaged = any(file.has_worktree_change or file.unmerged for file in files)
+        has_staged = any(file.is_staged and not file.unmerged for file in files)
+        safe = selected and all(not file.unmerged for file in files)
+        self.stage_button.setEnabled(selected and (self._amend_mode or has_unstaged))
+        self.unstage_button.setEnabled(selected and (self._amend_mode or has_staged))
+        self.stash_button.setEnabled(safe and has_unstaged)
+        self.discard_button.setEnabled(safe and has_unstaged)
+        blocker = QSignalBlocker(self.stage_all)
+        if not self._visible_files or not self._selected_paths:
+            self.stage_all.setCheckState(Qt.CheckState.Unchecked)
+        elif len(self._selected_paths) == len(self._visible_files):
+            self.stage_all.setCheckState(Qt.CheckState.Checked)
+        else:
+            self.stage_all.setCheckState(Qt.CheckState.PartiallyChecked)
+        self.stage_all.setEnabled(bool(self._visible_files))
         del blocker
-        if files:
-            self.folder_stage_requested.emit(files, should_stage)
 
     @Slot(int)
     def _view_mode_selected(self, _index: int) -> None:

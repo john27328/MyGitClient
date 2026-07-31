@@ -39,6 +39,10 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
     )
     assert panel.findChild(QCheckBox, "amendCheckBox") is panel.amend
     assert panel.findChild(QPushButton, "commitButton") is panel.commit_button
+    assert panel.findChild(QPushButton, "stageSelectedButton") is panel.stage_button
+    assert panel.findChild(QPushButton, "stashSelectedButton") is panel.stash_button
+    assert panel.findChild(QPushButton, "unstageSelectedButton") is panel.unstage_button
+    assert panel.findChild(QPushButton, "discardSelectedButton") is panel.discard_button
     assert panel.findChild(QAction, "discardChangesAction") is panel.discard_action
     assert panel.findChild(QAction, "stashSelectedAction") is panel.stash_action
     assert panel.findChild(QAction, "ignoreFileAction") is panel.ignore_action
@@ -91,13 +95,6 @@ def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
     first = FileStatus("src/package/first.py", ".", "M")
     second = FileStatus("src/package/second.py", ".", "M")
     root_file = FileStatus("README.md", ".", "M")
-    requests: list[tuple[object, bool]] = []
-
-    def capture(files: object, staged: bool) -> None:
-        requests.append((files, staged))
-
-    panel.folder_stage_requested.connect(capture)
-
     panel.show_files(
         [
             (first, Qt.CheckState.Unchecked),
@@ -115,13 +112,14 @@ def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
     assert src is not None
     assert src.text(0) == "src/package"
     assert src.childCount() == 2
-    assert src.checkState(0) is Qt.CheckState.PartiallyChecked
+    assert src.checkState(0) is Qt.CheckState.Unchecked
 
     src.setCheckState(0, Qt.CheckState.Checked)
 
     assert src.child(0).checkState(0) is Qt.CheckState.Checked
     assert src.child(1).checkState(0) is Qt.CheckState.Checked
-    assert requests == [((first, second), True)]
+    assert panel.checked_files() == (first, second)
+    assert panel.stage_button.isEnabled()
 
 
 def test_tree_mode_compacts_directories_but_keeps_file_as_a_separate_leaf(
@@ -145,11 +143,11 @@ def test_tree_mode_compacts_directories_but_keeps_file_as_a_separate_leaf(
     assert item.text(0) == "only.py"
     assert item.childCount() == 0
     assert item.data(0, Qt.ItemDataRole.UserRole) == file
-    assert item.checkState(0) is Qt.CheckState.Checked
+    assert item.checkState(0) is Qt.CheckState.Unchecked
     assert not item.icon(0).isNull()
 
 
-def test_split_folder_checkbox_emits_only_one_batched_change(
+def test_split_folder_checkbox_selects_files_without_applying_git(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "changes.ini"), QSettings.Format.IniFormat)
@@ -159,12 +157,6 @@ def test_split_folder_checkbox_emits_only_one_batched_change(
     qtbot.addWidget(panel)
     first = FileStatus("src/package/first.py", ".", "M")
     second = FileStatus("src/package/second.py", ".", "M")
-    requests: list[tuple[object, bool]] = []
-
-    def capture(files: object, staged: bool) -> None:
-        requests.append((files, staged))
-
-    panel.folder_stage_requested.connect(capture)
     panel.show_files(
         [
             (first, Qt.CheckState.Unchecked),
@@ -179,7 +171,7 @@ def test_split_folder_checkbox_emits_only_one_batched_change(
     root.setCheckState(0, Qt.CheckState.Checked)
 
     assert item_changed.count() == 1
-    assert requests == [((first, second), True)]
+    assert panel.checked_files() == (first, second)
     assert root.child(0).checkState(0) is Qt.CheckState.Checked
     assert root.child(1).checkState(0) is Qt.CheckState.Checked
 
@@ -291,7 +283,30 @@ def test_split_presentation_separates_versions_and_is_saved(
     assert unstaged_item.text(0) == "partial.py"
     assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
     assert staged_item.text(0) == "partial.py"
-    assert staged_item.checkState(0) is Qt.CheckState.Checked
+    assert staged_item.checkState(0) is Qt.CheckState.Unchecked
+
+
+def test_checkbox_selection_survives_status_refresh(qtbot: QtBot) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    first = FileStatus("first.py", ".", "M")
+    second = FileStatus("second.py", "M", ".")
+    panel.show_files(
+        [(first, Qt.CheckState.Unchecked), (second, Qt.CheckState.Checked)], None
+    )
+    first_item = panel.tree.topLevelItem(0)
+    assert first_item is not None
+    first_item.setCheckState(0, Qt.CheckState.Checked)
+
+    panel.show_files(
+        [(first, Qt.CheckState.Unchecked), (second, Qt.CheckState.Checked)], None
+    )
+
+    refreshed_first = panel.tree.topLevelItem(0)
+    refreshed_second = panel.tree.topLevelItem(1)
+    assert refreshed_first is not None and refreshed_second is not None
+    assert refreshed_first.checkState(0) is Qt.CheckState.Checked
+    assert refreshed_second.checkState(0) is Qt.CheckState.Unchecked
 
 
 def test_conflicted_file_is_checkable_only_in_unstaged_split_tree(

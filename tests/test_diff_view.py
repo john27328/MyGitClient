@@ -162,14 +162,14 @@ def test_diff_view_hides_git_metadata_and_labels_hunks(
         whole_file_staged=False,
     )
 
-    assert view.file_header.text() == "src/file.cpp"
+    assert view.file_header.text() == "src/file.cpp   [WORKING TREE]"
     assert "diff --git" not in view.side_old.toPlainText()
     assert "--- a/file.cpp" not in view.side_old.toPlainText()
     assert "Old lines 10–11" in view.side_old.toPlainText()
     assert "New lines 10–11" in view.side_new.toPlainText()
 
 
-def test_diff_view_owns_line_selection_and_emits_request(
+def test_diff_view_owns_line_selection_without_applying(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "selection.ini"), QSettings.Format.IniFormat)
@@ -201,14 +201,14 @@ def test_diff_view_owns_line_selection_and_emits_request(
     view.gutter.line_activated.emit(4, False)
     view.gutter.line_activated.emit(5, False)
 
-    assert not view.selection.selected_lines
-    assert not view.diff.extraSelections()
+    assert view.selection.selected_lines == {4, 5}
+    assert view.diff.extraSelections()
     assert view.selected_lines_button.isHidden()
     assert view.clear_lines_button.isHidden()
-    assert requests == [(diff, {4}), (diff, {5})]
+    assert requests == []
 
 
-def test_diff_hunk_checkbox_emits_immediate_request(
+def test_diff_hunk_checkbox_selects_the_hunk_without_applying(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     view = DiffView(QSettings(str(tmp_path / "hunk.ini"), QSettings.Format.IniFormat))
@@ -238,11 +238,11 @@ def test_diff_hunk_checkbox_emits_immediate_request(
 
     view.gutter.line_activated.emit(3, False)
 
-    assert requests == [(diff, 0)]
-    assert not view.selection.selected_lines
+    assert requests == []
+    assert view.selection.selected_lines == {4, 5}
 
 
-def test_immediate_line_request_does_not_leave_saved_selection(
+def test_line_selection_is_kept_only_for_the_open_file(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "saved-selection.ini"), QSettings.Format.IniFormat)
@@ -283,7 +283,7 @@ def test_immediate_line_request_does_not_leave_saved_selection(
         whole_file_staged=False,
     )
     view.gutter.line_activated.emit(4, False)
-    assert requests == [(first, {4})]
+    assert requests == []
     view.display_diff(
         second,
         selection_key=(tmp_path, second.path, False),
@@ -310,7 +310,7 @@ def test_immediate_line_request_does_not_leave_saved_selection(
     assert view.selection.selected_lines == set()
 
 
-def test_side_by_side_gutters_emit_immediate_line_requests(
+def test_side_by_side_gutters_share_selection_without_applying(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "side-selection.ini"), QSettings.Format.IniFormat)
@@ -343,10 +343,10 @@ def test_side_by_side_gutters_emit_immediate_line_requests(
     view.side_old_gutter.line_activated.emit(1, False)
     view.side_new_gutter.line_activated.emit(1, True)
 
-    assert requests == [(diff, {4}), (diff, {4, 5})]
-    assert not view.selection.selected_lines
-    assert not view.side_old.extraSelections()
-    assert not view.side_new.extraSelections()
+    assert requests == []
+    assert view.selection.selected_lines == {4, 5}
+    assert view.side_old.extraSelections()
+    assert view.side_new.extraSelections()
 
 
 def test_unified_gutter_visibility_does_not_depend_on_parent_visibility(

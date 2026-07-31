@@ -64,10 +64,20 @@ On Windows PowerShell:
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 $env:QT_QPA_PLATFORM = "offscreen"
+$env:TEMP = "$PWD\.test-tmp-session"
+$env:TMP = $env:TEMP
+New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
 .\.venv\Scripts\ruff.exe check .
 .\.venv\Scripts\pyright.exe --pythonpath .\.venv\Scripts\python.exe
-.\.venv\Scripts\pytest.exe
+.\.venv\Scripts\pytest.exe -p no:cacheprovider --basetemp "$env:TEMP\full"
 ```
+
+On Windows, always redirect `TEMP` and `TMP` to the workspace-local
+`.test-tmp-session` directory before invoking pytest. The system pytest temp root under
+`AppData\Local\Temp` can reject sandboxed processes even when the test code is correct. Use a
+unique child of `.test-tmp-session` for each concurrent or repeated run, and remove the local
+temp root after the final test run only after resolving it and verifying that it remains inside
+the workspace. Never report a system-temp permission failure as a product or test failure.
 
 On macOS/Linux, use `.venv/bin/` equivalents. Run GUI tests with
 `QT_QPA_PLATFORM=offscreen` on headless Linux.
@@ -94,4 +104,3 @@ were run successfully in the current working tree.
 - Do not commit, push, rewrite history, or publish unless the user asks.
 - Do not edit completed checklist items merely to make the plan look current; record
   scope changes explicitly.
-

@@ -329,15 +329,17 @@ class DiffView(QWidget):
     def has_pending_partial_selection(self) -> bool:
         return bool(self.selection.selected_lines) and not self.selection.whole_file
 
+    @property
+    def selected_line_indexes(self) -> set[int]:
+        return set(self.selection.selected_lines)
+
     def set_auto_apply_hunks(self, enabled: bool) -> None:
         self._auto_apply_hunks = enabled
-        self.hunk_button.setVisible(self._interactive and not enabled)
+        self.hunk_button.hide()
         self.gutter.setToolTip(
-            "Click a hunk checkbox to apply the whole block immediately. "
-            "Individual lines are collected for the selected-lines action."
-            if enabled
-            else "Click a checkbox to select a changed line. "
-            "Click a hunk checkbox to select the whole block."
+            "Click a checkbox to select a changed line. "
+            "Click a hunk checkbox to select the whole block. "
+            "Use Stage or Unstage to apply the selection."
         )
 
     def has_saved_selection(self, repository: Path, path: str) -> bool:
@@ -366,9 +368,14 @@ class DiffView(QWidget):
         self._pending_scroll_positions = None
         positions = self._scroll_positions()
         self._remember_selection()
+        if selection_key is not None and self._current_selection_key is not None:
+            current_file = self._current_selection_key[:2]
+            next_file = selection_key[:2]
+            if current_file != next_file:
+                self._saved_selections.clear()
         self.current_diff = diff
         self._interactive = interactive
-        self.hunk_button.setVisible(interactive and not self._auto_apply_hunks)
+        self.hunk_button.hide()
         self.selected_lines_button.hide()
         self.clear_lines_button.hide()
         self._current_selection_key = selection_key if interactive else None
@@ -380,8 +387,9 @@ class DiffView(QWidget):
             assert selection_key is not None
             self.selection.restore(diff, self._saved_selections.get(selection_key, set()))
         self.diff_highlighter.set_diff(diff)
-        self.file_header.setText(diff.path)
-        self.file_header.setToolTip(diff.path)
+        version = "STAGED" if diff.staged else "WORKING TREE"
+        self.file_header.setText(f"{diff.path}   [{version}]")
+        self.file_header.setToolTip(f"{diff.path}\nGit state: {version.lower()}")
         self.file_header.setVisible(bool(diff.lines))
         self.diff.setPlainText(
             "\n".join(self._display_lines(diff)) or "No textual changes to display."
@@ -402,7 +410,7 @@ class DiffView(QWidget):
         self.selection_changed.emit()
 
     def reset(self) -> None:
-        self._remember_selection()
+        self._saved_selections.clear()
         self.current_diff = None
         self._current_selection_key = None
         self._interactive = True
@@ -473,23 +481,10 @@ class DiffView(QWidget):
         diff = self.current_diff
         if diff is None or not self._interactive:
             return
-        if (
-            not extend
-            and 0 <= line_index < len(diff.lines)
-            and diff.lines[line_index].kind == "hunk"
-        ):
-            hunk_index = diff.hunk_index_for_line(line_index)
-            if hunk_index is not None:
-                self.hunk_requested.emit(diff, hunk_index)
-            return
-        selected_before = set(self.selection.selected_lines)
-        whole_file_before = self.selection.whole_file
         if self.selection.toggle(diff, line_index, extend=extend):
-            changed_lines = selected_before ^ self.selection.selected_lines
-            self.selection.selected_lines = selected_before
-            self.selection.whole_file = whole_file_before
-            if changed_lines:
-                self.lines_requested.emit(diff, changed_lines)
+            self._remember_selection()
+            self.render_selection()
+            self.selection_changed.emit()
 
     @Slot(int, bool)
     def _side_old_line_activated(self, row_index: int, extend: bool) -> None:

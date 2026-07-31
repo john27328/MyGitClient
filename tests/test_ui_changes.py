@@ -90,7 +90,7 @@ def test_changed_file_can_be_opened_with_the_system_application(
     window.close()
 
 
-def test_file_checkbox_stages_and_unstages_changes(
+def test_file_checkbox_selects_then_buttons_stage_and_unstage_changes(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
     repository = tmp_path / "repository"
@@ -119,8 +119,11 @@ def test_file_checkbox_stages_and_unstages_changes(
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
     gutter = window.findChild(DiffGutter, "diffGutter")
+    stage_button = window.findChild(QPushButton, "stageSelectedButton")
+    unstage_button = window.findChild(QPushButton, "unstageSelectedButton")
     assert changes is not None
     assert gutter is not None
+    assert stage_button is not None and unstage_button is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     item = changes.topLevelItem(0)
@@ -128,28 +131,27 @@ def test_file_checkbox_stages_and_unstages_changes(
     assert item.checkState(0) is Qt.CheckState.Unchecked
     changes.setCurrentItem(item)
 
-    def file_state_is(expected: Qt.CheckState) -> bool:
+    def file_is_staged(expected: bool) -> bool:
         current = changes.topLevelItem(0)
-        if current is None or current.checkState(0) is not expected:
+        if current is None:
             return False
         tooltip = current.toolTip(0)
-        if expected is Qt.CheckState.Checked:
+        if expected:
             return "Staged: Modified" in tooltip and "Not staged:" not in tooltip
         return "Staged:" not in tooltip and "Not staged: Modified" in tooltip
 
     item.setCheckState(0, Qt.CheckState.Checked)
-    qtbot.waitUntil(lambda: file_state_is(Qt.CheckState.Checked), timeout=5000)
+    assert not file_is_staged(True)
+    stage_button.click()
+    qtbot.waitUntil(lambda: file_is_staged(True), timeout=5000)
     staged_item = changes.topLevelItem(0)
     assert staged_item is not None
     assert staged_item.checkState(0) is Qt.CheckState.Checked
-    qtbot.waitUntil(lambda: gutter.toPlainText().count("✓") == 2, timeout=5000)
-
-    staged_item.setCheckState(0, Qt.CheckState.Unchecked)
-    qtbot.waitUntil(lambda: file_state_is(Qt.CheckState.Unchecked), timeout=5000)
+    unstage_button.click()
+    qtbot.waitUntil(lambda: file_is_staged(False), timeout=5000)
     unstaged_item = changes.topLevelItem(0)
     assert unstaged_item is not None
-    assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
-    qtbot.waitUntil(lambda: "✓" not in gutter.toPlainText(), timeout=5000)
+    assert unstaged_item.checkState(0) is Qt.CheckState.Checked
     window.close()
 
 
@@ -270,6 +272,8 @@ def test_commit_and_amend_from_commit_panel(
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     diff_header = window.findChild(QLabel, "diffFileHeader")
     amend = window.findChild(QCheckBox, "amendCheckBox")
+    stage_button = window.findChild(QPushButton, "stageSelectedButton")
+    unstage_button = window.findChild(QPushButton, "unstageSelectedButton")
     assert changes is not None
     assert history is not None
     assert message is not None
@@ -278,6 +282,7 @@ def test_commit_and_amend_from_commit_panel(
     assert diff_panel is not None
     assert diff_header is not None
     assert amend is not None
+    assert stage_button is not None and unstage_button is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     assert message.toPlainText() == "Add tracked.txt"
@@ -286,7 +291,7 @@ def test_commit_and_amend_from_commit_panel(
     changed_item = changes.topLevelItem(0)
     assert changed_item is not None
     changes.setCurrentItem(changed_item)
-    qtbot.waitUntil(lambda: diff_header.text() == "tracked.txt", timeout=5000)
+    qtbot.waitUntil(lambda: diff_header.text().startswith("tracked.txt"), timeout=5000)
 
     message.setPlainText("initial commit")
     assert commit_button.isEnabled()
@@ -317,20 +322,18 @@ def test_commit_and_amend_from_commit_panel(
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     clean_amend_item = changes.topLevelItem(0)
     assert clean_amend_item is not None
-    qtbot.waitUntil(
-        lambda: clean_amend_item.checkState(0) is Qt.CheckState.Checked,
-        timeout=5000,
-    )
+    assert clean_amend_item.checkState(0) is Qt.CheckState.Unchecked
     amend.setChecked(False)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 0, timeout=5000)
 
-    def first_item_has(*, working_status: str | None = None, partial: bool = False) -> bool:
+    def first_item_has(*, working_status: str | None = None) -> bool:
         item = changes.topLevelItem(0)
         if changes.topLevelItemCount() != 1 or item is None:
             return False
-        if working_status is not None and f"Not staged: {working_status}" not in item.toolTip(0):
-            return False
-        return not partial or item.checkState(0) is Qt.CheckState.PartiallyChecked
+        return not (
+            working_status is not None
+            and f"Not staged: {working_status}" not in item.toolTip(0)
+        )
 
     tracked.write_text("content plus unstaged\n", encoding="utf-8")
     qtbot.waitUntil(
@@ -342,27 +345,45 @@ def test_commit_and_amend_from_commit_panel(
     assert description.toPlainText() == "- Add tracked.txt"
     qtbot.waitUntil(lambda: "+content" in diff_panel.toPlainText(), timeout=5000)
     assert "diff --git" not in diff_panel.toPlainText()
-    qtbot.waitUntil(
-        lambda: first_item_has(partial=True),
-        timeout=5000,
-    )
+    qtbot.waitUntil(first_item_has, timeout=5000)
     amend_item = changes.topLevelItem(0)
     assert amend_item is not None
-    assert amend_item.checkState(0) is Qt.CheckState.PartiallyChecked
+    assert amend_item.checkState(0) is Qt.CheckState.Unchecked
     assert diff_panel.toPlainText() != "Loading diff…"
 
     assert changes.isEnabled()
-    amend_item.setCheckState(0, Qt.CheckState.Unchecked)
+    amend_item.setCheckState(0, Qt.CheckState.Checked)
+    qtbot.waitUntil(unstage_button.isEnabled, timeout=5000)
+    unstage_button.click()
+
+    def cached_amend_diff() -> str:
+        return subprocess.run(
+            [
+                "git",
+                "diff",
+                "--cached",
+                "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+                "--",
+                "tracked.txt",
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
     qtbot.waitUntil(
-        lambda: diff_panel.toPlainText() == "No textual changes to display.", timeout=5000
+        lambda: cached_amend_diff() == "", timeout=5000
     )
     assert tracked.read_text(encoding="utf-8") == "content plus unstaged\n"
 
     amend_item = changes.topLevelItem(0)
     assert amend_item is not None
     amend_item.setCheckState(0, Qt.CheckState.Checked)
+    qtbot.waitUntil(stage_button.isEnabled, timeout=5000)
+    stage_button.click()
     qtbot.waitUntil(
-        lambda: "+content plus unstaged" in diff_panel.toPlainText(), timeout=15000
+        lambda: "+content plus unstaged" in cached_amend_diff(), timeout=15000
     )
     amend_item = changes.topLevelItem(0)
     assert amend_item is not None

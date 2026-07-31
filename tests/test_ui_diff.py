@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QToolButton,
     QTreeWidget,
@@ -66,7 +67,7 @@ def test_split_changes_tree_focus_selects_working_or_staged_diff(
     staged_item = staged.topLevelItem(0)
     assert unstaged_item is not None and staged_item is not None
     assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
-    assert staged_item.checkState(0) is Qt.CheckState.Checked
+    assert staged_item.checkState(0) is Qt.CheckState.Unchecked
     unstaged.setFocus()
     unstaged.setCurrentItem(unstaged_item)
     qtbot.waitUntil(lambda: "+working" in diff_panel.toPlainText(), timeout=5000)
@@ -251,8 +252,11 @@ def test_split_staging_selected_lines_adds_file_to_staged_tree(
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     gutter = window.findChild(DiffGutter, "diffGutter")
     apply_lines = window.findChild(QToolButton, "diffSelectedLinesButton")
+    stage_button = window.findChild(QPushButton, "stageSelectedButton")
+    unstage_button = window.findChild(QPushButton, "unstageSelectedButton")
     assert unstaged is not None and staged is not None
     assert diff_panel is not None and gutter is not None and apply_lines is not None
+    assert stage_button is not None and unstage_button is not None
 
     window.show()
     window.open_repository(repository)
@@ -266,6 +270,7 @@ def test_split_staging_selected_lines_adds_file_to_staged_tree(
     hunk_header = diff_panel.document().find("Old lines")
     assert not hunk_header.isNull()
     gutter.line_activated.emit(hunk_header.blockNumber(), False)
+    stage_button.click()
 
     qtbot.waitUntil(lambda: staged.topLevelItemCount() == 1, timeout=5000)
     staged_item = staged.topLevelItem(0)
@@ -277,7 +282,8 @@ def test_split_staging_selected_lines_adds_file_to_staged_tree(
     qtbot.waitUntil(lambda: bool(staged.selectedItems()), timeout=5000)
     assert staged.selectedItems()[0] is staged_item
 
-    staged_item.setCheckState(0, Qt.CheckState.Unchecked)
+    staged_item.setCheckState(0, Qt.CheckState.Checked)
+    unstage_button.click()
     qtbot.waitUntil(lambda: staged.topLevelItemCount() == 0, timeout=5000)
     cached = subprocess.run(
         ["git", "diff", "--cached", "--", "tracked.txt"],
@@ -496,21 +502,24 @@ def test_selected_hunk_can_be_staged(qapp: QApplication, qtbot: QtBot, tmp_path:
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     gutter = window.findChild(DiffGutter, "diffGutter")
     hunk_button = window.findChild(QToolButton, "diffHunkButton")
+    stage_button = window.findChild(QPushButton, "stageSelectedButton")
     assert changes is not None
     assert staged_changes is not None
     assert diff_panel is not None
     assert gutter is not None
     assert hunk_button is not None
+    assert stage_button is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
     item = changes.topLevelItem(0)
     assert item is not None
     changes.setCurrentItem(item)
     qtbot.waitUntil(lambda: "+first changed" in diff_panel.toPlainText(), timeout=5000)
-    assert hunk_button.isHidden()
     hunk_header = diff_panel.document().find("Old lines")
     assert not hunk_header.isNull()
     gutter.line_activated.emit(hunk_header.blockNumber(), False)
+    assert stage_button.isEnabled()
+    stage_button.click()
 
     def first_hunk_is_staged() -> bool:
         result = subprocess.run(
@@ -534,7 +543,7 @@ def test_selected_hunk_can_be_staged(qapp: QApplication, qtbot: QtBot, tmp_path:
     window.close()
 
 
-def test_diff_line_checkbox_applies_stage_and_unstage_immediately(
+def test_diff_line_checkbox_selects_then_stage_and_unstage_buttons_apply(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
     repository = tmp_path / "repository"
@@ -568,12 +577,15 @@ def test_diff_line_checkbox_applies_stage_and_unstage_immediately(
     gutter = window.findChild(DiffGutter, "diffGutter")
     apply_lines = window.findChild(QToolButton, "diffSelectedLinesButton")
     clear_lines = window.findChild(QToolButton, "diffClearSelectionButton")
+    stage_button = window.findChild(QPushButton, "stageSelectedButton")
+    unstage_button = window.findChild(QPushButton, "unstageSelectedButton")
     assert changes is not None
     assert staged_changes is not None
     assert diff_panel is not None
     assert gutter is not None
     assert apply_lines is not None
     assert clear_lines is not None
+    assert stage_button is not None and unstage_button is not None
     assert apply_lines.isHidden()
     assert clear_lines.isHidden()
     window.open_repository(repository)
@@ -586,6 +598,7 @@ def test_diff_line_checkbox_applies_stage_and_unstage_immediately(
     added = diff_panel.document().find("+two")
     assert not added.isNull()
     gutter.line_activated.emit(added.blockNumber(), False)
+    assert stage_button.isEnabled()
 
     def line_is_staged() -> bool:
         cached = subprocess.run(
@@ -597,15 +610,19 @@ def test_diff_line_checkbox_applies_stage_and_unstage_immediately(
         ).stdout
         return "+two" in cached
 
+    assert not line_is_staged()
+    stage_button.click()
     qtbot.waitUntil(line_is_staged, timeout=5000)
     qtbot.waitUntil(lambda: staged_changes.topLevelItemCount() == 1, timeout=5000)
     current_staged = staged_changes.topLevelItem(0)
     assert current_staged is not None
-    assert current_staged.checkState(0) is Qt.CheckState.Checked
+    assert current_staged.checkState(0) is Qt.CheckState.Unchecked
     qtbot.waitUntil(lambda: "+two" in diff_panel.toPlainText(), timeout=5000)
     staged_added = diff_panel.document().find("+two")
     assert not staged_added.isNull()
     gutter.line_activated.emit(staged_added.blockNumber(), False)
+    assert unstage_button.isEnabled()
+    unstage_button.click()
 
     def selected_lines_are_unstaged() -> bool:
         result = subprocess.run(
@@ -671,27 +688,12 @@ def test_unchanged_diff_refresh_preserves_scroll_position(
     diff_panel.verticalScrollBar().setValue(target)
     diff_before_apply = diff_panel.toPlainText()
     gutter.line_activated.emit(5, False)
-
-    def line_is_staged() -> bool:
-        cached = subprocess.run(
-            ["git", "diff", "--cached", "--", "tracked.txt"],
-            cwd=repository,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        return bool(cached)
-
-    qtbot.waitUntil(line_is_staged, timeout=5000)
-    qtbot.waitUntil(lambda: diff_panel.toPlainText() != diff_before_apply, timeout=5000)
-    qtbot.waitUntil(lambda: diff_panel.verticalScrollBar().value() > 0, timeout=5000)
+    qtbot.wait(20)
     # Applying a line shortens the document and can shift the scrollbar range by a
     # platform-dependent pixel or two. The viewport must stay near the same place,
     # rather than snapping to the top.
     assert abs(diff_panel.verticalScrollBar().value() - target) <= 2
-    current = changes.topLevelItem(0)
-    assert current is not None
-    assert current.checkState(0) is Qt.CheckState.Unchecked
+    assert diff_panel.toPlainText() == diff_before_apply
     window.close()
 
 

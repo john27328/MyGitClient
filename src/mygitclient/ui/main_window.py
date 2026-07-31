@@ -219,11 +219,13 @@ class MainWindow(QMainWindow):
         self._discard_action.triggered.connect(self._discard_selected_file)
         self._stash_action.triggered.connect(self._stash_selected_files)
         self._ignore_action.triggered.connect(self._ignore_selected_file)
-        self._stage_all.stateChanged.connect(self._stage_all_changed)
         self._commit_message.textChanged.connect(self._update_commit_controls)
         self._amend.toggled.connect(self._amend_toggled)
         self._commit_button.clicked.connect(self._create_commit)
-        self._changes_panel.folder_stage_requested.connect(self._stage_folder)
+        self._changes_panel.stage_requested.connect(self._stage_checked_changes)
+        self._changes_panel.unstage_requested.connect(self._unstage_checked_changes)
+        self._changes_panel.stash_requested.connect(self._stash_checked_changes)
+        self._changes_panel.discard_requested.connect(self._discard_checked_changes)
         self._changes_panel.view_mode_changed.connect(self._changes_view_mode_changed)
         self._changes_panel.presentation_mode_changed.connect(
             self._changes_view_mode_changed
@@ -301,7 +303,7 @@ class MainWindow(QMainWindow):
 
         self._diff_view = DiffView(self._settings)
         self._diff_view.setObjectName("diffView")
-        self._diff_view.set_auto_apply_hunks(True)
+        self._diff_view.set_auto_apply_hunks(False)
         self._conflict_editor = ConflictEditor()
         self._conflict_editor.save_requested.connect(self._save_conflict_result)
         self._diff_container = QStackedWidget()
@@ -318,9 +320,7 @@ class MainWindow(QMainWindow):
 
         self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
-        self._diff_view.selection_changed.connect(self._sync_selected_file_checkbox)
-        self._diff_view.lines_requested.connect(self._apply_diff_lines)
-        self._diff_view.hunk_requested.connect(self._apply_diff_hunk)
+        self._diff_view.selection_changed.connect(self._update_selection_actions)
         self._diff_view.context_requested.connect(self._diff_context_changed)
         self._diff_context_lines = 3
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
@@ -657,7 +657,6 @@ class MainWindow(QMainWindow):
             tree.itemSelectionChanged.connect(self._selected_file_changed)
             tree.focused.connect(self._selected_file_changed)
             tree.itemSelectionChanged.connect(self._update_file_actions)
-            tree.itemChanged.connect(self._stage_checkbox_changed)
 
     def _apply_saved_ui_font(self) -> None:
         app = QApplication.instance()
@@ -754,6 +753,8 @@ class MainWindow(QMainWindow):
         self._refresh_timer.stop()
         self._repository_activation += 1
         activation = self._repository_activation
+        if repository != self._repository:
+            self._changes_panel.clear_checked_files()
         if repository not in self._open_repositories:
             self._open_repositories.append(repository)
             self._workspace.save_open_repositories(self._open_repositories)
@@ -1966,7 +1967,6 @@ class MainWindow(QMainWindow):
         self._update_sync_indicators()
         changed_paths = {file.path for file in status_value.files}
         self._diff_view.retain_changed_paths(value.repository, changed_paths)
-        stage_all_blocker = QSignalBlocker(self._stage_all)
         files_to_show = list(status_value.files)
         if self._amend.isChecked():
             visible_paths = {file.path for file in files_to_show}
@@ -1982,16 +1982,6 @@ class MainWindow(QMainWindow):
             selected_path,
             amend=self._amend.isChecked(),
         )
-        stageable = [file for file in status_value.files if not file.unmerged]
-        has_conflicts = any(file.unmerged for file in status_value.files)
-        self._stage_all.setEnabled(bool(stageable) and not has_conflicts)
-        if not stageable or not any(file.is_staged for file in stageable):
-            self._stage_all.setCheckState(Qt.CheckState.Unchecked)
-        elif all(file.is_staged and not file.has_worktree_change for file in stageable):
-            self._stage_all.setCheckState(Qt.CheckState.Checked)
-        else:
-            self._stage_all.setCheckState(Qt.CheckState.PartiallyChecked)
-        del stage_all_blocker
         selection_restored = False
         if item_to_restore is not None:
             self._changes_panel.active_tree().setCurrentItem(item_to_restore)
@@ -2085,7 +2075,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _changes_view_mode_changed(self, _mode: str) -> None:
-        self._diff_view.set_auto_apply_hunks(True)
+        self._diff_view.set_auto_apply_hunks(False)
         if self._repository is None:
             return
         self._repository_status = None
@@ -2539,6 +2529,128 @@ class MainWindow(QMainWindow):
                 files.append(value)
         return tuple(files)
 
+    def _checked_files(self) -> tuple[FileStatus, ...]:
+        return self._changes_panel.checked_files()
+
+    @Slot()
+    def _update_selection_actions(self) -> None:
+        self._changes_panel.refresh_selection_controls()
+        diff = self._diff_view.current_diff
+        if diff is None or not self._diff_view.selected_line_indexes:
+            return
+        if diff.staged:
+            self._changes_panel.unstage_button.setEnabled(True)
+        else:
+            self._changes_panel.stage_button.setEnabled(True)
+
+    @Slot()
+    def _stage_checked_changes(self) -> None:
+        diff = self._diff_view.current_diff
+        selected_lines = self._diff_view.selected_line_indexes
+        if diff is not None and selected_lines and not diff.staged:
+            self._apply_diff_lines(diff, selected_lines)
+            self._diff_view.clear_selection()
+            return
+        self._set_checked_files_staged(True)
+
+    @Slot()
+    def _unstage_checked_changes(self) -> None:
+        diff = self._diff_view.current_diff
+        selected_lines = self._diff_view.selected_line_indexes
+        if diff is not None and selected_lines and diff.staged:
+            self._apply_diff_lines(diff, selected_lines)
+            self._diff_view.clear_selection()
+            return
+        self._set_checked_files_staged(False)
+
+    def _set_checked_files_staged(self, staged: bool) -> None:
+        repository = self._repository
+        status = self._repository_status
+        checked = self._checked_files()
+        if staged:
+            for file in checked:
+                if not file.unmerged:
+                    continue
+                path = self._selected_file_path(file)
+                markers = conflict_marker_lines(path) if path is not None else ()
+                if not markers:
+                    continue
+                line_list = ", ".join(str(line) for line in markers[:8])
+                answer = QMessageBox.warning(
+                    self,
+                    "Conflict markers remain",
+                    f"{file.path} still contains conflict markers on line(s) {line_list}.\n\n"
+                    "Mark this file as resolved anyway?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    return
+        if (
+            repository is not None
+            and status is not None
+            and self._amend.isChecked()
+            and status.branch.oid is not None
+            and checked
+        ):
+            self._set_changes_trees_enabled(False)
+            for file in checked:
+                self._git.request_amend_file(
+                    repository,
+                    status.branch.oid,
+                    self._amend_parent_oid,
+                    file.path,
+                    included=staged,
+                )
+            return
+        files = tuple(
+            file
+            for file in checked
+            if ((file.has_worktree_change or file.unmerged) if staged else file.is_staged)
+        )
+        if repository is None or status is None or not files:
+            return
+        self._set_changes_trees_enabled(False)
+        action = "Staging" if staged else "Unstaging"
+        self._status_label.setText(f"{action} {len(files)} selected file(s)…")
+        self._git.request_stage_files(
+            repository,
+            files,
+            staged=staged,
+            has_head=status.branch.oid is not None,
+        )
+
+    @Slot()
+    def _stash_checked_changes(self) -> None:
+        files = tuple(file for file in self._checked_files() if file.has_worktree_change)
+        repository = self._repository
+        if repository is None or not files or any(file.unmerged for file in files):
+            return
+        self._changes_container.setEnabled(False)
+        self._status_label.setText(f"Stashing {len(files)} selected file(s)…")
+        self._git.request_stash_files(repository, files)
+
+    @Slot()
+    def _discard_checked_changes(self) -> None:
+        files = tuple(file for file in self._checked_files() if file.has_worktree_change)
+        repository = self._repository
+        if repository is None or not files or any(file.unmerged for file in files):
+            return
+        target = files[0].path if len(files) == 1 else f"{len(files)} selected files"
+        answer = QMessageBox.question(
+            self,
+            "Discard changes",
+            f"Permanently discard all unstaged changes to {target}?",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Discard:
+            return
+        self._changes_container.setEnabled(False)
+        self._status_label.setText(f"Discarding changes to {target}…")
+        for file in files:
+            self._git.request_discard(repository, file)
+
     def _selected_file(self) -> FileStatus | None:
         selected_items = self._changes_panel.active_tree().selectedItems()
         if not selected_items:
@@ -2652,13 +2764,12 @@ class MainWindow(QMainWindow):
             and current_diff.path == diff_value.path
             and current_diff.staged == diff_value.staged
         )
-        whole_file_staged = diff_value.staged and file.is_staged
         self._diff_container.setCurrentWidget(self._diff_view)
         self._diff_view.display_diff(
             diff_value,
             selection_key=(value.repository, diff_value.path, diff_value.staged),
             preserve_scroll=preserve_view,
-            whole_file_staged=whole_file_staged,
+            whole_file_staged=False,
         )
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
