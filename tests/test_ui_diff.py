@@ -4,14 +4,17 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QToolButton,
     QTreeWidget,
+    QTreeWidgetItem,
 )
 from pytestqt.qtbot import QtBot
 
@@ -20,6 +23,52 @@ from mygitclient.theme import Theme
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_overview import DiffOverview
 from mygitclient.ui.main_window import MainWindow
+
+
+class HistoryDiffWindow(MainWindow):
+    def prepare_history_diff(
+        self,
+    ) -> tuple[QTreeWidget, QTreeWidget, QPlainTextEdit, QTreeWidgetItem]:
+        history = self._history_panel.tree
+        files = self._history_panel.files
+        commit_item = QTreeWidgetItem(["commit"])
+        files.addTopLevelItem(QTreeWidgetItem(["M", "file.py"]))
+        history.addTopLevelItem(commit_item)
+        history.setCurrentItem(commit_item)
+        self._workspace_tabs.setCurrentIndex(1)
+        self._commit_diff_visible = True
+        self._diff_view.show()
+        self._diff_view.diff.show()
+        self._diff_container.show()
+        return history, files, self._diff_view.diff, commit_item
+
+    @property
+    def commit_diff_visible(self) -> bool:
+        return self._commit_diff_visible
+
+    @property
+    def diff_container(self) -> QStackedWidget:
+        return self._diff_container
+
+
+def test_escape_closes_only_history_diff_and_returns_focus(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "close-history-diff.ini"), QSettings.Format.IniFormat)
+    window = HistoryDiffWindow(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
+    history, files, diff, commit_item = window.prepare_history_diff()
+    window.show()
+    diff.setFocus()
+    qtbot.waitUntil(diff.hasFocus)
+
+    QTest.keyClick(diff, Qt.Key.Key_Escape)
+
+    assert not window.commit_diff_visible
+    assert history.currentItem() is commit_item
+    assert files.hasFocus()
+    assert not window.diff_container.isVisible()
+    window.close()
 
 
 def test_split_changes_tree_focus_selects_working_or_staged_diff(

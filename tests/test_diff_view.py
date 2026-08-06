@@ -34,6 +34,23 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     )
     assert view.findChild(QLabel, "diffVersionLabel") is view.version_label
     assert view.findChild(QLabel, "diffFileHeader") is view.file_header
+    assert view.findChild(QToolButton, "diffCloseButton") is view.close_button
+
+
+def test_history_close_button_is_explicit_and_preserves_saved_selections(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "diff-close.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    requested: list[bool] = []
+    view.close_requested.connect(lambda: requested.append(True))
+
+    assert view.close_button.isHidden()
+    view.set_close_available(True)
+    assert view.close_button.isHidden()
+    view.close_button.click()
+    assert requested == [True]
 
 
 def test_single_diff_source_is_a_label_and_two_sources_are_selectable(

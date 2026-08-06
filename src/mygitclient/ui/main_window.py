@@ -22,6 +22,8 @@ from PySide6.QtGui import (
     QCloseEvent,
     QDesktopServices,
     QFontDatabase,
+    QKeySequence,
+    QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -322,6 +324,10 @@ class MainWindow(QMainWindow):
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
         self._diff_view.selection_changed.connect(self._update_selection_actions)
         self._diff_view.context_requested.connect(self._diff_context_changed)
+        self._diff_view.close_requested.connect(self._close_history_diff)
+        self._close_diff_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._close_diff_shortcut.setObjectName("closeHistoryDiffShortcut")
+        self._close_diff_shortcut.activated.connect(self._close_history_diff)
         self._diff_context_lines = 3
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
         self._wrap_button.toggled.connect(self._diff_wrap_changed)
@@ -1214,6 +1220,7 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
+        self._diff_view.set_close_available(True)
         self._diff_container.show()
         self._commit_diff_visible = True
         self._workspace_tab_changed(self._workspace_tabs.currentIndex())
@@ -1243,6 +1250,7 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
+        self._diff_view.set_close_available(True)
         self._diff_view_mode.show()
         self._diff.show()
         self._diff_container.show()
@@ -2771,8 +2779,22 @@ class MainWindow(QMainWindow):
             preserve_scroll=preserve_view,
             whole_file_staged=False,
         )
+        self._diff_view.set_close_available(False)
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
+
+    @Slot()
+    def _close_history_diff(self) -> None:
+        if self._workspace_tabs.currentIndex() != 1 or not self._commit_diff_visible:
+            return
+        self._commit_diff_visible = False
+        self._diff_view.clear_display()
+        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
+        target = self._history_panel.files
+        if target.topLevelItemCount() == 0:
+            target = self._history_panel.tree
+        target.setFocus()
+        self._status_label.setText("Closed commit diff")
 
     def _sync_selected_file_checkbox(self) -> None:
         if self._amend.isChecked():

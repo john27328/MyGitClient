@@ -45,6 +45,7 @@ class DiffView(QWidget):
     lines_requested = Signal(object, object)
     hunk_requested = Signal(object, int)
     context_requested = Signal(int)
+    close_requested = Signal()
 
     def __init__(self, settings: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -87,7 +88,21 @@ class DiffView(QWidget):
             "QLabel { padding: 5px 8px; background: palette(alternate-base); "
             "border-bottom: 1px solid palette(midlight); }"
         )
-        self.file_header.hide()
+        self.close_button = QToolButton()
+        self.close_button.setObjectName("diffCloseButton")
+        self.close_button.setText("\u00d7")
+        self.close_button.setToolTip("Close diff (Esc)")
+        self.close_button.clicked.connect(self.close_requested)
+        self.close_button.hide()
+
+        self.file_header_container = QWidget()
+        self.file_header_container.setObjectName("diffFileHeaderContainer")
+        file_header_layout = QHBoxLayout(self.file_header_container)
+        file_header_layout.setContentsMargins(0, 0, 4, 0)
+        file_header_layout.setSpacing(0)
+        file_header_layout.addWidget(self.file_header, 1)
+        file_header_layout.addWidget(self.close_button)
+        self.file_header_container.hide()
 
         self.gutter = DiffGutter()
         self.gutter.setObjectName("diffGutter")
@@ -266,7 +281,7 @@ class DiffView(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(toolbar)
-        layout.addWidget(self.file_header)
+        layout.addWidget(self.file_header_container)
         layout.addWidget(self.stack)
         self.hide()
         self.gutter.line_activated.connect(self._gutter_line_activated)
@@ -391,6 +406,7 @@ class DiffView(QWidget):
         self.file_header.setText(f"{diff.path}   [{version}]")
         self.file_header.setToolTip(f"{diff.path}\nGit state: {version.lower()}")
         self.file_header.setVisible(bool(diff.lines))
+        self.file_header_container.setVisible(bool(diff.lines))
         self.diff.setPlainText(
             "\n".join(self._display_lines(diff)) or "No textual changes to display."
         )
@@ -411,6 +427,11 @@ class DiffView(QWidget):
 
     def reset(self) -> None:
         self._saved_selections.clear()
+        self.clear_display()
+
+    def clear_display(self) -> None:
+        """Close the rendered diff without forgetting saved working-tree selections."""
+
         self.current_diff = None
         self._current_selection_key = None
         self._interactive = True
@@ -423,6 +444,8 @@ class DiffView(QWidget):
         self.side_new_gutter.clear()
         self.file_header.clear()
         self.file_header.hide()
+        self.file_header_container.hide()
+        self.close_button.hide()
         self._side_old_line_indexes = []
         self._side_new_line_indexes = []
         self.side_old_highlighter.set_inline_ranges({})
@@ -435,6 +458,9 @@ class DiffView(QWidget):
         self.diff.setExtraSelections([])
         self.side_old.setExtraSelections([])
         self.side_new.setExtraSelections([])
+
+    def set_close_available(self, available: bool) -> None:
+        self.close_button.setVisible(available and self.current_diff is not None)
 
     def render_selection(self) -> None:
         diff = self.current_diff
