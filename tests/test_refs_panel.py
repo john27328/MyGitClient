@@ -87,6 +87,44 @@ def test_refs_panel_exposes_branch_context_actions(qtbot: QtBot) -> None:
     assert rebased == [branch]
 
 
+def test_cleanup_gone_branches_emits_only_safe_candidates(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    gone = BranchInfo(
+        "refs/heads/old",
+        "old",
+        "1" * 40,
+        False,
+        upstream="origin/old",
+        upstream_gone=True,
+    )
+    current_gone = BranchInfo(
+        "refs/heads/current",
+        "current",
+        "2" * 40,
+        False,
+        current=True,
+        upstream="origin/current",
+        upstream_gone=True,
+    )
+    live = BranchInfo(
+        "refs/heads/live",
+        "live",
+        "3" * 40,
+        False,
+        upstream="origin/live",
+    )
+    panel.show_branches(
+        BranchesSnapshot(Path("repository"), (gone, current_gone, live))
+    )
+    requested: list[object] = []
+    panel.cleanup_gone_requested.connect(requested.append)
+
+    panel.cleanup_gone_action.trigger()
+
+    assert requested == [(gone,)]
+
+
 def test_refs_panel_shows_stashes_and_submodules(qtbot: QtBot, tmp_path: Path) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)

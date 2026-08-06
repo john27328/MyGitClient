@@ -33,6 +33,7 @@ class RefsPanel(QWidget):
     rename_requested = Signal(object)
     delete_requested = Signal(object)
     force_delete_requested = Signal(object)
+    cleanup_gone_requested = Signal(object)
     rebase_requested = Signal(object)
     create_tag_requested = Signal()
     create_branch_requested = Signal()
@@ -88,6 +89,11 @@ class RefsPanel(QWidget):
         self.delete_action.triggered.connect(self._delete_selected)
         self.force_delete_action = self.context_menu.addAction("Force delete…")
         self.force_delete_action.triggered.connect(self._force_delete_selected)
+        self.cleanup_gone_action = self.context_menu.addAction(
+            "Clean up gone branches…"
+        )
+        self.cleanup_gone_action.setObjectName("cleanupGoneBranchesAction")
+        self.cleanup_gone_action.triggered.connect(self._cleanup_gone_branches)
         self.rebase_action = self.context_menu.addAction(
             "Rebase current branch onto this…"
         )
@@ -337,6 +343,8 @@ class RefsPanel(QWidget):
         self.delete_action.setEnabled(editable)
         self.force_delete_action.setVisible(branch is not None)
         self.force_delete_action.setEnabled(editable)
+        self.cleanup_gone_action.setVisible(root_label == "Branches")
+        self.cleanup_gone_action.setEnabled(bool(self._gone_branches()))
         self.rebase_action.setVisible(branch is not None)
         self.rebase_action.setEnabled(branch is not None and not branch.current)
         self.create_tag_action.setVisible(tag is not None or root_label == "Tags")
@@ -378,6 +386,19 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo) and not branch.remote and not branch.current:
             self.force_delete_requested.emit(branch)
+
+    @Slot()
+    def _cleanup_gone_branches(self) -> None:
+        branches = self._gone_branches()
+        if branches:
+            self.cleanup_gone_requested.emit(branches)
+
+    def _gone_branches(self) -> tuple[BranchInfo, ...]:
+        return tuple(
+            branch
+            for branch in self._branches
+            if branch.upstream_gone and not branch.remote and not branch.current
+        )
 
     @Slot()
     def _rebase_selected(self) -> None:

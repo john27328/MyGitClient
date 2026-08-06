@@ -252,6 +252,7 @@ class MainWindow(QMainWindow):
         refs_panel.rename_requested.connect(self._rename_branch)
         refs_panel.delete_requested.connect(self._delete_branch)
         refs_panel.force_delete_requested.connect(self._force_delete_branch)
+        refs_panel.cleanup_gone_requested.connect(self._cleanup_gone_branches)
         refs_panel.rebase_requested.connect(self._preview_rebase)
         refs_panel.create_branch_requested.connect(self._create_branch)
         refs_panel.create_tag_requested.connect(self._create_tag)
@@ -1417,6 +1418,91 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _force_delete_branch(self, value: object) -> None:
         self._confirm_delete_branch(value, force=True)
+
+    @Slot(object)
+    def _cleanup_gone_branches(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, tuple):
+            return
+        items = cast(tuple[object, ...], value)
+        branches = tuple(
+            branch
+            for branch in items
+            if isinstance(branch, BranchInfo)
+            and branch.upstream_gone
+            and not branch.remote
+            and not branch.current
+        )
+        if not branches:
+            return
+
+        dialog = QDialog(self)
+        dialog.setObjectName("cleanupGoneBranchesDialog")
+        dialog.setWindowTitle("Clean up gone branches")
+        layout = QVBoxLayout(dialog)
+        label = QLabel(
+            "These local branches track remote branches that disappeared after fetch. "
+            "Select branches to delete. Safe deletion remains the default."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        tree = QTreeWidget()
+        tree.setObjectName("cleanupGoneBranchesTree")
+        tree.setHeaderLabels(["Delete", "Branch", "Former upstream"])
+        tree.setRootIsDecorated(False)
+        for branch in branches:
+            item = QTreeWidgetItem(["", branch.name, branch.upstream or ""])
+            item.setData(0, Qt.ItemDataRole.UserRole, branch)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked)
+            tree.addTopLevelItem(item)
+        tree.resizeColumnToContents(0)
+        tree.resizeColumnToContents(1)
+        layout.addWidget(tree)
+        force = QCheckBox("Force delete selected branches that are not fully merged")
+        force.setObjectName("cleanupGoneBranchesForceCheckBox")
+        force.setToolTip("Uses git branch -D. Commits unique to a branch can be lost.")
+        layout.addWidget(force)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Delete selected")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(620, 360)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._status_label.setText("Branch cleanup cancelled")
+            return
+        selected: list[BranchInfo] = []
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            if item is None or item.checkState(0) is not Qt.CheckState.Checked:
+                continue
+            branch = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(branch, BranchInfo):
+                selected.append(branch)
+        if not selected:
+            self._status_label.setText("No branches selected for cleanup")
+            return
+        if force.isChecked():
+            confirmed = QMessageBox.warning(
+                self,
+                "Force delete branches?",
+                "Force deletion can discard commits unique to the selected branches.\n\n"
+                + "\n".join(branch.name for branch in selected),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if confirmed != QMessageBox.StandardButton.Yes:
+                self._status_label.setText("Force branch cleanup cancelled")
+                return
+        self._status_label.setText(f"Queueing deletion of {len(selected)} branch(es)…")
+        for branch in selected:
+            self._git.request_delete_branch(
+                self._repository, branch, force=force.isChecked()
+            )
 
     @Slot(object)
     def _preview_rebase(self, value: object) -> None:
