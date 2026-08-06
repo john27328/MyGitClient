@@ -20,6 +20,7 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
+    ConflictVersionsSnapshot,
     DiffSnapshot,
     FileStatus,
     GitCommand,
@@ -98,6 +99,15 @@ class _MergePreviewWorkflow:
     commits: tuple[CommitSummary, ...] = ()
 
 
+@dataclass(slots=True)
+class _ConflictVersionsWorkflow:
+    repository: Path
+    file: FileStatus
+    request_id: int
+    stage: int = 1
+    contents: list[str] | None = None
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
@@ -115,6 +125,7 @@ class GitService(QObject):
     rebase_preview_ready = Signal(object)
     merge_preview_ready = Signal(object)
     reflog_ready = Signal(object)
+    conflict_versions_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
     operation_cancelled = Signal()
@@ -181,6 +192,8 @@ class GitService(QObject):
         self._latest_merge_preview_request: dict[Path, int] = {}
         self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
         self._reflog_requests: dict[GitRunner, Path] = {}
+        self._conflict_versions_workflows: dict[GitRunner, _ConflictVersionsWorkflow] = {}
+        self._latest_conflict_versions_request: dict[tuple[Path, str], int] = {}
         self._operation_queue = GitOperationQueue(self)
         self._operation_queue.changed.connect(self.queue_changed)
 
@@ -1176,6 +1189,39 @@ class GitService(QObject):
         )
         return runner
 
+    def request_conflict_versions(
+        self, repository: Path, file: FileStatus
+    ) -> GitRunner:
+        if not file.unmerged:
+            raise ValueError("Conflict versions are available only for unmerged files")
+        request_id = next(self._request_ids)
+        self._latest_conflict_versions_request[(repository, file.path)] = request_id
+        workflow = _ConflictVersionsWorkflow(repository, file, request_id, contents=[])
+        return self._run_conflict_version(workflow)
+
+    def _run_conflict_version(self, workflow: _ConflictVersionsWorkflow) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._conflict_versions_workflows[runner] = workflow
+        runner.completed.connect(self._handle_conflict_version)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(
+            ("show", f":{workflow.stage}:{workflow.file.path}"),
+            workflow.repository,
+            f"read conflict stage {workflow.stage}",
+        ))
+        return runner
+
+    def request_mergetool(self, repository: Path, file: FileStatus) -> GitRunner:
+        if not file.unmerged:
+            raise ValueError("Merge tool can be launched only for an unmerged file")
+        return self._request_simple_mutation(
+            repository,
+            ("mergetool", "--no-prompt", "--", file.path),
+            "mergetool",
+            f"run merge tool for {file.path}",
+        )
+
     def request_resolve_conflict(
         self, repository: Path, file: FileStatus, content: str
     ) -> GitRunner | None:
@@ -1501,6 +1547,7 @@ class GitService(QObject):
         self._rebase_requests.pop(runner, None)
         self._merge_preview_workflows.pop(runner, None)
         self._reflog_requests.pop(runner, None)
+        self._conflict_versions_workflows.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(
                 f"Could not {checkout.step} during checkout: {message}"
@@ -2139,6 +2186,43 @@ class GitService(QObject):
             if line
         )
         self.reflog_ready.emit(ReflogSnapshot(repository, entries))
+
+    @Slot(object)
+    def _handle_conflict_version(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        workflow = self._conflict_versions_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            return
+        key = (workflow.repository, workflow.file.path)
+        if self._latest_conflict_versions_request.get(key) != workflow.request_id:
+            return
+        if result.cancelled:
+            self._latest_conflict_versions_request.pop(key, None)
+            return
+        contents = workflow.contents if workflow.contents is not None else []
+        if result.succeeded:
+            contents.append(result.stdout.decode("utf-8", errors="replace"))
+        else:
+            error = result.error_text.casefold()
+            if "does not exist" in error or "not at stage" in error:
+                contents.append("")
+            else:
+                self._latest_conflict_versions_request.pop(key, None)
+                self.operation_failed.emit(result.error_text or "Could not read conflict version")
+                return
+        if workflow.stage < 3:
+            workflow.stage += 1
+            workflow.contents = contents
+            self._run_conflict_version(workflow)
+            return
+        self._latest_conflict_versions_request.pop(key, None)
+        base, current, incoming = contents
+        self.conflict_versions_ready.emit(ConflictVersionsSnapshot(
+            workflow.repository, workflow.file.path, base, current, incoming
+        ))
 
     @Slot(object)
     def _handle_commit_files(self, result: object) -> None:

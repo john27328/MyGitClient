@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtWidgets import QPlainTextEdit, QPushButton, QStackedWidget
+from PySide6.QtWidgets import QComboBox, QPlainTextEdit, QPushButton, QStackedWidget
 from pytestqt.qtbot import QtBot
 
 from mygitclient.ui.conflict_editor import ConflictEditor
@@ -88,3 +88,31 @@ def test_conflict_editor_does_not_replace_unsaved_result(
     editor.load_file(path, "conflicted.txt")
 
     assert "manual change" in editor.result_edit.toPlainText()
+
+
+def test_conflict_editor_compares_full_sides_with_base(qtbot: QtBot, tmp_path: Path) -> None:
+    path = tmp_path / "conflicted.txt"
+    path.write_text(_conflicted_text(), encoding="utf-8")
+    editor = ConflictEditor()
+    qtbot.addWidget(editor)
+    editor.load_file(path, "conflicted.txt")
+    editor.set_versions("same\nbase\n", "same\ncurrent\n", "same\nincoming\n")
+    combo = editor.findChild(QComboBox, "conflictComparisonCombo")
+    assert combo is not None
+
+    combo.setCurrentIndex(combo.findData("base-current"))
+    assert editor.current_edit.toPlainText() == "same\nbase\n"
+    assert editor.incoming_edit.toPlainText() == "same\ncurrent\n"
+    assert editor.current_edit.extraSelections()
+    assert editor.incoming_edit.extraSelections()
+
+    combo.setCurrentIndex(combo.findData("base-incoming"))
+    assert editor.incoming_edit.toPlainText() == "same\nincoming\n"
+
+
+def test_conflict_editor_requests_external_merge_tool(qtbot: QtBot) -> None:
+    editor = ConflictEditor()
+    qtbot.addWidget(editor)
+
+    with qtbot.waitSignal(editor.mergetool_requested, timeout=1000):
+        editor.mergetool_button.click()

@@ -68,6 +68,7 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
+    ConflictVersionsSnapshot,
     DiffSnapshot,
     FileStatus,
     MergePreviewSnapshot,
@@ -316,6 +317,7 @@ class MainWindow(QMainWindow):
         self._diff_view.set_auto_apply_hunks(False)
         self._conflict_editor = ConflictEditor()
         self._conflict_editor.save_requested.connect(self._save_conflict_result)
+        self._conflict_editor.mergetool_requested.connect(self._launch_mergetool)
         self._diff_container = QStackedWidget()
         self._diff_container.setObjectName("diffContainer")
         self._diff_container.addWidget(self._diff_view)
@@ -653,6 +655,7 @@ class MainWindow(QMainWindow):
         self._git.rebase_preview_ready.connect(self._show_rebase_preview)
         self._git.merge_preview_ready.connect(self._show_merge_preview)
         self._git.reflog_ready.connect(self._show_reflog)
+        self._git.conflict_versions_ready.connect(self._show_conflict_versions)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
         self._git.commit_files_ready.connect(self._show_commit_files)
@@ -2430,6 +2433,8 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Revert completed")
         elif path == "merge":
             self._status_label.setText("Merge completed")
+        elif path == "mergetool":
+            self._status_label.setText("External merge tool completed")
         elif path == "repository-operation:changed":
             self._status_label.setText("Repository operation updated")
         elif path == "stash":
@@ -2639,6 +2644,8 @@ class MainWindow(QMainWindow):
             if path is None:
                 return
             self._conflict_editor.load_file(path, file.path)
+            if self._repository is not None:
+                self._git.request_conflict_versions(self._repository, file)
             self._diff_container.setCurrentWidget(self._conflict_editor)
             self._status_label.setText(f"Resolving conflicts in {file.path}")
             return
@@ -2745,6 +2752,36 @@ class MainWindow(QMainWindow):
         self._set_changes_trees_enabled(False)
         self._status_label.setText(f"Using {side} version of {file.path}…")
         self._git.request_conflict_side(repository, file, side=side)
+
+    @Slot(object)
+    def _show_conflict_versions(self, value: object) -> None:
+        file = self._selected_file()
+        if (
+            not isinstance(value, ConflictVersionsSnapshot)
+            or value.repository != self._repository
+            or file is None
+            or file.path != value.path
+        ):
+            return
+        self._conflict_editor.set_versions(value.base, value.current, value.incoming)
+
+    @Slot()
+    def _launch_mergetool(self) -> None:
+        repository = self._repository
+        file = self._selected_file()
+        if repository is None or file is None or not file.unmerged:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Open external merge tool",
+            f"Run the Git-configured merge tool for {file.path}?\n\n"
+            "The application will refresh the conflict state after the tool exits.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._conflict_editor.setEnabled(False)
+        self._status_label.setText(f"Running merge tool for {file.path}…")
+        self._git.request_mergetool(repository, file)
 
     @Slot(object, str)
     def _save_conflict_result(self, value: object, content: str) -> None:

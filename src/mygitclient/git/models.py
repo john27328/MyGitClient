@@ -134,6 +134,15 @@ class RepositoryOperationSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class ConflictVersionsSnapshot:
+    repository: Path
+    path: str
+    base: str
+    current: str
+    incoming: str
+
+
+@dataclass(frozen=True, slots=True)
 class CherryPickPreviewSnapshot:
     repository: Path
     commits: tuple[CommitSummary, ...]

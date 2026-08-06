@@ -15,6 +15,7 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
+    ConflictVersionsSnapshot,
     DiffSnapshot,
     FileStatus,
     MergePreviewSnapshot,
@@ -178,6 +179,15 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
     assert snapshot.operation.kind == "merge"
 
     conflict = FileStatus("tracked.txt", "U", "U", unmerged=True)
+    versions: list[object] = []
+    service.conflict_versions_ready.connect(versions.append)
+    with qtbot.waitSignal(service.conflict_versions_ready, timeout=5000):
+        service.request_conflict_versions(tmp_path, conflict)
+    snapshot = versions[-1]
+    assert isinstance(snapshot, ConflictVersionsSnapshot)
+    assert snapshot.base == "base\n"
+    assert snapshot.current == "main\n"
+    assert snapshot.incoming == "feature\n"
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_conflict_side(tmp_path, conflict, side="ours")
     assert tracked.read_text(encoding="utf-8") == "main\n"
