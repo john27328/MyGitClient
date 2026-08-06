@@ -4,7 +4,7 @@ from contextlib import suppress
 from difflib import SequenceMatcher
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -12,6 +12,7 @@ from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QFontMetrics,
+    QKeyEvent,
     QTextCursor,
     QTextOption,
 )
@@ -160,6 +161,8 @@ class DiffView(QWidget):
 
         self.side_old = self._make_side_editor("sideBySideOld")
         self.side_new = self._make_side_editor("sideBySideNew")
+        for editor in (self.diff, self.side_old, self.side_new):
+            editor.installEventFilter(self)
         self.side_old_gutter = self._make_side_gutter("sideBySideOldGutter")
         self.side_new_gutter = self._make_side_gutter("sideBySideNewGutter")
         for widget in (
@@ -292,6 +295,17 @@ class DiffView(QWidget):
         self.selected_lines_button.clicked.connect(self._request_selected_lines)
         self.hunk_button.clicked.connect(self._request_selected_hunk)
         self._update_gutter_visibility(False)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if (
+            watched in (self.diff, self.side_old, self.side_new)
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and event.key() == Qt.Key.Key_Escape
+        ):
+            self.close_requested.emit()
+            return True
+        return super().eventFilter(watched, event)
 
     def refresh_version_selector(self) -> None:
         count = self.version_combo.count()
