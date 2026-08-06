@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import sys
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
@@ -22,9 +24,12 @@ from mygitclient.git.models import (
     FileStatus,
     GitCommand,
     GitResult,
+    MergePreviewSnapshot,
     RebasePreviewSnapshot,
+    RebaseTodoItem,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
+    ReflogSnapshot,
     RepositoryOperation,
     RepositoryOperationSnapshot,
     RepositoryStatusSnapshot,
@@ -77,6 +82,17 @@ class _RebasePreviewWorkflow:
     repository: Path
     target: BranchInfo
     request_id: int
+    step: str = "head"
+    head_oid: str = ""
+    base_oid: str = ""
+    commits: tuple[CommitSummary, ...] = ()
+
+
+@dataclass(slots=True)
+class _MergePreviewWorkflow:
+    repository: Path
+    target: BranchInfo
+    request_id: int
     step: str = "base"
     base_oid: str = ""
     commits: tuple[CommitSummary, ...] = ()
@@ -97,6 +113,8 @@ class GitService(QObject):
     repository_operation_ready = Signal(object)
     revert_preview_ready = Signal(object)
     rebase_preview_ready = Signal(object)
+    merge_preview_ready = Signal(object)
+    reflog_ready = Signal(object)
     diff_ready = Signal(object)
     mutation_ready = Signal(str)
     operation_cancelled = Signal()
@@ -159,7 +177,10 @@ class GitService(QObject):
         self._rebase_preview_workflows: dict[GitRunner, _RebasePreviewWorkflow] = {}
         self._latest_rebase_preview_request: dict[Path, int] = {}
         self._rebase_requests: dict[GitRunner, tuple[Path, BranchInfo]] = {}
+        self._merge_preview_workflows: dict[GitRunner, _MergePreviewWorkflow] = {}
+        self._latest_merge_preview_request: dict[Path, int] = {}
         self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
+        self._reflog_requests: dict[GitRunner, Path] = {}
         self._operation_queue = GitOperationQueue(self)
         self._operation_queue.changed.connect(self.queue_changed)
 
@@ -626,8 +647,8 @@ class GitService(QObject):
         workflow = _RebasePreviewWorkflow(repository, target, request_id)
         return self._run_rebase_preview(
             workflow,
-            ("merge-base", "HEAD", target.full_name),
-            "find rebase base",
+            ("rev-parse", "HEAD"),
+            "read rebase recovery point",
         )
 
     def _run_rebase_preview(
@@ -662,6 +683,109 @@ class GitService(QObject):
             runner,
             GitCommand(tuple(arguments), repository, f"rebase onto {target.name}"),
         )
+        return runner
+
+    def request_interactive_rebase(
+        self,
+        repository: Path,
+        target: BranchInfo,
+        base_oid: str,
+        items: tuple[RebaseTodoItem, ...],
+        *,
+        autostash: bool,
+    ) -> GitRunner:
+        if target.current or not items:
+            raise ValueError("Interactive rebase needs a target and at least one commit")
+        actions = {"pick", "reword", "edit", "squash", "fixup", "drop"}
+        if any(item.action not in actions for item in items):
+            raise ValueError("Unsupported interactive rebase action")
+        first_kept = next((item for item in items if item.action != "drop"), None)
+        if first_kept is not None and first_kept.action in {"squash", "fixup"}:
+            raise ValueError("The first retained commit cannot be squashed or fixed up")
+        if len({item.oid for item in items}) != len(items):
+            raise ValueError("Every commit must appear exactly once")
+
+        state = resolve_git_dir(repository) / "mygitclient-rebase-state"
+        if state.exists():
+            shutil.rmtree(state)
+        state.mkdir(parents=True)
+        helper = Path(__file__).with_name("rebase_editor.py")
+        python = str(Path(sys.executable))
+        todo: list[str] = []
+        reword_index = 0
+        for item in items:
+            todo.append(f"{item.action} {item.oid} {item.subject}")
+            if item.action == "reword":
+                (state / f"message-{reword_index}.txt").write_text(
+                    item.subject.rstrip() + "\n", encoding="utf-8"
+                )
+                todo.append(f'exec "{python}" "{helper}" amend {reword_index}')
+                reword_index += 1
+        (state / "todo").write_text("\n".join(todo) + "\n", encoding="utf-8")
+        environment = _interactive_rebase_environment(state, python, helper)
+        arguments = ["rebase", "-i"]
+        if autostash:
+            arguments.append("--autostash")
+        arguments.extend(("--onto", target.full_name, base_oid))
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._rebase_requests[runner] = (repository, target)
+        runner.completed.connect(self._handle_rebase)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(
+                tuple(arguments), repository, f"interactive rebase onto {target.name}", environment
+            ),
+        )
+        return runner
+
+    def request_merge_preview(self, repository: Path, target: BranchInfo) -> GitRunner:
+        if target.current:
+            raise ValueError("Cannot merge a branch into itself")
+        request_id = next(self._request_ids)
+        self._latest_merge_preview_request[repository] = request_id
+        workflow = _MergePreviewWorkflow(repository, target, request_id)
+        return self._run_merge_preview(
+            workflow, ("merge-base", "HEAD", target.full_name), "find merge base"
+        )
+
+    def _run_merge_preview(
+        self,
+        workflow: _MergePreviewWorkflow,
+        arguments: tuple[str, ...],
+        operation: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._merge_preview_workflows[runner] = workflow
+        runner.completed.connect(self._handle_merge_preview)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(arguments, workflow.repository, operation))
+        return runner
+
+    def request_merge(
+        self, repository: Path, target: BranchInfo, *, autostash: bool
+    ) -> GitRunner:
+        arguments = ["merge", "--no-edit"]
+        if autostash:
+            arguments.append("--autostash")
+        arguments.append(target.full_name)
+        return self._request_simple_mutation(
+            repository, tuple(arguments), "merge", f"merge {target.name}"
+        )
+
+    def request_reflog(self, repository: Path) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._reflog_requests[runner] = repository
+        runner.completed.connect(self._handle_reflog)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(GitCommand(
+            ("reflog", "-n", "100", "--date=iso", "--format=%h  %gd  %cd  %gs"),
+            repository,
+            "read reflog",
+        ))
         return runner
 
     def request_amend_preview(self, repository: Path, commit_oid: str) -> GitRunner:
@@ -944,8 +1068,16 @@ class GitService(QObject):
         if kind not in supported or action not in supported[kind]:
             raise ValueError(f"Unsupported {kind} action: {action}")
         arguments = (kind, f"--{action}")
+        environment: tuple[tuple[str, str], ...] = ()
         if action == "continue":
             arguments = ("-c", "core.editor=true", *arguments)
+            state = resolve_git_dir(repository) / "mygitclient-rebase-state"
+            if kind == "rebase" and state.is_dir():
+                helper = Path(__file__).with_name("rebase_editor.py")
+                environment = _interactive_rebase_environment(
+                    state, str(Path(sys.executable)), helper
+                )
+                arguments = (kind, f"--{action}")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._operation_action_requests[runner] = (repository, kind, action)
@@ -953,7 +1085,7 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
             runner,
-            GitCommand(arguments, repository, f"{action} {kind}"),
+            GitCommand(arguments, repository, f"{action} {kind}", environment),
         )
         return runner
 
@@ -1325,6 +1457,8 @@ class GitService(QObject):
             )
             return
         operation = detect_repository_operation(resolve_git_dir(repository))
+        if kind == "rebase" and (operation is None or action == "abort"):
+            _remove_interactive_rebase_state(repository)
         if operation is None and repository in self._pending_cherry_pick_autostash:
             workflow = _CherryPickWorkflow(
                 repository, (), "restore-stash", stashed=True
@@ -1334,6 +1468,9 @@ class GitService(QObject):
                 ("stash", "pop", "--index"),
                 "restore automatic stash",
             )
+            return
+        if kind == "rebase" and operation is None:
+            self.mutation_ready.emit("rebase")
             return
         self.mutation_ready.emit("repository-operation:changed")
 
@@ -1362,6 +1499,8 @@ class GitService(QObject):
         self._revert_workflows.pop(runner, None)
         self._rebase_preview_workflows.pop(runner, None)
         self._rebase_requests.pop(runner, None)
+        self._merge_preview_workflows.pop(runner, None)
+        self._reflog_requests.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(
                 f"Could not {checkout.step} during checkout: {message}"
@@ -1838,6 +1977,7 @@ class GitService(QObject):
             )
             self.mutation_ready.emit("repository-operation:changed")
             return
+        _remove_interactive_rebase_state(request[0])
         self.mutation_ready.emit("rebase")
 
     @Slot(object)
@@ -1864,6 +2004,15 @@ class GitService(QObject):
             self._latest_rebase_preview_request.pop(workflow.repository, None)
             self.operation_failed.emit(
                 result.error_text or "Could not prepare rebase preview"
+            )
+            return
+        if workflow.step == "head":
+            workflow.head_oid = result.stdout.decode("ascii", errors="replace").strip()
+            workflow.step = "base"
+            self._run_rebase_preview(
+                workflow,
+                ("merge-base", "HEAD", workflow.target.full_name),
+                "find rebase base",
             )
             return
         if workflow.step == "base":
@@ -1917,8 +2066,79 @@ class GitService(QObject):
                 workflow.base_oid,
                 workflow.commits,
                 files,
+                workflow.head_oid,
             )
         )
+
+    @Slot(object)
+    def _handle_merge_preview(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown merge preview")
+            return
+        workflow = self._merge_preview_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected merge preview")
+            return
+        if self._latest_merge_preview_request.get(workflow.repository) != workflow.request_id:
+            return
+        if result.cancelled or not result.succeeded:
+            self._latest_merge_preview_request.pop(workflow.repository, None)
+            if result.cancelled:
+                self.operation_cancelled.emit()
+            else:
+                self.operation_failed.emit(result.error_text or "Could not prepare merge preview")
+            return
+        if workflow.step == "base":
+            workflow.base_oid = result.stdout.decode("ascii", errors="replace").strip()
+            workflow.step = "commits"
+            self._run_merge_preview(
+                workflow,
+                (
+                    "log", "--reverse", "--date=iso-strict",
+                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    f"HEAD..{workflow.target.full_name}",
+                ),
+                "read incoming merge commits",
+            )
+            return
+        if workflow.step == "commits":
+            workflow.commits = parse_commit_log(result.stdout)
+            workflow.step = "files"
+            self._run_merge_preview(
+                workflow,
+                ("diff", "--name-only", "-z", f"HEAD...{workflow.target.full_name}"),
+                "read incoming merge files",
+            )
+            return
+        self._latest_merge_preview_request.pop(workflow.repository, None)
+        files = tuple(sorted(
+            part.decode("utf-8", errors="surrogateescape")
+            for part in result.stdout.split(b"\0") if part
+        ))
+        self.merge_preview_ready.emit(MergePreviewSnapshot(
+            workflow.repository, workflow.target, workflow.base_oid,
+            workflow.commits, files,
+        ))
+
+    @Slot(object)
+    def _handle_reflog(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        repository = self._reflog_requests.pop(runner, None)
+        self._release_runner(runner)
+        if repository is None or not isinstance(result, GitResult):
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read reflog")
+            return
+        entries = tuple(
+            line for line in result.stdout.decode("utf-8", errors="replace").splitlines()
+            if line
+        )
+        self.reflog_ready.emit(ReflogSnapshot(repository, entries))
 
     @Slot(object)
     def _handle_commit_files(self, result: object) -> None:
@@ -2082,13 +2302,22 @@ def detect_repository_operation(git_dir: Path) -> RepositoryOperation | None:
     for directory_name in ("rebase-merge", "rebase-apply"):
         directory = git_dir / directory_name
         if directory.is_dir():
+            remaining = _read_operation_todo(directory / "git-rebase-todo")
+            current = _read_first_line(directory / "message")
             return RepositoryOperation(
                 "rebase",
                 _read_operation_number(directory / "msgnum", directory / "next"),
                 _read_operation_number(directory / "end", directory / "last"),
+                current,
+                remaining,
             )
     if (git_dir / "CHERRY_PICK_HEAD").is_file():
-        return RepositoryOperation("cherry-pick")
+        remaining = _read_operation_todo(git_dir / "sequencer" / "todo")
+        total = len(remaining) or None
+        return RepositoryOperation(
+            "cherry-pick", 1 if total else None, total, remaining[0] if remaining else None,
+            remaining[1:] if remaining else (),
+        )
     if (git_dir / "REVERT_HEAD").is_file():
         return RepositoryOperation("revert")
     if (git_dir / "MERGE_HEAD").is_file():
@@ -2120,3 +2349,48 @@ def _read_operation_number(*paths: Path) -> int | None:
         except (OSError, ValueError):
             continue
     return None
+
+
+def _read_first_line(path: Path) -> str | None:
+    try:
+        return next(
+            (
+                line.strip()
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ),
+            None,
+        )
+    except OSError:
+        return None
+
+
+def _read_operation_todo(path: Path) -> tuple[str, ...]:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ()
+    subjects: list[str] = []
+    for line in lines:
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        parts = value.split(maxsplit=2)
+        subjects.append(parts[2] if len(parts) == 3 else value)
+    return tuple(subjects)
+
+
+def _interactive_rebase_environment(
+    state: Path, python: str, helper: Path
+) -> tuple[tuple[str, str], ...]:
+    return (
+        ("MYGITCLIENT_REBASE_STATE", str(state)),
+        ("GIT_SEQUENCE_EDITOR", f'"{python}" "{helper}" sequence'),
+        ("GIT_EDITOR", "true"),
+    )
+
+
+def _remove_interactive_rebase_state(repository: Path) -> None:
+    state = resolve_git_dir(repository) / "mygitclient-rebase-state"
+    if state.is_dir():
+        shutil.rmtree(state, ignore_errors=True)

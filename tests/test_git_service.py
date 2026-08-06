@@ -17,7 +17,9 @@ from mygitclient.git.models import (
     CommitSummary,
     DiffSnapshot,
     FileStatus,
+    MergePreviewSnapshot,
     RebasePreviewSnapshot,
+    RebaseTodoItem,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
     RepositoryOperationSnapshot,
@@ -76,6 +78,10 @@ def test_rebase_operation_progress_is_detected(tmp_path: Path) -> None:
     rebase.mkdir()
     (rebase / "msgnum").write_text("2\n", encoding="ascii")
     (rebase / "end").write_text("4\n", encoding="ascii")
+    (rebase / "message").write_text("current subject\n\nbody\n", encoding="utf-8")
+    (rebase / "git-rebase-todo").write_text(
+        "pick abc next subject\nfixup def final subject\n", encoding="utf-8"
+    )
 
     operation = detect_repository_operation(tmp_path)
 
@@ -83,6 +89,44 @@ def test_rebase_operation_progress_is_detected(tmp_path: Path) -> None:
     assert operation.kind == "rebase"
     assert operation.current_step == 2
     assert operation.total_steps == 4
+    assert operation.current_subject == "current subject"
+    assert operation.remaining == ("next subject", "final subject")
+
+
+def test_merge_preview_lists_incoming_commits_and_files(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    base = tmp_path / "base.txt"
+    base.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "base.txt")
+    _git(tmp_path, "commit", "-m", "base")
+    _git(tmp_path, "switch", "-c", "feature")
+    incoming = tmp_path / "incoming.txt"
+    incoming.write_text("incoming\n", encoding="utf-8")
+    _git(tmp_path, "add", "incoming.txt")
+    _git(tmp_path, "commit", "-m", "incoming change")
+    feature_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    _git(tmp_path, "switch", "main")
+    target = BranchInfo("refs/heads/feature", "feature", feature_oid, False)
+    service = GitService()
+    previews: list[object] = []
+    service.merge_preview_ready.connect(previews.append)
+
+    with qtbot.waitSignal(service.merge_preview_ready, timeout=5000):
+        service.request_merge_preview(tmp_path, target)
+
+    preview = previews[-1]
+    assert isinstance(preview, MergePreviewSnapshot)
+    assert [commit.subject for commit in preview.commits] == ["incoming change"]
+    assert preview.files == ("incoming.txt",)
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_merge(tmp_path, target, autostash=False)
+    assert incoming.exists()
 
 
 def test_merge_conflict_is_detected_and_can_be_aborted(
@@ -982,6 +1026,9 @@ def test_rebase_preview_and_autostash_replays_current_branch(
     assert preview.base_oid == base_oid
     assert [commit.subject for commit in preview.commits] == ["feature"]
     assert preview.files == ("feature.txt",)
+    assert preview.head_oid == subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_rebase(tmp_path, target, autostash=True)
@@ -1001,6 +1048,58 @@ def test_rebase_preview_and_autostash_replays_current_branch(
     assert subprocess.check_output(
         ["git", "stash", "list"], cwd=tmp_path, text=True
     ).strip() == ""
+
+
+def test_interactive_rebase_reorders_and_rewords_commits(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-m", "base")
+    base_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    _git(tmp_path, "switch", "-c", "feature")
+    first = tmp_path / "first.txt"
+    first.write_text("first\n", encoding="utf-8")
+    _git(tmp_path, "add", "first.txt")
+    _git(tmp_path, "commit", "-m", "first")
+    first_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    second = tmp_path / "second.txt"
+    second.write_text("second\n", encoding="utf-8")
+    _git(tmp_path, "add", "second.txt")
+    _git(tmp_path, "commit", "-m", "second")
+    second_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    target = BranchInfo("refs/heads/main", "main", base_oid, False)
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=10000):
+        service.request_interactive_rebase(
+            tmp_path,
+            target,
+            base_oid,
+            (
+                RebaseTodoItem("pick", second_oid, "second"),
+                RebaseTodoItem("reword", first_oid, "renamed first"),
+            ),
+            autostash=False,
+        )
+
+    subjects = subprocess.check_output(
+        ["git", "log", "-2", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert subjects == [
+        "renamed first",
+        "second",
+    ]
+    assert not (tmp_path / ".git" / "mygitclient-rebase-state").exists()
 
 
 def test_rebase_conflict_can_be_staged_and_continued(

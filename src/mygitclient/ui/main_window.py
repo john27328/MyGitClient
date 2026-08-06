@@ -70,9 +70,11 @@ from mygitclient.git.models import (
     CommitSummary,
     DiffSnapshot,
     FileStatus,
+    MergePreviewSnapshot,
     RebasePreviewSnapshot,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
+    ReflogSnapshot,
     RepositoryOperation,
     RepositoryOperationSnapshot,
     RepositoryStatus,
@@ -94,6 +96,7 @@ from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.conflict_editor import ConflictEditor
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
+from mygitclient.ui.interactive_rebase import InteractiveRebaseDialog
 from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
 from mygitclient.updates import (
@@ -139,6 +142,8 @@ class MainWindow(QMainWindow):
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
         self._repository_operation: RepositoryOperation | None = None
+        self._interactive_rebase_pending = False
+        self._rewrite_recovery_head = ""
         self._commit_diff_visible = False
         self._generated_commit_message = ""
         self._generated_commit_description = ""
@@ -254,6 +259,8 @@ class MainWindow(QMainWindow):
         refs_panel.force_delete_requested.connect(self._force_delete_branch)
         refs_panel.cleanup_gone_requested.connect(self._cleanup_gone_branches)
         refs_panel.rebase_requested.connect(self._preview_rebase)
+        refs_panel.interactive_rebase_requested.connect(self._preview_interactive_rebase)
+        refs_panel.merge_requested.connect(self._preview_merge)
         refs_panel.create_branch_requested.connect(self._create_branch)
         refs_panel.create_tag_requested.connect(self._create_tag)
         refs_panel.delete_tag_requested.connect(self._delete_tag)
@@ -644,6 +651,8 @@ class MainWindow(QMainWindow):
         self._git.cherry_pick_preview_ready.connect(self._show_cherry_pick_preview)
         self._git.revert_preview_ready.connect(self._show_revert_preview)
         self._git.rebase_preview_ready.connect(self._show_rebase_preview)
+        self._git.merge_preview_ready.connect(self._show_merge_preview)
+        self._git.reflog_ready.connect(self._show_reflog)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
         self._git.commit_files_ready.connect(self._show_commit_files)
@@ -1523,10 +1532,93 @@ class MainWindow(QMainWindow):
             )
             return
         self._history_panel.refs_panel.setEnabled(False)
+        self._interactive_rebase_pending = False
         self._status_label.setText(
             f"Preparing rebase of {current_branch} onto {value.name}…"
         )
         self._git.request_rebase_preview(self._repository, value)
+
+    @Slot(object)
+    def _preview_interactive_rebase(self, value: object) -> None:
+        self._interactive_rebase_pending = True
+        self._preview_rebase(value)
+        self._interactive_rebase_pending = True
+
+    @Slot(object)
+    def _preview_merge(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, BranchInfo) or value.current:
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Preparing merge from {value.name}вЂ¦")
+        self._git.request_merge_preview(self._repository, value)
+
+    @Slot(object)
+    def _show_merge_preview(self, value: object) -> None:
+        self._history_panel.refs_panel.setEnabled(True)
+        if not isinstance(value, MergePreviewSnapshot) or value.repository != self._repository:
+            return
+        status = self._repository_status
+        if status is None:
+            return
+        dialog = QDialog(self)
+        dialog.setObjectName("mergePreviewDialog")
+        dialog.setWindowTitle("Merge branch")
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(
+            f"Merge {value.target.name} into {status.branch.head or 'HEAD'}?\n"
+            f"{len(value.commits)} incoming commit(s), {len(value.files)} changed file(s)"
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        preview = QPlainTextEdit()
+        preview.setObjectName("mergePreviewEdit")
+        preview.setReadOnly(True)
+        preview.setPlainText(
+            "Incoming commits:\n"
+            + ("\n".join(f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits)
+               or "  No incoming commits")
+            + "\n\nChanged files:\n"
+            + ("\n".join(f"  {path}" for path in value.files) or "  No changed files")
+        )
+        layout.addWidget(preview, 1)
+        dirty = bool(status.files)
+        autostash = QCheckBox("Stash local changes and restore them after merge")
+        autostash.setChecked(dirty)
+        autostash.setVisible(dirty)
+        layout.addWidget(autostash)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Merge")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(700, 500)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._status_label.setText("Merge cancelled")
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Merging {value.target.name}вЂ¦")
+        self._git.request_merge(value.repository, value.target, autostash=dirty)
+
+    @Slot(object)
+    def _show_reflog(self, value: object) -> None:
+        if not isinstance(value, ReflogSnapshot) or value.repository != self._repository:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Reflog")
+        layout = QVBoxLayout(dialog)
+        edit = QPlainTextEdit()
+        edit.setObjectName("reflogEdit")
+        edit.setReadOnly(True)
+        edit.setPlainText("\n".join(value.entries) or "Reflog is empty.")
+        layout.addWidget(edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.resize(900, 520)
+        dialog.exec()
 
     @Slot(object)
     def _show_rebase_preview(self, value: object) -> None:
@@ -1548,6 +1640,32 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Nothing to rebase")
             return
         dirty = bool(status.files)
+        self._rewrite_recovery_head = value.head_oid
+        if self._interactive_rebase_pending:
+            self._interactive_rebase_pending = False
+            editor = InteractiveRebaseDialog(value.commits, self)
+            if editor.exec() != QDialog.DialogCode.Accepted:
+                self._status_label.setText("Interactive rebase cancelled")
+                return
+            if dirty:
+                answer = QMessageBox.question(
+                    self,
+                    "Stash local changes?",
+                    "The working tree is dirty. Stash and restore its changes automatically?",
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    self._status_label.setText("Interactive rebase cancelled")
+                    return
+            self._history_panel.refs_panel.setEnabled(False)
+            self._status_label.setText(f"Interactively rebasing onto {value.target.name}вЂ¦")
+            self._git.request_interactive_rebase(
+                value.repository,
+                value.target,
+                value.base_oid,
+                editor.items(),
+                autostash=dirty,
+            )
+            return
         dialog = QDialog(self)
         dialog.setObjectName("rebasePreviewDialog")
         dialog.setWindowTitle("Rebase branch")
@@ -1558,6 +1676,9 @@ class MainWindow(QMainWindow):
         )
         summary.setWordWrap(True)
         layout.addWidget(summary)
+        recovery = QLabel(f"Recovery point: {value.head_oid}")
+        recovery.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(recovery)
         preview = QPlainTextEdit()
         preview.setObjectName("rebasePreviewEdit")
         preview.setReadOnly(True)
@@ -2007,8 +2128,16 @@ class MainWindow(QMainWindow):
         progress = ""
         if operation.current_step is not None and operation.total_steps is not None:
             progress = f" · step {operation.current_step} of {operation.total_steps}"
+        current = f" · {operation.current_subject}" if operation.current_subject else ""
+        queued = f" · {len(operation.remaining)} remaining" if operation.remaining else ""
         self._operation_label.setText(
-            f"{name} in progress{progress}. Resolve conflicts, then continue."
+            f"{name} in progress{progress}{current}{queued}. "
+            "Resolve conflicts, then continue."
+        )
+        self._operation_label.setToolTip(
+            "Remaining commits:\n" + "\n".join(operation.remaining)
+            if operation.remaining
+            else ""
         )
         self._operation_skip.setVisible(operation.kind != "merge")
         self._operation_banner.setEnabled(True)
@@ -2278,10 +2407,29 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Push completed")
         elif path == "cherry-pick":
             self._status_label.setText("Cherry-pick completed")
-        elif path == "revert":
-            self._status_label.setText("Revert completed")
         elif path == "rebase":
             self._status_label.setText("Rebase completed")
+            if self._rewrite_recovery_head:
+                box = QMessageBox(self)
+                box.setWindowTitle("Rebase completed")
+                box.setText("The branch history was rewritten successfully.")
+                box.setInformativeText(
+                    "Previous HEAD (also available through reflog):\n"
+                    + self._rewrite_recovery_head
+                )
+                copy_button = box.addButton("Copy previous HEAD", QMessageBox.ButtonRole.ActionRole)
+                history_button = box.addButton("Open reflog", QMessageBox.ButtonRole.ActionRole)
+                box.addButton(QMessageBox.StandardButton.Close)
+                box.exec()
+                if box.clickedButton() is copy_button:
+                    QApplication.clipboard().setText(self._rewrite_recovery_head)
+                elif box.clickedButton() is history_button and self._repository is not None:
+                    self._git.request_reflog(self._repository)
+                self._rewrite_recovery_head = ""
+        elif path == "revert":
+            self._status_label.setText("Revert completed")
+        elif path == "merge":
+            self._status_label.setText("Merge completed")
         elif path == "repository-operation:changed":
             self._status_label.setText("Repository operation updated")
         elif path == "stash":
@@ -2297,6 +2445,7 @@ class MainWindow(QMainWindow):
                 "cherry-pick",
                 "revert",
                 "rebase",
+                "merge",
                 "repository-operation:changed",
             }
             branch_changed = path.startswith("branch:") or path.startswith("branches:")

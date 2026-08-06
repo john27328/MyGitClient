@@ -141,7 +141,10 @@ def test_repository_operation_banner_restores(
     service = window.findChild(GitService)
     assert service is not None
     service.repository_operation_ready.emit(
-        RepositoryOperationSnapshot(tmp_path, RepositoryOperation("rebase", 2, 5))
+        RepositoryOperationSnapshot(
+            tmp_path,
+            RepositoryOperation("rebase", 2, 5, "current commit", ("next one", "next two")),
+        )
     )
     banner = window.findChild(QWidget, "repositoryOperationBanner")
     label = window.findChild(QLabel, "repositoryOperationLabel")
@@ -151,6 +154,8 @@ def test_repository_operation_banner_restores(
     skip_button = window.findChild(QPushButton, "repositoryOperationSkipButton")
     assert banner is not None and not banner.isHidden()
     assert label is not None and "step 2 of 5" in label.text()
+    assert "current commit" in label.text() and "2 remaining" in label.text()
+    assert "next one" in label.toolTip()
     assert continue_button is not None
     assert skip_button is not None and not skip_button.isHidden()
 

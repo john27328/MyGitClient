@@ -35,6 +35,8 @@ class RefsPanel(QWidget):
     force_delete_requested = Signal(object)
     cleanup_gone_requested = Signal(object)
     rebase_requested = Signal(object)
+    interactive_rebase_requested = Signal(object)
+    merge_requested = Signal(object)
     create_tag_requested = Signal()
     create_branch_requested = Signal()
     delete_tag_requested = Signal(object)
@@ -99,6 +101,14 @@ class RefsPanel(QWidget):
         )
         self.rebase_action.setObjectName("rebaseOntoBranchAction")
         self.rebase_action.triggered.connect(self._rebase_selected)
+        self.interactive_rebase_action = self.context_menu.addAction(
+            "Interactive rebase current branch onto thisвЂ¦"
+        )
+        self.interactive_rebase_action.setObjectName("interactiveRebaseOntoBranchAction")
+        self.interactive_rebase_action.triggered.connect(self._interactive_rebase_selected)
+        self.merge_action = self.context_menu.addAction("Merge this into current branchвЂ¦")
+        self.merge_action.setObjectName("mergeBranchAction")
+        self.merge_action.triggered.connect(self._merge_selected)
         self.context_menu.addSeparator()
         self.create_tag_action = self.context_menu.addAction("New tag…")
         self.create_tag_action.triggered.connect(self.create_tag_requested)
@@ -347,6 +357,10 @@ class RefsPanel(QWidget):
         self.cleanup_gone_action.setEnabled(bool(self._gone_branches()))
         self.rebase_action.setVisible(branch is not None)
         self.rebase_action.setEnabled(branch is not None and not branch.current)
+        self.interactive_rebase_action.setVisible(branch is not None)
+        self.interactive_rebase_action.setEnabled(branch is not None and not branch.current)
+        self.merge_action.setVisible(branch is not None)
+        self.merge_action.setEnabled(branch is not None and not branch.current)
         self.create_tag_action.setVisible(tag is not None or root_label == "Tags")
         self.delete_tag_action.setVisible(tag is not None)
         self.push_tag_action.setVisible(tag is not None)
@@ -405,6 +419,18 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo) and not branch.current:
             self.rebase_requested.emit(branch)
+
+    @Slot()
+    def _interactive_rebase_selected(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo) and not branch.current:
+            self.interactive_rebase_requested.emit(branch)
+
+    @Slot()
+    def _merge_selected(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo) and not branch.current:
+            self.merge_requested.emit(branch)
 
     @Slot()
     def _delete_tag_selected(self) -> None:

@@ -11,6 +11,7 @@ class GitCommand:
     arguments: tuple[str, ...]
     working_directory: Path | None = None
     operation: str = "git command"
+    environment: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +123,8 @@ class RepositoryOperation:
     kind: Literal["merge", "rebase", "cherry-pick", "revert"]
     current_step: int | None = None
     total_steps: int | None = None
+    current_subject: str | None = None
+    remaining: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +155,29 @@ class RebasePreviewSnapshot:
     base_oid: str
     commits: tuple[CommitSummary, ...]
     files: tuple[str, ...]
+    head_oid: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RebaseTodoItem:
+    action: Literal["pick", "reword", "edit", "squash", "fixup", "drop"]
+    oid: str
+    subject: str
+
+
+@dataclass(frozen=True, slots=True)
+class MergePreviewSnapshot:
+    repository: Path
+    target: BranchInfo
+    base_oid: str
+    commits: tuple[CommitSummary, ...]
+    files: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReflogSnapshot:
+    repository: Path
+    entries: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

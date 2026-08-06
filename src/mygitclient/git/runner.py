@@ -51,6 +51,8 @@ class GitRunner(QObject):
         environment = QProcessEnvironment.systemEnvironment()
         environment.insert("GIT_TERMINAL_PROMPT", "0")
         environment.insert("LC_ALL", "C")
+        for name, value in command.environment:
+            environment.insert(name, value)
         self._process.setProcessEnvironment(environment)
 
         logger.info("Running git operation %s", command.operation)
