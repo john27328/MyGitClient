@@ -605,10 +605,26 @@ class DiffView(QWidget):
         )
         self.context_requested.emit(lines)
 
-    def rehighlight(self) -> None:
+    def refresh_theme(self) -> None:
+        """Refresh every palette-dependent part after a live theme change."""
+
         self.diff_highlighter.rehighlight()
         self.side_old_highlighter.rehighlight()
         self.side_new_highlighter.rehighlight()
+        self.render_selection()
+        for widget in (
+            self.diff,
+            self.gutter,
+            self.side_old,
+            self.side_new,
+            self.side_old_gutter,
+            self.side_new_gutter,
+            self.overview,
+        ):
+            widget.update()
+
+    def rehighlight(self) -> None:
+        self.refresh_theme()
 
     def _render_gutter(self, diff: UnifiedDiff, selection: DiffSelection) -> None:
         old_width = max(

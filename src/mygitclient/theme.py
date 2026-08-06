@@ -29,8 +29,11 @@ def apply_theme(app: QApplication, theme: Theme) -> None:
         _system_style_name = app.style().objectName()
         _system_palette = QPalette(app.palette())
 
+    # Remove the previous application stylesheet before changing the style or
+    # palette. Otherwise Qt can leave polished child widgets resolved against
+    # colors from the previous theme.
+    app.setStyleSheet("")
     if theme is Theme.SYSTEM:
-        app.setStyleSheet("")
         if _system_style_name:
             app.setStyle(_system_style_name)
         if _system_palette is not None:
@@ -48,9 +51,14 @@ def apply_theme(app: QApplication, theme: Theme) -> None:
 
 
 def _refresh_widget_palettes(app: QApplication) -> None:
-    palette = app.palette()
     for widget in app.allWidgets():
-        widget.setPalette(palette)
+        # Inherit future application palette changes instead of installing a
+        # per-widget palette that can survive the next theme switch.
+        widget.setPalette(QPalette())
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+        widget.update()
 
 
 def _dark_palette() -> QPalette:

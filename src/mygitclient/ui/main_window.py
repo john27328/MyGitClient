@@ -2926,7 +2926,8 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if isinstance(app, QApplication):
             apply_theme(app, theme)
-            self._diff_view.rehighlight()
+            self._diff_view.refresh_theme()
+            self._conflict_editor.refresh_theme()
 
     def _restore_window_state(self) -> None:
         geometry = self._settings.value("window/geometry")

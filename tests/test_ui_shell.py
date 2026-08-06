@@ -706,28 +706,46 @@ def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path:
     settings = QSettings(str(tmp_path / "theme.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)
     system_action = window.findChild(QAction, "themeAction_system")
+    light_action = window.findChild(QAction, "themeAction_light")
     dark_action = window.findChild(QAction, "themeAction_dark")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
+    side_old = window.findChild(QPlainTextEdit, "sideBySideOld")
+    side_new = window.findChild(QPlainTextEdit, "sideBySideNew")
+    gutter = window.findChild(QPlainTextEdit, "diffGutter")
+    side_gutter = window.findChild(QPlainTextEdit, "sideBySideOldGutter")
     initial_base = qapp.palette().base().color()
 
     assert system_action is not None
+    assert light_action is not None
     assert dark_action is not None
     assert diff_panel is not None
+    assert side_old is not None
+    assert side_new is not None
+    assert gutter is not None
+    assert side_gutter is not None
     dark_action.trigger()
 
     assert dark_action.isChecked()
     assert not system_action.isChecked()
     assert settings.value("appearance/theme") == Theme.DARK.value
     assert qapp.palette().base().color().lightness() < 128
-    assert diff_panel.palette().base().color().lightness() < 128
+    themed_editors = (diff_panel, side_old, side_new, gutter, side_gutter)
+    assert all(editor.palette().base().color().lightness() < 128 for editor in themed_editors)
     assert qapp.palette().highlight().color().name() == "#2f80ed"
     assert "checkbox-checked.svg" in qapp.styleSheet()
     assert "checkbox-partial.svg" in qapp.styleSheet()
+
+    light_action.trigger()
+    assert light_action.isChecked()
+    assert all(editor.palette().base().color().lightness() >= 128 for editor in themed_editors)
+
+    dark_action.trigger()
+    assert all(editor.palette().base().color().lightness() < 128 for editor in themed_editors)
 
     system_action.trigger()
     assert system_action.isChecked()
     assert not dark_action.isChecked()
     assert qapp.styleSheet() == ""
     assert qapp.palette().base().color() == initial_base
-    assert diff_panel.palette().base().color() == initial_base
+    assert all(editor.palette().base().color() == initial_base for editor in themed_editors)
     window.close()
