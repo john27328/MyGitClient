@@ -470,13 +470,13 @@ class UnifiedDiff:
     def patch_for_hunk(self, hunk_index: int) -> bytes:
         if hunk_index < 0 or hunk_index >= len(self.hunks):
             raise IndexError("Diff hunk index is out of range")
-        header = [line.text for line in self.lines if line.kind == "header"]
+        header = self._patch_header()
         hunk = self.hunks[hunk_index]
         patch_lines = [*header, hunk.header, *(line.text for line in hunk.lines)]
         return ("\n".join(patch_lines) + "\n").encode("utf-8", errors="surrogateescape")
 
     def patch_for_lines(self, selected_lines: set[int]) -> bytes:
-        header = [line.text for line in self.lines if line.kind == "header"]
+        header = self._patch_header()
         patch_lines = list(header)
         index = 0
         hunk_index = -1
@@ -522,3 +522,11 @@ class UnifiedDiff:
         if len(patch_lines) == len(header):
             raise ValueError("No changed lines were selected")
         return ("\n".join(patch_lines) + "\n").encode("utf-8", errors="surrogateescape")
+
+    def _patch_header(self) -> list[str]:
+        """Keep all file metadata that Git emitted before the first hunk."""
+        first_hunk = next(
+            (index for index, line in enumerate(self.lines) if line.kind == "hunk"),
+            len(self.lines),
+        )
+        return [line.text for line in self.lines[:first_hunk]]

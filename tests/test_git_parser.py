@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from mygitclient.git.parsers import (
@@ -137,6 +138,52 @@ def test_parse_unified_diff_classifies_lines() -> None:
     selected_patch = diff.patch_for_lines({4, 5})
     assert b"@@ -1,1 +1,1 @@\n" in selected_patch
     assert selected_patch.endswith(b"-before\n+after\n")
+
+
+def test_partial_patch_for_untracked_file_keeps_new_file_metadata(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    untracked = repository / "new.txt"
+    untracked.write_text("first\nsecond\nthird\n", encoding="utf-8")
+    result = subprocess.run(
+        ["git", "diff", "--no-index", "--no-color", "--", "/dev/null", "new.txt"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    )
+    assert result.returncode == 1
+    diff = parse_unified_diff(result.stdout, "new.txt", staged=False)
+    selected_line = next(
+        index
+        for index, line in enumerate(diff.lines)
+        if line.kind == "addition" and line.text == "+second"
+    )
+
+    patch = diff.patch_for_lines({selected_line})
+
+    assert b"new file mode 100644\n" in patch
+    assert b"--- /dev/null\n" in patch
+    applied = subprocess.run(
+        ["git", "apply", "--cached"],
+        cwd=repository,
+        input=patch,
+        check=False,
+        capture_output=True,
+    )
+    assert applied.returncode == 0, applied.stderr.decode(errors="replace")
+    cached = subprocess.run(
+        ["git", "show", ":new.txt"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    assert cached.stdout == b"second\n"
 
 
 def test_side_by_side_rows_align_similar_lines_around_an_inserted_line() -> None:
