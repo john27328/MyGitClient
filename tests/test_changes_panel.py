@@ -217,6 +217,29 @@ def test_file_row_uses_status_icon_and_detailed_tooltip(qtbot: QtBot) -> None:
     assert "Not staged: Modified" in item.toolTip(0)
 
 
+def test_file_icon_badge_distinguishes_staged_and_unstaged(qtbot: QtBot) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    staged = FileStatus("staged.py", "M", ".")
+    unstaged = FileStatus("unstaged.py", ".", "M")
+
+    panel.show_files(
+        [
+            (staged, Qt.CheckState.Unchecked),
+            (unstaged, Qt.CheckState.Unchecked),
+        ],
+        None,
+    )
+
+    staged_item = panel.tree.topLevelItem(0)
+    unstaged_item = panel.tree.topLevelItem(1)
+    assert staged_item is not None and unstaged_item is not None
+    staged_badge = staged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
+    unstaged_badge = unstaged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
+    assert staged_badge.blue() > staged_badge.red()
+    assert unstaged_badge.red() > unstaged_badge.blue()
+
+
 def test_changed_files_are_sorted_by_path_independently_of_git_status_order(
     qtbot: QtBot,
 ) -> None:
@@ -284,6 +307,10 @@ def test_split_presentation_separates_versions_and_is_saved(
     assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
     assert staged_item.text(0) == "partial.py"
     assert staged_item.checkState(0) is Qt.CheckState.Unchecked
+    unstaged_badge = unstaged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
+    staged_badge = staged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
+    assert unstaged_badge.red() > unstaged_badge.blue()
+    assert staged_badge.blue() > staged_badge.red()
 
 
 def test_checkbox_selection_survives_status_refresh(qtbot: QtBot) -> None:

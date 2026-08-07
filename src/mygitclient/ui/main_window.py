@@ -335,6 +335,10 @@ class MainWindow(QMainWindow):
         self._diff_view.selection_changed.connect(self._update_selection_actions)
         self._diff_view.context_requested.connect(self._diff_context_changed)
         self._diff_view.close_requested.connect(self._close_history_diff)
+        self._diff_view.stage_requested.connect(self._stage_checked_changes)
+        self._diff_view.stash_requested.connect(self._stash_checked_changes)
+        self._diff_view.unstage_requested.connect(self._unstage_checked_changes)
+        self._diff_view.discard_requested.connect(self._discard_checked_changes)
         self._close_diff_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._close_diff_shortcut.setObjectName("closeHistoryDiffShortcut")
         self._close_diff_shortcut.activated.connect(self._close_history_diff)
@@ -2816,12 +2820,17 @@ class MainWindow(QMainWindow):
     def _update_selection_actions(self) -> None:
         self._changes_panel.refresh_selection_controls()
         diff = self._diff_view.current_diff
-        if diff is None or not self._diff_view.selected_line_indexes:
-            return
-        if diff.staged:
-            self._changes_panel.unstage_button.setEnabled(True)
-        else:
-            self._changes_panel.stage_button.setEnabled(True)
+        if diff is not None and self._diff_view.selected_line_indexes:
+            if diff.staged:
+                self._changes_panel.unstage_button.setEnabled(True)
+            else:
+                self._changes_panel.stage_button.setEnabled(True)
+        self._diff_view.set_selection_action_states(
+            stage=self._changes_panel.stage_button.isEnabled(),
+            stash=self._changes_panel.stash_button.isEnabled(),
+            unstage=self._changes_panel.unstage_button.isEnabled(),
+            discard=self._changes_panel.discard_button.isEnabled(),
+        )
 
     @Slot()
     def _stage_checked_changes(self) -> None:

@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPlainTextEdit,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QTextEdit,
@@ -47,6 +48,10 @@ class DiffView(QWidget):
     hunk_requested = Signal(object, int)
     context_requested = Signal(int)
     close_requested = Signal()
+    stage_requested = Signal()
+    stash_requested = Signal()
+    unstage_requested = Signal()
+    discard_requested = Signal()
 
     def __init__(self, settings: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -260,6 +265,18 @@ class DiffView(QWidget):
         self.clear_lines_button.setText("Clear")
         self.clear_lines_button.setEnabled(False)
         self.clear_lines_button.hide()
+        self.stage_button = self._selection_action_button("diffStageButton", "Stage")
+        self.stash_button = self._selection_action_button("diffStashButton", "Stash")
+        self.unstage_button = self._selection_action_button(
+            "diffUnstageButton", "Unstage"
+        )
+        self.discard_button = self._selection_action_button(
+            "diffDiscardButton", "Discard"
+        )
+        self.stage_button.clicked.connect(self.stage_requested)
+        self.stash_button.clicked.connect(self.stash_requested)
+        self.unstage_button.clicked.connect(self.unstage_requested)
+        self.discard_button.clicked.connect(self.discard_requested)
 
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
@@ -271,6 +288,10 @@ class DiffView(QWidget):
         toolbar_layout.addWidget(self.whitespace_button)
         toolbar_layout.addWidget(self.ignore_whitespace_button)
         toolbar_layout.addWidget(self.context_button)
+        toolbar_layout.addWidget(self.stage_button)
+        toolbar_layout.addWidget(self.stash_button)
+        toolbar_layout.addWidget(self.unstage_button)
+        toolbar_layout.addWidget(self.discard_button)
         toolbar_layout.addWidget(self.hunk_button)
         toolbar_layout.addWidget(self.selected_lines_button)
         toolbar_layout.addWidget(self.clear_lines_button)
@@ -312,6 +333,27 @@ class DiffView(QWidget):
         self.version_label.setText(self.version_combo.currentText())
         self.version_label.setVisible(count == 1)
         self.version_combo.setVisible(count > 1)
+
+    def set_selection_action_states(
+        self,
+        *,
+        stage: bool,
+        stash: bool,
+        unstage: bool,
+        discard: bool,
+    ) -> None:
+        self.stage_button.setEnabled(stage)
+        self.stash_button.setEnabled(stash)
+        self.unstage_button.setEnabled(unstage)
+        self.discard_button.setEnabled(discard)
+
+    @staticmethod
+    def _selection_action_button(object_name: str, text: str) -> QPushButton:
+        button = QPushButton(text)
+        button.setObjectName(object_name)
+        button.setEnabled(False)
+        button.hide()
+        return button
 
     @Slot(str)
     def _version_text_changed(self, text: str) -> None:
@@ -407,6 +449,13 @@ class DiffView(QWidget):
         self.hunk_button.hide()
         self.selected_lines_button.hide()
         self.clear_lines_button.hide()
+        for button in (
+            self.stage_button,
+            self.stash_button,
+            self.unstage_button,
+            self.discard_button,
+        ):
+            button.setVisible(interactive)
         self._current_selection_key = selection_key if interactive else None
         if not interactive:
             self.selection.clear()
@@ -460,6 +509,13 @@ class DiffView(QWidget):
         self.file_header.hide()
         self.file_header_container.hide()
         self.close_button.hide()
+        for button in (
+            self.stage_button,
+            self.stash_button,
+            self.unstage_button,
+            self.discard_button,
+        ):
+            button.hide()
         self._side_old_line_indexes = []
         self._side_new_line_indexes = []
         self.side_old_highlighter.set_inline_ranges({})

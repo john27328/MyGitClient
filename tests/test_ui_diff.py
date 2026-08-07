@@ -303,9 +303,12 @@ def test_split_staging_selected_lines_adds_file_to_staged_tree(
     apply_lines = window.findChild(QToolButton, "diffSelectedLinesButton")
     stage_button = window.findChild(QPushButton, "stageSelectedButton")
     unstage_button = window.findChild(QPushButton, "unstageSelectedButton")
+    diff_stage_button = window.findChild(QPushButton, "diffStageButton")
+    diff_unstage_button = window.findChild(QPushButton, "diffUnstageButton")
     assert unstaged is not None and staged is not None
     assert diff_panel is not None and gutter is not None and apply_lines is not None
     assert stage_button is not None and unstage_button is not None
+    assert diff_stage_button is not None and diff_unstage_button is not None
 
     window.show()
     window.open_repository(repository)
@@ -628,6 +631,8 @@ def test_diff_line_checkbox_selects_then_stage_and_unstage_buttons_apply(
     clear_lines = window.findChild(QToolButton, "diffClearSelectionButton")
     stage_button = window.findChild(QPushButton, "stageSelectedButton")
     unstage_button = window.findChild(QPushButton, "unstageSelectedButton")
+    diff_stage_button = window.findChild(QPushButton, "diffStageButton")
+    diff_unstage_button = window.findChild(QPushButton, "diffUnstageButton")
     assert changes is not None
     assert staged_changes is not None
     assert diff_panel is not None
@@ -635,6 +640,7 @@ def test_diff_line_checkbox_selects_then_stage_and_unstage_buttons_apply(
     assert apply_lines is not None
     assert clear_lines is not None
     assert stage_button is not None and unstage_button is not None
+    assert diff_stage_button is not None and diff_unstage_button is not None
     assert apply_lines.isHidden()
     assert clear_lines.isHidden()
     window.open_repository(repository)
@@ -648,6 +654,7 @@ def test_diff_line_checkbox_selects_then_stage_and_unstage_buttons_apply(
     assert not added.isNull()
     gutter.line_activated.emit(added.blockNumber(), False)
     assert stage_button.isEnabled()
+    assert diff_stage_button.isEnabled()
 
     def line_is_staged() -> bool:
         cached = subprocess.run(
@@ -660,7 +667,7 @@ def test_diff_line_checkbox_selects_then_stage_and_unstage_buttons_apply(
         return "+two" in cached
 
     assert not line_is_staged()
-    stage_button.click()
+    diff_stage_button.click()
     qtbot.waitUntil(line_is_staged, timeout=5000)
     qtbot.waitUntil(lambda: staged_changes.topLevelItemCount() == 1, timeout=5000)
     current_staged = staged_changes.topLevelItem(0)
@@ -671,7 +678,8 @@ def test_diff_line_checkbox_selects_then_stage_and_unstage_buttons_apply(
     assert not staged_added.isNull()
     gutter.line_activated.emit(staged_added.blockNumber(), False)
     assert unstage_button.isEnabled()
-    unstage_button.click()
+    assert diff_unstage_button.isEnabled()
+    diff_unstage_button.click()
 
     def selected_lines_are_unstaged() -> bool:
         result = subprocess.run(

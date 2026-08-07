@@ -3,7 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QLabel, QPlainTextEdit, QStackedWidget, QToolButton
+from PySide6.QtWidgets import (
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QStackedWidget,
+    QToolButton,
+)
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.parsers import parse_unified_diff
@@ -35,6 +41,36 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     assert view.findChild(QLabel, "diffVersionLabel") is view.version_label
     assert view.findChild(QLabel, "diffFileHeader") is view.file_header
     assert view.findChild(QToolButton, "diffCloseButton") is view.close_button
+    assert view.findChild(QPushButton, "diffStageButton") is view.stage_button
+    assert view.findChild(QPushButton, "diffStashButton") is view.stash_button
+    assert view.findChild(QPushButton, "diffUnstageButton") is view.unstage_button
+    assert view.findChild(QPushButton, "diffDiscardButton") is view.discard_button
+
+
+def test_diff_selection_actions_share_explicit_signals(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "diff-actions.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    requested: list[str] = []
+    view.stage_requested.connect(lambda: requested.append("stage"))
+    view.stash_requested.connect(lambda: requested.append("stash"))
+    view.unstage_requested.connect(lambda: requested.append("unstage"))
+    view.discard_requested.connect(lambda: requested.append("discard"))
+
+    view.set_selection_action_states(
+        stage=True, stash=True, unstage=True, discard=True
+    )
+    for button in (
+        view.stage_button,
+        view.stash_button,
+        view.unstage_button,
+        view.discard_button,
+    ):
+        button.click()
+
+    assert requested == ["stage", "stash", "unstage", "discard"]
 
 
 def test_history_close_button_is_explicit_and_preserves_saved_selections(

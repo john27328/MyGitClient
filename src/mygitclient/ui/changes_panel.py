@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 from typing import cast
 
 from PySide6.QtCore import QRect, QSettings, QSignalBlocker, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QFocusEvent, QMouseEvent
+from PySide6.QtGui import QAction, QColor, QFocusEvent, QIcon, QMouseEvent, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -436,7 +436,12 @@ class ChangesPanel(QWidget):
                     parent = folder
                 display_name = parts[-1]
             item = QTreeWidgetItem([display_name])
-            item.setIcon(0, load_icon(_status_icon(file)))
+            staged_view = (
+                True
+                if tree is self.staged_tree
+                else False if tree is self.unstaged_tree else None
+            )
+            item.setIcon(0, _status_icon(file, staged_view=staged_view))
             item.setToolTip(0, _status_tooltip(file))
             item.setData(0, Qt.ItemDataRole.UserRole, file)
             if checkable:
@@ -597,6 +602,7 @@ class ChangesPanel(QWidget):
     def _update_selection_controls(self) -> None:
         files = self.checked_files()
         selected = bool(files)
+        count = len(files)
         has_unstaged = any(file.has_worktree_change or file.unmerged for file in files)
         has_staged = any(file.is_staged and not file.unmerged for file in files)
         safe = selected and all(not file.unmerged for file in files)
@@ -604,6 +610,11 @@ class ChangesPanel(QWidget):
         self.unstage_button.setEnabled(selected and (self._amend_mode or has_staged))
         self.stash_button.setEnabled(safe and has_unstaged)
         self.discard_button.setEnabled(safe and has_unstaged)
+        suffix = f" ({count})" if count else ""
+        self.stage_button.setText(f"Stage{suffix}")
+        self.stash_button.setText(f"Stash{suffix}")
+        self.unstage_button.setText(f"Unstage{suffix}")
+        self.discard_button.setText(f"Discard{suffix}")
         blocker = QSignalBlocker(self.stage_all)
         if not self._visible_files or not self._selected_paths:
             self.stage_all.setCheckState(Qt.CheckState.Unchecked)
@@ -695,8 +706,8 @@ def _primary_status(file: FileStatus) -> str:
     return file.worktree_status
 
 
-def _status_icon(file: FileStatus) -> str:
-    return {
+def _status_icon(file: FileStatus, *, staged_view: bool | None = None) -> QIcon:
+    icon_name = {
         "M": "status-modified.svg",
         "A": "status-added.svg",
         "D": "status-deleted.svg",
@@ -707,6 +718,37 @@ def _status_icon(file: FileStatus) -> str:
         "?": "status-untracked.svg",
         "!": "status-untracked.svg",
     }.get(_primary_status(file), "status-modified.svg")
+    canvas = load_icon(icon_name).pixmap(20, 20)
+    painter = QPainter(canvas)
+    badge_size = 8
+    badge_x = canvas.width() - badge_size
+    badge_y = canvas.height() - badge_size
+    staged = (
+        staged_view
+        if staged_view is not None
+        else file.is_staged and not file.unmerged
+    )
+    unstaged = (
+        not staged_view
+        if staged_view is not None
+        else file.has_worktree_change or file.unmerged
+    )
+    if staged and unstaged:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#2f6fed"))
+        painter.drawPie(badge_x, badge_y, badge_size, badge_size, 90 * 16, 180 * 16)
+        painter.setBrush(QColor("#e29416"))
+        painter.drawPie(badge_x, badge_y, badge_size, badge_size, 270 * 16, 180 * 16)
+    elif staged:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#2f6fed"))
+        painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
+    elif unstaged:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#e29416"))
+        painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
+    painter.end()
+    return QIcon(canvas)
 
 
 def _status_tooltip(file: FileStatus) -> str:

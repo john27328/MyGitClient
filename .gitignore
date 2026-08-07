@@ -3,3 +3,4 @@ artifacts/
 *.spec
 __pycache__/
 .pytest_cache/
+.test-tmp-session*/
