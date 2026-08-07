@@ -234,10 +234,28 @@ def test_file_icon_badge_distinguishes_staged_and_unstaged(qtbot: QtBot) -> None
     staged_item = panel.tree.topLevelItem(0)
     unstaged_item = panel.tree.topLevelItem(1)
     assert staged_item is not None and unstaged_item is not None
-    staged_badge = staged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
-    unstaged_badge = unstaged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
+    staged_badge = staged_item.icon(0).pixmap(27, 20).toImage().pixelColor(2, 8)
+    unstaged_badge = unstaged_item.icon(0).pixmap(27, 20).toImage().pixelColor(2, 8)
     assert staged_badge.blue() > staged_badge.red()
     assert unstaged_badge.red() > unstaged_badge.blue()
+
+
+def test_combined_file_icon_badge_shows_both_states_for_partial_file(
+    qtbot: QtBot,
+) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    partial = FileStatus("partial.py", "M", "M")
+
+    panel.show_files([(partial, Qt.CheckState.Unchecked)], None)
+
+    item = panel.tree.topLevelItem(0)
+    assert item is not None
+    image = item.icon(0).pixmap(27, 20).toImage()
+    staged_half = image.pixelColor(2, 5)
+    unstaged_half = image.pixelColor(2, 14)
+    assert staged_half.blue() > staged_half.red()
+    assert unstaged_half.red() > unstaged_half.blue()
 
 
 def test_changed_files_are_sorted_by_path_independently_of_git_status_order(
@@ -307,8 +325,8 @@ def test_split_presentation_separates_versions_and_is_saved(
     assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
     assert staged_item.text(0) == "partial.py"
     assert staged_item.checkState(0) is Qt.CheckState.Unchecked
-    unstaged_badge = unstaged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
-    staged_badge = staged_item.icon(0).pixmap(20, 20).toImage().pixelColor(16, 16)
+    unstaged_badge = unstaged_item.icon(0).pixmap(27, 20).toImage().pixelColor(2, 8)
+    staged_badge = staged_item.icon(0).pixmap(27, 20).toImage().pixelColor(2, 8)
     assert unstaged_badge.red() > unstaged_badge.blue()
     assert staged_badge.blue() > staged_badge.red()
 

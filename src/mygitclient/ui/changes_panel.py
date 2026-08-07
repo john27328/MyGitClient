@@ -3,8 +3,16 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import cast
 
-from PySide6.QtCore import QRect, QSettings, QSignalBlocker, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QAction, QColor, QFocusEvent, QIcon, QMouseEvent, QPainter
+from PySide6.QtCore import QRect, QSettings, QSignalBlocker, QSize, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFocusEvent,
+    QIcon,
+    QMouseEvent,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -297,6 +305,7 @@ class ChangesPanel(QWidget):
         tree.setObjectName(object_name)
         tree.setHeaderLabel(header)
         tree.setRootIsDecorated(False)
+        tree.setIconSize(QSize(27, 20))
         tree.setMinimumWidth(280)
         tree.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -718,11 +727,14 @@ def _status_icon(file: FileStatus, *, staged_view: bool | None = None) -> QIcon:
         "?": "status-untracked.svg",
         "!": "status-untracked.svg",
     }.get(_primary_status(file), "status-modified.svg")
-    canvas = load_icon(icon_name).pixmap(20, 20)
+    canvas = QPixmap(27, 20)
+    canvas.fill(Qt.GlobalColor.transparent)
     painter = QPainter(canvas)
-    badge_size = 8
-    badge_x = canvas.width() - badge_size
-    badge_y = canvas.height() - badge_size
+    painter.drawPixmap(7, 0, load_icon(icon_name).pixmap(20, 20))
+    marker_x = 0
+    marker_y = 2
+    marker_width = 5
+    marker_height = 16
     staged = (
         staged_view
         if staged_view is not None
@@ -733,20 +745,31 @@ def _status_icon(file: FileStatus, *, staged_view: bool | None = None) -> QIcon:
         if staged_view is not None
         else file.has_worktree_change or file.unmerged
     )
+    painter.setPen(Qt.PenStyle.NoPen)
     if staged and unstaged:
-        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#2f6fed"))
-        painter.drawPie(badge_x, badge_y, badge_size, badge_size, 90 * 16, 180 * 16)
+        painter.drawRoundedRect(
+            marker_x, marker_y, marker_width, marker_height // 2, 2, 2
+        )
         painter.setBrush(QColor("#e29416"))
-        painter.drawPie(badge_x, badge_y, badge_size, badge_size, 270 * 16, 180 * 16)
+        painter.drawRoundedRect(
+            marker_x,
+            marker_y + marker_height // 2,
+            marker_width,
+            marker_height // 2,
+            2,
+            2,
+        )
     elif staged:
-        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#2f6fed"))
-        painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
+        painter.drawRoundedRect(
+            marker_x, marker_y, marker_width, marker_height, 2, 2
+        )
     elif unstaged:
-        painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor("#e29416"))
-        painter.drawEllipse(badge_x, badge_y, badge_size, badge_size)
+        painter.drawRoundedRect(
+            marker_x, marker_y, marker_width, marker_height, 2, 2
+        )
     painter.end()
     return QIcon(canvas)
 

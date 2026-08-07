@@ -47,6 +47,14 @@ _GUTTER_STYLE = (
     "QPlainTextEdit { background: palette(base); color: palette(mid); "
     "border: 0; border-right: 1px solid palette(midlight); }"
 )
+_INDEX_BADGE_STYLE = (
+    "QLabel { color: white; background: #2f6fed; border-radius: 7px; "
+    "padding: 2px 8px; font-weight: 600; }"
+)
+_WORKTREE_BADGE_STYLE = (
+    "QLabel { color: #201600; background: #e9a321; border-radius: 7px; "
+    "padding: 2px 8px; font-weight: 600; }"
+)
 
 
 class DiffView(QWidget):
@@ -100,6 +108,9 @@ class DiffView(QWidget):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.file_header.setStyleSheet(_FILE_HEADER_STYLE)
+        self.git_state_badge = QLabel()
+        self.git_state_badge.setObjectName("diffGitStateBadge")
+        self.git_state_badge.hide()
         self.close_button = QToolButton()
         self.close_button.setObjectName("diffCloseButton")
         self.close_button.setText("\u00d7")
@@ -111,8 +122,9 @@ class DiffView(QWidget):
         self.file_header_container.setObjectName("diffFileHeaderContainer")
         file_header_layout = QHBoxLayout(self.file_header_container)
         file_header_layout.setContentsMargins(0, 0, 4, 0)
-        file_header_layout.setSpacing(0)
+        file_header_layout.setSpacing(6)
         file_header_layout.addWidget(self.file_header, 1)
+        file_header_layout.addWidget(self.git_state_badge)
         file_header_layout.addWidget(self.close_button)
         self.file_header_container.hide()
 
@@ -463,15 +475,27 @@ class DiffView(QWidget):
         self._current_selection_key = selection_key if interactive else None
         if not interactive:
             self.selection.clear()
-        elif whole_file_staged:
-            self.selection.select_whole_file(diff)
         else:
             assert selection_key is not None
             self.selection.restore(diff, self._saved_selections.get(selection_key, set()))
         self.diff_highlighter.set_diff(diff)
-        version = "STAGED" if diff.staged else "WORKING TREE"
-        self.file_header.setText(f"{diff.path}   [{version}]")
-        self.file_header.setToolTip(f"{diff.path}\nGit state: {version.lower()}")
+        self.file_header.setText(diff.path)
+        self.file_header.setToolTip(diff.path)
+        if diff.staged:
+            badge = "IN INDEX · WHOLE FILE" if whole_file_staged else "IN INDEX"
+            self.git_state_badge.setStyleSheet(_INDEX_BADGE_STYLE)
+            tooltip = "This diff is stored in the Git index."
+            if whole_file_staged:
+                tooltip += " The file has no additional working-tree changes."
+        else:
+            badge = "WORKING TREE"
+            self.git_state_badge.setStyleSheet(_WORKTREE_BADGE_STYLE)
+            tooltip = "This diff is not stored in the Git index."
+        self.git_state_badge.setText(badge)
+        self.git_state_badge.setToolTip(
+            f"{tooltip} Gutter boxes select lines for the next action."
+        )
+        self.git_state_badge.setVisible(bool(diff.lines))
         self.file_header.setVisible(bool(diff.lines))
         self.file_header_container.setVisible(bool(diff.lines))
         self.diff.setPlainText(
@@ -511,6 +535,8 @@ class DiffView(QWidget):
         self.side_new_gutter.clear()
         self.file_header.clear()
         self.file_header.hide()
+        self.git_state_badge.clear()
+        self.git_state_badge.hide()
         self.file_header_container.hide()
         self.close_button.hide()
         for button in (
@@ -550,14 +576,8 @@ class DiffView(QWidget):
             cursor = QTextCursor(block)
             cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
             extra.cursor = cursor
-            kind = diff.lines[line_index].kind
             dark = self.diff.palette().base().color().lightness() < 128
-            if kind == "addition":
-                color = QColor("#2f7548" if dark else "#b7e8c3")
-            elif kind == "deletion":
-                color = QColor("#843944" if dark else "#f2b8b8")
-            else:
-                color = QColor("#365b8c" if dark else "#dbeafe")
+            color = QColor("#365b8c" if dark else "#cfe2ff")
             extra.format.setBackground(color)
             selections.append(extra)
         self.diff.setExtraSelections(selections)
@@ -751,6 +771,7 @@ class DiffView(QWidget):
             new_number = str(line.new_line) if line.new_line is not None else ""
             numbers.append(f"{marker} {old_number:>{old_width}}  {new_number:>{new_width}}")
         self.gutter.setPlainText("\n".join(numbers))
+        self.gutter.setExtraSelections(self._gutter_state_selections(self.gutter, diff))
         metrics = QFontMetrics(self.gutter.font())
         sample = "0" * (old_width + new_width + 5)
         self.gutter.setFixedWidth(metrics.horizontalAdvance(sample) + 12)
@@ -829,12 +850,61 @@ class DiffView(QWidget):
         self.side_new_gutter.setPlainText(
             "\n".join(self._side_marker(diff, index) for index in self._side_new_line_indexes)
         )
+        self.side_old_gutter.setExtraSelections(
+            self._state_selections_for_indexes(
+                self.side_old_gutter, self._side_old_line_indexes, diff
+            )
+        )
+        self.side_new_gutter.setExtraSelections(
+            self._state_selections_for_indexes(
+                self.side_new_gutter, self._side_new_line_indexes, diff
+            )
+        )
         self.side_old.setExtraSelections(
             self._side_extra_selections(self.side_old, self._side_old_line_indexes, diff)
         )
         self.side_new.setExtraSelections(
             self._side_extra_selections(self.side_new, self._side_new_line_indexes, diff)
         )
+
+    @staticmethod
+    def _state_field_color(editor: QPlainTextEdit, *, staged: bool) -> QColor:
+        dark = editor.palette().base().color().lightness() < 128
+        if staged:
+            return QColor("#315f9f" if dark else "#b9d4ff")
+        return QColor("#8a5b12" if dark else "#ffe0a3")
+
+    def _gutter_state_selections(
+        self, editor: QPlainTextEdit, diff: UnifiedDiff
+    ) -> list[QTextEdit.ExtraSelection]:
+        return self._state_selections_for_indexes(
+            editor, list(range(len(diff.lines))), diff
+        )
+
+    def _state_selections_for_indexes(
+        self,
+        editor: QPlainTextEdit,
+        indexes: list[int | None],
+        diff: UnifiedDiff,
+    ) -> list[QTextEdit.ExtraSelection]:
+        selections: list[QTextEdit.ExtraSelection] = []
+        color = self._state_field_color(editor, staged=diff.staged)
+        for row_index, line_index in enumerate(indexes):
+            if line_index is None or diff.lines[line_index].kind not in {
+                "addition",
+                "deletion",
+                "hunk",
+            }:
+                continue
+            block = editor.document().findBlockByNumber(row_index)
+            cursor = QTextCursor(block)
+            cursor.movePosition(QTextCursor.MoveOperation.NextCharacter)
+            cursor.setPosition(block.position(), QTextCursor.MoveMode.KeepAnchor)
+            extra = QTextEdit.ExtraSelection()
+            extra.cursor = cursor
+            extra.format.setBackground(color)
+            selections.append(extra)
+        return selections
 
     def _side_marker(self, diff: UnifiedDiff, line_index: int | None) -> str:
         if line_index is None or not self._interactive:
@@ -856,13 +926,7 @@ class DiffView(QWidget):
             cursor = QTextCursor(editor.document().findBlockByNumber(row_index))
             cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
             extra.cursor = cursor
-            kind = diff.lines[line_index].kind
-            if kind == "addition":
-                color = QColor("#2f7548" if dark else "#b7e8c3")
-            elif kind == "deletion":
-                color = QColor("#843944" if dark else "#f2b8b8")
-            else:
-                color = QColor("#365b8c" if dark else "#dbeafe")
+            color = QColor("#365b8c" if dark else "#cfe2ff")
             extra.format.setBackground(color)
             selections.append(extra)
         return selections

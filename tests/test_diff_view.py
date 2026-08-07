@@ -42,6 +42,7 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     )
     assert view.findChild(QLabel, "diffVersionLabel") is view.version_label
     assert view.findChild(QLabel, "diffFileHeader") is view.file_header
+    assert view.findChild(QLabel, "diffGitStateBadge") is view.git_state_badge
     assert view.findChild(QToolButton, "diffCloseButton") is view.close_button
     assert view.findChild(QPushButton, "diffStageButton") is view.stage_button
     assert view.findChild(QPushButton, "diffStashButton") is view.stash_button
@@ -235,11 +236,46 @@ def test_diff_view_hides_git_metadata_and_labels_hunks(
         whole_file_staged=False,
     )
 
-    assert view.file_header.text() == "src/file.cpp   [WORKING TREE]"
+    assert view.file_header.text() == "src/file.cpp"
+    assert view.git_state_badge.text() == "WORKING TREE"
     assert "diff --git" not in view.side_old.toPlainText()
     assert "--- a/file.cpp" not in view.side_old.toPlainText()
     assert "Old lines 10–11" in view.side_old.toPlainText()
     assert "New lines 10–11" in view.side_new.toPlainText()
+
+
+def test_staged_whole_file_has_prominent_index_state_in_header_and_gutters(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    view = DiffView(
+        QSettings(str(tmp_path / "indexed.ini"), QSettings.Format.IniFormat)
+    )
+    qtbot.addWidget(view)
+    diff = parse_unified_diff(
+        b"diff --git a/file.txt b/file.txt\n"
+        b"--- a/file.txt\n"
+        b"+++ b/file.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-before\n"
+        b"+after\n",
+        "file.txt",
+        staged=True,
+    )
+
+    view.display_diff(
+        diff,
+        selection_key=(tmp_path, diff.path, True),
+        preserve_scroll=False,
+        whole_file_staged=True,
+    )
+
+    assert view.git_state_badge.text() == "IN INDEX · WHOLE FILE"
+    assert "#2f6fed" in view.git_state_badge.styleSheet()
+    assert not view.selection.selected_lines
+    assert "✓" not in view.gutter.toPlainText()
+    assert view.gutter.extraSelections()
+    assert view.side_old_gutter.extraSelections()
+    assert view.side_new_gutter.extraSelections()
 
 
 def test_diff_view_owns_line_selection_without_applying(

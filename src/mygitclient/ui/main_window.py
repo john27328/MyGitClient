@@ -3058,7 +3058,9 @@ class MainWindow(QMainWindow):
             diff_value,
             selection_key=(value.repository, diff_value.path, diff_value.staged),
             preserve_scroll=preserve_view,
-            whole_file_staged=False,
+            whole_file_staged=(
+                diff_value.staged and not file.has_worktree_change and not file.unmerged
+            ),
         )
         self._diff_view.set_close_available(False)
         version = "staged" if diff_value.staged else "working tree"
