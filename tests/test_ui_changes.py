@@ -453,13 +453,21 @@ def test_discard_requires_confirmation_and_restores_selected_files(
 
     monkeypatch.setattr(QMessageBox, "question", confirm_discard)
     discard.trigger()
+
+    def restored_text(path: Path) -> str | None:
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # git restore replaces a file through filesystem operations that can be
+            # observed between exists() and open() on Windows runners.
+            return None
+
     qtbot.waitUntil(
-        lambda: tracked.exists() and tracked.read_text(encoding="utf-8") == "before\n",
+        lambda: restored_text(tracked) == "before\n",
         timeout=5000,
     )
     qtbot.waitUntil(
-        lambda: second.exists()
-        and second.read_text(encoding="utf-8") == "second before\n",
+        lambda: restored_text(second) == "second before\n",
         timeout=5000,
     )
     window.close()

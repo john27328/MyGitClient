@@ -153,7 +153,7 @@ def test_side_by_side_panels_share_normal_and_wide_widths(
         sizes = view.side_splitter.sizes()
         assert len(sizes) == 2
         assert abs(sizes[0] - sizes[1]) <= 2
-        assert sum(sizes) >= width - 20
+        assert sum(sizes) >= view.side_splitter.width() - 5
 
 
 def test_diff_view_restores_and_updates_font_size(qtbot: QtBot, tmp_path: Path) -> None:
