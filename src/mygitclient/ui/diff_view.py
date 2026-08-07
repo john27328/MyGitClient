@@ -39,6 +39,15 @@ from mygitclient.ui.diff_selection import DiffSelection, LineFingerprint
 
 SelectionKey = tuple[Path, str, bool]
 
+_FILE_HEADER_STYLE = (
+    "QLabel { padding: 5px 8px; background: palette(alternate-base); "
+    "border-bottom: 1px solid palette(midlight); }"
+)
+_GUTTER_STYLE = (
+    "QPlainTextEdit { background: palette(base); color: palette(mid); "
+    "border: 0; border-right: 1px solid palette(midlight); }"
+)
+
 
 class DiffView(QWidget):
     """Owns the diff presentation widgets while orchestration remains outside."""
@@ -90,10 +99,7 @@ class DiffView(QWidget):
         self.file_header.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.file_header.setStyleSheet(
-            "QLabel { padding: 5px 8px; background: palette(alternate-base); "
-            "border-bottom: 1px solid palette(midlight); }"
-        )
+        self.file_header.setStyleSheet(_FILE_HEADER_STYLE)
         self.close_button = QToolButton()
         self.close_button.setObjectName("diffCloseButton")
         self.close_button.setText("\u00d7")
@@ -123,10 +129,7 @@ class DiffView(QWidget):
             "Click a checkbox to select a changed line. "
             "Click a hunk checkbox to select the whole block."
         )
-        self.gutter.setStyleSheet(
-            "QPlainTextEdit { background: palette(base); color: palette(mid); "
-            "border: 0; border-right: 1px solid palette(midlight); }"
-        )
+        self.gutter.setStyleSheet(_GUTTER_STYLE)
         self.gutter.hide()
         self.diff.verticalScrollBar().valueChanged.connect(
             self.gutter.verticalScrollBar().setValue
@@ -213,10 +216,14 @@ class DiffView(QWidget):
         self.side_new_overview = DiffOverview(self.side_new)
         self.side_new_overview.setObjectName("sideBySideNewOverview")
         new_layout.addWidget(self.side_new_overview)
-        side_splitter = QSplitter(Qt.Orientation.Horizontal)
-        side_splitter.addWidget(old_body)
-        side_splitter.addWidget(new_body)
-        side_splitter.setSizes([500, 500])
+        self.side_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.side_splitter.setObjectName("diffSideBySideSplitter")
+        self.side_splitter.addWidget(old_body)
+        self.side_splitter.addWidget(new_body)
+        self.side_splitter.setChildrenCollapsible(False)
+        self.side_splitter.setStretchFactor(0, 1)
+        self.side_splitter.setStretchFactor(1, 1)
+        self.side_splitter.setSizes([500, 500])
 
         self.wrap_button = self._toggle_button("diffWrapButton", "Wrap")
         self.wrap_button.setToolTip("Wrap long diff lines")
@@ -299,7 +306,7 @@ class DiffView(QWidget):
 
         self.stack = QStackedWidget()
         self.stack.addWidget(diff_body)
-        self.stack.addWidget(side_splitter)
+        self.stack.addWidget(self.side_splitter)
         self.stack.setCurrentIndex(max(saved_index, 0))
 
         layout = QVBoxLayout(self)
@@ -382,10 +389,7 @@ class DiffView(QWidget):
         gutter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         gutter.setCursor(Qt.CursorShape.PointingHandCursor)
         gutter.setFixedWidth(28)
-        gutter.setStyleSheet(
-            "QPlainTextEdit { background: palette(base); color: palette(mid); "
-            "border: 0; border-right: 1px solid palette(midlight); }"
-        )
+        gutter.setStyleSheet(_GUTTER_STYLE)
         return gutter
 
     @staticmethod
@@ -704,6 +708,13 @@ class DiffView(QWidget):
     def refresh_theme(self) -> None:
         """Refresh every palette-dependent part after a live theme change."""
 
+        # Reassign local palette-based styles so Qt resolves their roles against the
+        # new application palette instead of a cached palette from the previous theme.
+        self.file_header.setStyleSheet("")
+        self.file_header.setStyleSheet(_FILE_HEADER_STYLE)
+        for gutter in (self.gutter, self.side_old_gutter, self.side_new_gutter):
+            gutter.setStyleSheet("")
+            gutter.setStyleSheet(_GUTTER_STYLE)
         self.diff_highlighter.rehighlight()
         self.side_old_highlighter.rehighlight()
         self.side_new_highlighter.rehighlight()
@@ -716,6 +727,8 @@ class DiffView(QWidget):
             self.side_old_gutter,
             self.side_new_gutter,
             self.overview,
+            self.side_old_overview,
+            self.side_new_overview,
         ):
             widget.update()
 

@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
     QPushButton,
+    QSplitter,
     QStackedWidget,
     QToolButton,
 )
@@ -32,6 +33,7 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     assert view.findChild(DiffGutter, "sideBySideOldGutter") is view.side_old_gutter
     assert view.findChild(DiffGutter, "sideBySideNewGutter") is view.side_new_gutter
     assert view.findChild(QStackedWidget) is view.stack
+    assert view.findChild(QSplitter, "diffSideBySideSplitter") is view.side_splitter
     assert view.findChild(QToolButton, "diffWrapButton") is view.wrap_button
     assert view.findChild(QToolButton, "diffWhitespaceButton") is view.whitespace_button
     assert (
@@ -134,6 +136,24 @@ def test_diff_view_restores_saved_mode(qtbot: QtBot, tmp_path: Path) -> None:
 
     assert view.view_mode_combo.currentData() == "side-by-side"
     assert view.stack.currentIndex() == 1
+
+
+def test_side_by_side_panels_share_normal_and_wide_widths(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "diff-widths.ini"), QSettings.Format.IniFormat)
+    settings.setValue("diff/viewMode", "side-by-side")
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+
+    for width in (900, 1800):
+        view.resize(width, 600)
+        view.show()
+        qtbot.wait(1)
+        sizes = view.side_splitter.sizes()
+        assert len(sizes) == 2
+        assert abs(sizes[0] - sizes[1]) <= 2
+        assert sum(sizes) >= width - 20
 
 
 def test_diff_view_restores_and_updates_font_size(qtbot: QtBot, tmp_path: Path) -> None:

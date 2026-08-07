@@ -52,9 +52,10 @@ def apply_theme(app: QApplication, theme: Theme) -> None:
 
 def _refresh_widget_palettes(app: QApplication) -> None:
     for widget in app.allWidgets():
-        # Inherit future application palette changes instead of installing a
-        # per-widget palette that can survive the next theme switch.
-        widget.setPalette(QPalette())
+        # Apply the resolved application palette explicitly. QPalette() can resolve
+        # back to the platform palette while Qt is repolishing an existing widget,
+        # leaving child editors with colors from the previous live theme.
+        widget.setPalette(app.palette())
         style = widget.style()
         style.unpolish(widget)
         style.polish(widget)

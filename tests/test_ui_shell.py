@@ -718,6 +718,7 @@ def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path:
     side_new = window.findChild(QPlainTextEdit, "sideBySideNew")
     gutter = window.findChild(QPlainTextEdit, "diffGutter")
     side_gutter = window.findChild(QPlainTextEdit, "sideBySideOldGutter")
+    view_mode = window.findChild(QComboBox, "diffViewModeCombo")
     initial_base = qapp.palette().base().color()
 
     assert system_action is not None
@@ -728,7 +729,10 @@ def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path:
     assert side_new is not None
     assert gutter is not None
     assert side_gutter is not None
+    assert view_mode is not None
+    window.show()
     dark_action.trigger()
+    qapp.processEvents()
 
     assert dark_action.isChecked()
     assert not system_action.isChecked()
@@ -741,13 +745,18 @@ def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path:
     assert "checkbox-partial.svg" in qapp.styleSheet()
 
     light_action.trigger()
+    view_mode.setCurrentIndex(view_mode.findData("side-by-side"))
+    qapp.processEvents()
     assert light_action.isChecked()
     assert all(editor.palette().base().color().lightness() >= 128 for editor in themed_editors)
 
     dark_action.trigger()
+    view_mode.setCurrentIndex(view_mode.findData("unified"))
+    qapp.processEvents()
     assert all(editor.palette().base().color().lightness() < 128 for editor in themed_editors)
 
     system_action.trigger()
+    qapp.processEvents()
     assert system_action.isChecked()
     assert not dark_action.isChecked()
     assert qapp.styleSheet() == ""
