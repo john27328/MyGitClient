@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QLabel,
     QPlainTextEdit,
@@ -24,6 +25,7 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     qtbot.addWidget(view)
 
     assert "palette(base)" in view.gutter.styleSheet()
+    assert "#667085" in view.gutter.styleSheet()
     assert "alternate-base" not in view.gutter.styleSheet()
 
     assert view.findChild(QPlainTextEdit, "diffPanel") is view.diff
@@ -468,3 +470,53 @@ def test_unified_gutter_visibility_does_not_depend_on_parent_visibility(
     view.set_wrap(False)
 
     assert not view.gutter.isHidden()
+
+
+def test_unified_gutter_rows_follow_syntax_highlighted_editor_geometry(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "gutter-geometry.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    view.resize(900, 500)
+    view.show()
+    diff = parse_unified_diff(
+        b"diff --git a/example.py b/example.py\n"
+        b"--- a/example.py\n"
+        b"+++ b/example.py\n"
+        b"@@ -1,4 +1,7 @@\n"
+        b" def unchanged():\n"
+        b"-    return 1\n"
+        b"+    if True:\n"
+        b"+        value = 'highlighted'\n"
+        b"+        return value\n"
+        b" \n"
+        b" # comment\n",
+        "example.py",
+        staged=False,
+    )
+    view.set_font_size(24)
+    view.display_diff(
+        diff,
+        selection_key=(tmp_path, diff.path, diff.staged),
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+    qtbot.wait(10)
+
+    for index, line in enumerate(diff.lines):
+        if line.kind in {"header", "metadata"}:
+            continue
+        editor_block = view.diff.document().findBlockByNumber(index)
+        gutter_block = view.gutter.document().findBlockByNumber(index)
+        editor_top = view.diff.cursorRect(QTextCursor(editor_block)).top()
+        gutter_top = view.gutter.cursorRect(QTextCursor(gutter_block)).top()
+        assert abs(editor_top - gutter_top) <= 1, (
+            index,
+            editor_top,
+            gutter_top,
+            editor_block.isVisible(),
+            gutter_block.isVisible(),
+            view.diff.firstVisibleBlock().blockNumber(),
+            view.gutter.firstVisibleBlock().blockNumber(),
+        )

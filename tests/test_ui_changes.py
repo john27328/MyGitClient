@@ -146,12 +146,13 @@ def test_file_checkbox_selects_then_buttons_stage_and_unstage_changes(
     qtbot.waitUntil(lambda: file_is_staged(True), timeout=5000)
     staged_item = changes.topLevelItem(0)
     assert staged_item is not None
-    assert staged_item.checkState(0) is Qt.CheckState.Checked
+    assert staged_item.checkState(0) is Qt.CheckState.Unchecked
+    staged_item.setCheckState(0, Qt.CheckState.Checked)
     unstage_button.click()
     qtbot.waitUntil(lambda: file_is_staged(False), timeout=5000)
     unstaged_item = changes.topLevelItem(0)
     assert unstaged_item is not None
-    assert unstaged_item.checkState(0) is Qt.CheckState.Checked
+    assert unstaged_item.checkState(0) is Qt.CheckState.Unchecked
     window.close()
 
 

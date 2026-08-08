@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QFontDatabase,
     QFontMetrics,
     QKeyEvent,
+    QTextBlockFormat,
     QTextCursor,
     QTextOption,
 )
@@ -43,14 +44,22 @@ _FILE_HEADER_STYLE = (
     "QLabel { padding: 5px 8px; background: palette(alternate-base); "
     "border-bottom: 1px solid palette(midlight); }"
 )
-_GUTTER_STYLE = (
-    "QPlainTextEdit { background: palette(base); color: palette(mid); "
-    "border: 0; border-right: 1px solid palette(midlight); }"
-)
 _INDEX_BADGE_STYLE = (
     "QLabel { color: white; background: #2f6fed; border-radius: 7px; "
     "padding: 2px 8px; font-weight: 600; }"
 )
+
+
+def _gutter_style(gutter: QWidget) -> str:
+    """Keep line numbers readable without competing with the source text."""
+
+    dark = gutter.palette().base().color().lightness() < 128
+    foreground = "#aeb8c4" if dark else "#667085"
+    return (
+        "QPlainTextEdit { background: palette(base); "
+        f"color: {foreground}; "
+        "border: 0; border-right: 1px solid palette(midlight); }"
+    )
 _WORKTREE_BADGE_STYLE = (
     "QLabel { color: #201600; background: #e9a321; border-radius: 7px; "
     "padding: 2px 8px; font-weight: 600; }"
@@ -141,7 +150,7 @@ class DiffView(QWidget):
             "Click a checkbox to select a changed line. "
             "Click a hunk checkbox to select the whole block."
         )
-        self.gutter.setStyleSheet(_GUTTER_STYLE)
+        self.gutter.setStyleSheet(_gutter_style(self.gutter))
         self.gutter.hide()
         self.diff.verticalScrollBar().valueChanged.connect(
             self.gutter.verticalScrollBar().setValue
@@ -401,7 +410,7 @@ class DiffView(QWidget):
         gutter.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         gutter.setCursor(Qt.CursorShape.PointingHandCursor)
         gutter.setFixedWidth(28)
-        gutter.setStyleSheet(_GUTTER_STYLE)
+        gutter.setStyleSheet(_gutter_style(gutter))
         return gutter
 
     @staticmethod
@@ -734,7 +743,7 @@ class DiffView(QWidget):
         self.file_header.setStyleSheet(_FILE_HEADER_STYLE)
         for gutter in (self.gutter, self.side_old_gutter, self.side_new_gutter):
             gutter.setStyleSheet("")
-            gutter.setStyleSheet(_GUTTER_STYLE)
+            gutter.setStyleSheet(_gutter_style(gutter))
         self.diff_highlighter.rehighlight()
         self.side_old_highlighter.rehighlight()
         self.side_new_highlighter.rehighlight()
@@ -772,6 +781,8 @@ class DiffView(QWidget):
             numbers.append(f"{marker} {old_number:>{old_width}}  {new_number:>{new_width}}")
         self.gutter.setPlainText("\n".join(numbers))
         self.gutter.setExtraSelections(self._gutter_state_selections(self.gutter, diff))
+        self._set_unified_service_block_visibility(self.gutter, diff)
+        self._align_editor_and_gutter(self.diff, self.gutter)
         metrics = QFontMetrics(self.gutter.font())
         sample = "0" * (old_width + new_width + 5)
         self.gutter.setFixedWidth(metrics.horizontalAdvance(sample) + 12)
@@ -860,6 +871,8 @@ class DiffView(QWidget):
                 self.side_new_gutter, self._side_new_line_indexes, diff
             )
         )
+        self._align_editor_and_gutter(self.side_old, self.side_old_gutter)
+        self._align_editor_and_gutter(self.side_new, self.side_new_gutter)
         self.side_old.setExtraSelections(
             self._side_extra_selections(self.side_old, self._side_old_line_indexes, diff)
         )
@@ -937,6 +950,34 @@ class DiffView(QWidget):
         self.side_new_gutter.setVisible(not unified and not wrap_enabled)
 
     @staticmethod
+    def _align_editor_and_gutter(
+        editor: QPlainTextEdit, gutter: QPlainTextEdit
+    ) -> None:
+        """Use one fixed visual line height in paired text documents.
+
+        Syntax highlighting can change the metrics of individual editor blocks while
+        the plain gutter keeps the base font metrics. Equal scrollbar values then no
+        longer identify equal rows. A fixed block height keeps both documents aligned;
+        wrapped gutters are hidden, so every visible block is exactly one visual row.
+        """
+
+        height = max(
+            QFontMetrics(editor.font()).lineSpacing(),
+            QFontMetrics(gutter.font()).lineSpacing(),
+        )
+        for document in (editor.document(), gutter.document()):
+            block = document.firstBlock()
+            cursor = QTextCursor(document)
+            block_format = QTextBlockFormat()
+            block_format.setLineHeight(
+                height, QTextBlockFormat.LineHeightTypes.FixedHeight.value
+            )
+            while block.isValid():
+                cursor.setPosition(block.position())
+                cursor.setBlockFormat(block_format)
+                block = block.next()
+
+    @staticmethod
     def _side_line_text(line: DiffLine | None, width: int, *, old: bool) -> str:
         if line is None:
             return ""
@@ -965,13 +1006,19 @@ class DiffView(QWidget):
 
     def _hide_unified_service_blocks(self, diff: UnifiedDiff) -> None:
         for editor in (self.diff, self.gutter):
-            document = editor.document()
-            for index, line in enumerate(diff.lines):
-                block = document.findBlockByNumber(index)
-                visible = line.kind not in {"header", "metadata"}
-                block.setVisible(visible)
-                block.setLineCount(1 if visible else 0)
-            document.markContentsDirty(0, document.characterCount())
+            self._set_unified_service_block_visibility(editor, diff)
+
+    @staticmethod
+    def _set_unified_service_block_visibility(
+        editor: QPlainTextEdit, diff: UnifiedDiff
+    ) -> None:
+        document = editor.document()
+        for index, line in enumerate(diff.lines):
+            block = document.findBlockByNumber(index)
+            visible = line.kind not in {"header", "metadata"}
+            block.setVisible(visible)
+            block.setLineCount(1 if visible else 0)
+        document.markContentsDirty(0, document.characterCount())
 
     @staticmethod
     def _hunk_label(diff: UnifiedDiff, line: DiffLine | None) -> str:

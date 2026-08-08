@@ -186,6 +186,144 @@ def test_partial_patch_for_untracked_file_keeps_new_file_metadata(tmp_path: Path
     assert cached.stdout == b"second\n"
 
 
+def test_partial_patch_applies_multiple_non_adjacent_lines(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked = repository / "schema.sql"
+    original = "".join(f"line {number}\n" for number in range(1, 61))
+    tracked.write_text(original, encoding="utf-8")
+    subprocess.run(["git", "add", "schema.sql"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    changed = original.replace(
+        "line 12\n",
+        "line 12\nCREATE SCHEMA tmp\nGO\n",
+    ).replace(
+        "line 44\n",
+        "line 44\nINSERT INTO tmp.items VALUES (1)\nGO\n",
+    )
+    tracked.write_text(changed, encoding="utf-8")
+    result = subprocess.run(
+        ["git", "diff", "--no-color", "--unified=3", "--", "schema.sql"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    diff = parse_unified_diff(result.stdout, "schema.sql", staged=False)
+    selected = {
+        index
+        for index, line in enumerate(diff.lines)
+        if line.kind == "addition"
+        and line.text
+        in {"+CREATE SCHEMA tmp", "+INSERT INTO tmp.items VALUES (1)"}
+    }
+    assert len(selected) == 2
+
+    patch = diff.patch_for_lines(selected)
+    applied = subprocess.run(
+        ["git", "apply", "--cached"],
+        cwd=repository,
+        input=patch,
+        check=False,
+        capture_output=True,
+    )
+
+    assert applied.returncode == 0, applied.stderr.decode(errors="replace")
+    cached = subprocess.run(
+        ["git", "show", ":schema.sql"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "CREATE SCHEMA tmp" in cached
+    assert "INSERT INTO tmp.items VALUES (1)" in cached
+    assert "\nGO\n" not in cached
+
+
+def test_every_pair_of_changed_lines_builds_a_valid_patch(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    tracked = repository / "schema.sql"
+    original_lines = [f"line {number}\n" for number in range(1, 45)]
+    tracked.write_text("".join(original_lines), encoding="utf-8")
+    subprocess.run(["git", "add", "schema.sql"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    changed_lines = list(original_lines)
+    changed_lines[4:7] = ["replacement five\n", "replacement six\n"]
+    changed_lines[19:20] = ["replacement twenty\n", "extra twenty\n"]
+    changed_lines[34:37] = ["replacement thirty five\n"]
+    tracked.write_text("".join(changed_lines), encoding="utf-8")
+    result = subprocess.run(
+        ["git", "diff", "--no-color", "--unified=3", "--", "schema.sql"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    diff = parse_unified_diff(result.stdout, "schema.sql", staged=False)
+    changed_indexes = [
+        index
+        for index, line in enumerate(diff.lines)
+        if line.kind in {"addition", "deletion"}
+    ]
+
+    for first_position, first in enumerate(changed_indexes):
+        for second in changed_indexes[first_position + 1 :]:
+            patch = diff.patch_for_lines({first, second})
+            checked = subprocess.run(
+                ["git", "apply", "--check", "--cached"],
+                cwd=repository,
+                input=patch,
+                check=False,
+                capture_output=True,
+            )
+            assert checked.returncode == 0, (
+                first,
+                second,
+                patch.decode(errors="replace"),
+                checked.stderr.decode(errors="replace"),
+            )
+
+
 def test_side_by_side_rows_align_similar_lines_around_an_inserted_line() -> None:
     diff = parse_unified_diff(
         b"diff --git a/file.h b/file.h\n"

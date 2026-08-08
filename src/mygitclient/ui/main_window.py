@@ -163,6 +163,7 @@ class MainWindow(QMainWindow):
         self._active_queue_operation: QueuedOperation | None = None
         self._queued_operation_count = 0
         self._refresh_all_after_queue = False
+        self._clear_change_selection_after_mutation = False
         self._queue_elapsed = QElapsedTimer()
         self._known_queue_operations: dict[int, QueuedOperation] = {}
         self._operation_output_dialogs: dict[int, OperationOutputDialog] = {}
@@ -404,6 +405,7 @@ class MainWindow(QMainWindow):
         refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
         refresh_action.setObjectName("refreshAction")
         refresh_action.setShortcut("F5")
+        refresh_action.setToolTip("Fully reload repository state (F5)")
         refresh_action.triggered.connect(self._refresh_repository)
         toolbar.addAction(refresh_action)
         self._fetch_action = QAction(load_icon("fetch.svg"), "Fetch", self)
@@ -1840,6 +1842,11 @@ class MainWindow(QMainWindow):
     def _refresh_repository(self) -> None:
         if self._repository is None:
             return
+        self._repository_status = None
+        self._diff_view.reset()
+        self._git.request_branches(self._repository)
+        self._git.request_tags(self._repository)
+        self._git.request_stashes(self._repository)
         self._status_label.setText(f"Refreshing {self._repository.name}…")
         self._status_runner = self._git.request_status(self._repository)
 
@@ -2193,7 +2200,17 @@ class MainWindow(QMainWindow):
             selected_file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
             if isinstance(selected_file, FileStatus):
                 selected_path = selected_file.path
+        previous_head = (
+            self._repository_status.branch.head
+            if self._repository_status is not None
+            else None
+        )
         self._repository_status = status_value
+        if previous_head is not None and previous_head != status_value.branch.head:
+            self._diff_view.reset()
+            self._history_panel.clear_commits()
+            self._git.request_branches(value.repository)
+            self._git.request_tags(value.repository)
         self._update_sync_indicators()
         changed_paths = {file.path for file in status_value.files}
         self._diff_view.retain_changed_paths(value.repository, changed_paths)
@@ -2380,6 +2397,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _mutation_finished(self, path: str) -> None:
+        if self._clear_change_selection_after_mutation:
+            self._clear_change_selection_after_mutation = False
+            self._changes_panel.clear_checked_files()
+            self._diff_view.clear_selection()
         if path in {"fetch", "pull", "push"}:
             self._set_network_busy(None)
         self._set_changes_trees_enabled(True)
@@ -2837,8 +2858,8 @@ class MainWindow(QMainWindow):
         diff = self._diff_view.current_diff
         selected_lines = self._diff_view.selected_line_indexes
         if diff is not None and selected_lines and not diff.staged:
+            self._clear_change_selection_after_mutation = True
             self._apply_diff_lines(diff, selected_lines)
-            self._diff_view.clear_selection()
             return
         self._set_checked_files_staged(True)
 
@@ -2847,8 +2868,8 @@ class MainWindow(QMainWindow):
         diff = self._diff_view.current_diff
         selected_lines = self._diff_view.selected_line_indexes
         if diff is not None and selected_lines and diff.staged:
+            self._clear_change_selection_after_mutation = True
             self._apply_diff_lines(diff, selected_lines)
-            self._diff_view.clear_selection()
             return
         self._set_checked_files_staged(False)
 
@@ -2902,6 +2923,7 @@ class MainWindow(QMainWindow):
         self._set_changes_trees_enabled(False)
         action = "Staging" if staged else "Unstaging"
         self._status_label.setText(f"{action} {len(files)} selected file(s)…")
+        self._clear_change_selection_after_mutation = True
         self._git.request_stage_files(
             repository,
             files,
@@ -2917,6 +2939,7 @@ class MainWindow(QMainWindow):
             return
         self._changes_container.setEnabled(False)
         self._status_label.setText(f"Stashing {len(files)} selected file(s)…")
+        self._clear_change_selection_after_mutation = True
         self._git.request_stash_files(repository, files)
 
     @Slot()
@@ -2937,8 +2960,8 @@ class MainWindow(QMainWindow):
             return
         self._changes_container.setEnabled(False)
         self._status_label.setText(f"Discarding changes to {target}…")
-        for file in files:
-            self._git.request_discard(repository, file)
+        self._clear_change_selection_after_mutation = True
+        self._git.request_discard_files(repository, files)
 
     def _selected_file(self) -> FileStatus | None:
         selected_items = self._changes_panel.active_tree().selectedItems()
@@ -2965,8 +2988,8 @@ class MainWindow(QMainWindow):
             return
         self._changes_container.setEnabled(False)
         self._status_label.setText(f"Discarding changes to {target}…")
-        for file in files:
-            self._git.request_discard(repository, file)
+        self._clear_change_selection_after_mutation = True
+        self._git.request_discard_files(repository, files)
 
     @Slot()
     def _stash_selected_files(self) -> None:
@@ -3204,6 +3227,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _show_git_error(self, message: str) -> None:
+        self._clear_change_selection_after_mutation = False
         self._set_network_busy(None)
         self._status_runner = None
         self._history_runner = None

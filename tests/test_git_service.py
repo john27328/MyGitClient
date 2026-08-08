@@ -1239,6 +1239,47 @@ def test_discard_succeeds_with_gitattributes_warning(qtbot: QtBot, tmp_path: Pat
     assert tracked.read_text(encoding="utf-8") == "before\n"
 
 
+def test_discard_files_batches_tracked_and_untracked_changes(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    untracked = tmp_path / "untracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    tracked.write_text("after\n", encoding="utf-8")
+    untracked.write_text("temporary\n", encoding="utf-8")
+    service = GitService()
+    mutations: list[str] = []
+    errors: list[str] = []
+    service.mutation_ready.connect(mutations.append)
+    service.operation_failed.connect(errors.append)
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_discard_files(
+            tmp_path,
+            (
+                FileStatus("tracked.txt", ".", "M"),
+                FileStatus("untracked.txt", "?", "?"),
+            ),
+        )
+
+    assert mutations == ["discard"]
+    assert not errors
+    assert tracked.read_text(encoding="utf-8") == "before\n"
+    assert not untracked.exists()
+
+
 def test_pull_rebase_autostash_restores_changes(qtbot: QtBot, tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
     seed = tmp_path / "seed"

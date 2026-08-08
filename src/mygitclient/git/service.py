@@ -108,6 +108,12 @@ class _ConflictVersionsWorkflow:
     contents: list[str] | None = None
 
 
+@dataclass(slots=True)
+class _DiscardBatch:
+    remaining: int
+    failed: bool = False
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
@@ -147,6 +153,7 @@ class GitService(QObject):
         self._diff_requests: dict[GitRunner, tuple[Path, str, bool, bool, int]] = {}
         self._latest_diff_request: dict[tuple[Path, str, bool], int] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
+        self._discard_batches: dict[GitRunner, _DiscardBatch] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
         self._branch_requests: dict[GitRunner, tuple[Path, int]] = {}
@@ -1361,6 +1368,48 @@ class GitService(QObject):
         )
         return runner
 
+    def request_discard_files(
+        self, repository: Path, files: tuple[FileStatus, ...]
+    ) -> tuple[GitRunner, ...]:
+        commands: list[tuple[str, ...]] = []
+        groups = (
+            ((file.path for file in files if file.index_status == "?"), ("clean", "-f")),
+            ((file.path for file in files if file.index_status == "A"), ("rm", "-f")),
+            (
+                (
+                    file.path
+                    for file in files
+                    if file.index_status not in {"?", "A"} and file.is_staged
+                ),
+                ("restore", "--source=HEAD", "--staged", "--worktree"),
+            ),
+            (
+                (
+                    file.path
+                    for file in files
+                    if file.index_status not in {"?", "A"} and not file.is_staged
+                ),
+                ("restore", "--worktree"),
+            ),
+        )
+        for paths_iter, prefix in groups:
+            paths = tuple(paths_iter)
+            if paths:
+                commands.append((*prefix, "--", *paths))
+        batch = _DiscardBatch(len(commands))
+        runners: list[GitRunner] = []
+        for arguments in commands:
+            runner = GitRunner(parent=self)
+            self._runners.add(runner)
+            self._discard_batches[runner] = batch
+            runner.completed.connect(self._handle_discard_batch)
+            runner.failed_to_start.connect(self._handle_discard_batch_start_error)
+            self._operation_queue.enqueue(
+                runner, GitCommand(arguments, repository, "discard selected changes")
+            )
+            runners.append(runner)
+        return tuple(runners)
+
     def request_stash_files(
         self, repository: Path, files: tuple[FileStatus, ...]
     ) -> GitRunner:
@@ -2380,6 +2429,43 @@ class GitService(QObject):
             )
             return
         self.mutation_ready.emit(path)
+
+    @Slot(object)
+    def _handle_discard_batch(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        batch = self._discard_batches.pop(runner, None)
+        self._release_runner(runner)
+        if batch is None or not isinstance(result, GitResult):
+            return
+        if result.cancelled:
+            batch.failed = True
+            self.operation_cancelled.emit()
+        elif not result.succeeded:
+            batch.failed = True
+            self.operation_failed.emit(
+                format_git_error(result.error_text, operation=result.command.operation)
+            )
+        self._finish_discard_batch(batch)
+
+    @Slot(str)
+    def _handle_discard_batch_start_error(self, message: str) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        batch = self._discard_batches.pop(runner, None)
+        self._release_runner(runner)
+        if batch is None:
+            return
+        batch.failed = True
+        self.operation_failed.emit(message)
+        self._finish_discard_batch(batch)
+
+    def _finish_discard_batch(self, batch: _DiscardBatch) -> None:
+        batch.remaining -= 1
+        if batch.remaining == 0 and not batch.failed:
+            self.mutation_ready.emit("discard")
 
 
 def detect_repository_operation(git_dir: Path) -> RepositoryOperation | None:

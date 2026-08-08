@@ -77,3 +77,29 @@ def test_cpp_strings_comments_and_numbers_use_distinct_colors(qtbot: QtBot) -> N
 
     assert color_at("const") != color_at('"item 42"')
     assert color_at('"item 42"') != color_at("// comment")
+
+
+def test_light_diff_text_and_tokens_have_readable_contrast(qtbot: QtBot) -> None:
+    editor = QPlainTextEdit()
+    qtbot.addWidget(editor)
+    highlighter = DiffHighlighter(editor)
+    highlighter.set_language("example.cs")
+    highlighter.set_line_kinds(("context",))
+    text = " public string Message = \"ready\"; // note"
+    editor.setPlainText(text)
+    highlighter.rehighlight()
+
+    formats = editor.document().firstBlock().layout().formats()
+
+    def color_at(token: str):
+        position = text.index(token)
+        item = next(
+            value
+            for value in formats
+            if value.start <= position < value.start + value.length
+        )
+        return item.format.foreground().color()
+
+    assert color_at("public").lightness() < 120
+    assert color_at('"ready"').lightness() < 130
+    assert color_at("// note").lightness() < 130

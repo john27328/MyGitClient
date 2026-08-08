@@ -707,6 +707,53 @@ def test_branches_tab_can_checkout_and_create_branch(
     window.close()
 
 
+def test_external_checkout_is_detected_by_poll_and_refresh(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "external-checkout"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    (repository / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "branch", "feature"], cwd=repository, check=True)
+    settings = QSettings(str(tmp_path / "external.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
+    window.show()
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: "main" in window.windowTitle(), timeout=5000)
+
+    subprocess.run(["git", "switch", "feature"], cwd=repository, check=True)
+    qtbot.waitUntil(lambda: "feature" in window.windowTitle(), timeout=5000)
+
+    subprocess.run(["git", "switch", "main"], cwd=repository, check=True)
+    refresh = window.findChild(QAction, "refreshAction")
+    assert refresh is not None
+    refresh.trigger()
+    qtbot.waitUntil(lambda: "main" in window.windowTitle(), timeout=5000)
+    window.close()
+
+
 def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path: Path) -> None:
     settings = QSettings(str(tmp_path / "theme.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)

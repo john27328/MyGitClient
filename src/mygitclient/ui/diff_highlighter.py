@@ -132,14 +132,13 @@ class DiffHighlighter(QSyntaxHighlighter):
         kind = self._line_kinds[block_number]
         colors = self._colors()
         background = colors.get(kind)
-        if background is None:
-            text_format = QTextCharFormat()
-        else:
-            text_format = QTextCharFormat()
+        text_format = QTextCharFormat()
+        text_format.setForeground(colors["text"])
+        if background is not None:
             text_format.setBackground(background)
             if kind in {"header", "hunk"}:
                 text_format.setForeground(colors["header_text"])
-            self.setFormat(0, len(text), text_format)
+        self.setFormat(0, len(text), text_format)
         if self._language is not None and kind in {"addition", "deletion", "context"}:
             for pattern, color_role in _LANGUAGE_RULES[self._language]:
                 syntax_format = QTextCharFormat()
@@ -163,6 +162,7 @@ class DiffHighlighter(QSyntaxHighlighter):
         dark = self._editor.palette().base().color().lightness() < 128
         if dark:
             return {
+                "text": QColor("#e2e7ed"),
                 "addition": QColor("#142f20"),
                 "deletion": QColor("#3b1d22"),
                 "hunk": QColor("#243955"),
@@ -176,15 +176,16 @@ class DiffHighlighter(QSyntaxHighlighter):
                 "inline_deletion": QColor("#71313a"),
             }
         return {
-            "addition": QColor("#edf8f0"),
-            "deletion": QColor("#fbecec"),
-            "hunk": QColor("#e8f0fa"),
-            "header": QColor("#f3f5f7"),
-            "header_text": QColor("#64758a"),
-            "keyword": QColor("#7b3fc6"),
-            "string": QColor("#2e7d32"),
-            "comment": QColor("#718096"),
-            "number": QColor("#b45309"),
-            "inline_addition": QColor("#b9e7c5"),
-            "inline_deletion": QColor("#f1b9b9"),
+            "text": QColor("#24292f"),
+            "addition": QColor("#e7f7eb"),
+            "deletion": QColor("#fbe7e7"),
+            "hunk": QColor("#e2edf9"),
+            "header": QColor("#eef1f4"),
+            "header_text": QColor("#465b73"),
+            "keyword": QColor("#5d21a8"),
+            "string": QColor("#24752f"),
+            "comment": QColor("#526273"),
+            "number": QColor("#9a3f08"),
+            "inline_addition": QColor("#a9dfb6"),
+            "inline_deletion": QColor("#edaeae"),
         }
