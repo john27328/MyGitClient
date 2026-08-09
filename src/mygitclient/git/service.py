@@ -445,6 +445,27 @@ class GitService(QObject):
         )
         return runner
 
+    def request_delete_remote_branch(
+        self, repository: Path, branch: BranchInfo
+    ) -> GitRunner:
+        remote, separator, branch_name = branch.name.partition("/")
+        if not branch.remote or not separator or not remote or not branch_name:
+            raise ValueError("Remote branch must include a remote and branch name")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "branches:remote-deleted"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(
+                ("push", "--progress", remote, "--delete", branch_name),
+                repository,
+                "delete remote branch",
+            ),
+        )
+        return runner
+
     def request_pull(
         self, repository: Path, *, rebase: bool, autostash: bool
     ) -> GitRunner:

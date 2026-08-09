@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from PySide6.QtWidgets import QApplication
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
@@ -85,6 +86,28 @@ def test_refs_panel_exposes_branch_context_actions(qtbot: QtBot) -> None:
     assert deleted == [branch]
     assert forced == [branch]
     assert rebased == [branch]
+
+
+def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    branch = BranchInfo(
+        "refs/remotes/origin/feature", "origin/feature", "2" * 40, True
+    )
+    panel.show_branches(BranchesSnapshot(Path("repository"), (branch,)))
+    remotes = panel.tree.topLevelItem(1)
+    assert remotes is not None
+    origin = remotes.child(0)
+    assert origin is not None
+    panel.tree.setCurrentItem(origin.child(0))
+    deleted: list[object] = []
+    panel.remote_delete_requested.connect(deleted.append)
+
+    panel.copy_branch_action.trigger()
+    panel.remote_delete_action.trigger()
+
+    assert QApplication.clipboard().text() == "origin/feature"
+    assert deleted == [branch]
 
 
 def test_cleanup_gone_branches_emits_only_safe_candidates(qtbot: QtBot) -> None:

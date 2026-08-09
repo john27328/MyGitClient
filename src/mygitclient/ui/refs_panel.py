@@ -4,6 +4,7 @@ from typing import cast
 
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QLineEdit,
@@ -33,6 +34,7 @@ class RefsPanel(QWidget):
     rename_requested = Signal(object)
     delete_requested = Signal(object)
     force_delete_requested = Signal(object)
+    remote_delete_requested = Signal(object)
     cleanup_gone_requested = Signal(object)
     rebase_requested = Signal(object)
     interactive_rebase_requested = Signal(object)
@@ -85,12 +87,19 @@ class RefsPanel(QWidget):
         self.create_branch_action.triggered.connect(self.create_branch_requested)
         self.checkout_action = self.context_menu.addAction("Checkout")
         self.checkout_action.triggered.connect(self._checkout_selected)
+        self.copy_branch_action = self.context_menu.addAction("Copy branch name")
+        self.copy_branch_action.setObjectName("copyBranchNameAction")
+        self.copy_branch_action.triggered.connect(self._copy_branch_name)
+        self.context_menu.addSeparator()
         self.rename_action = self.context_menu.addAction("Rename…")
         self.rename_action.triggered.connect(self._rename_selected)
         self.delete_action = self.context_menu.addAction("Delete safely…")
         self.delete_action.triggered.connect(self._delete_selected)
         self.force_delete_action = self.context_menu.addAction("Force delete…")
         self.force_delete_action.triggered.connect(self._force_delete_selected)
+        self.remote_delete_action = self.context_menu.addAction("Delete remote branch…")
+        self.remote_delete_action.setObjectName("deleteRemoteBranchAction")
+        self.remote_delete_action.triggered.connect(self._delete_remote_selected)
         self.cleanup_gone_action = self.context_menu.addAction(
             "Clean up gone branches…"
         )
@@ -102,11 +111,11 @@ class RefsPanel(QWidget):
         self.rebase_action.setObjectName("rebaseOntoBranchAction")
         self.rebase_action.triggered.connect(self._rebase_selected)
         self.interactive_rebase_action = self.context_menu.addAction(
-            "Interactive rebase current branch onto thisвЂ¦"
+            "Interactive rebase current branch onto this…"
         )
         self.interactive_rebase_action.setObjectName("interactiveRebaseOntoBranchAction")
         self.interactive_rebase_action.triggered.connect(self._interactive_rebase_selected)
-        self.merge_action = self.context_menu.addAction("Merge this into current branchвЂ¦")
+        self.merge_action = self.context_menu.addAction("Merge this into current branch…")
         self.merge_action.setObjectName("mergeBranchAction")
         self.merge_action.triggered.connect(self._merge_selected)
         self.context_menu.addSeparator()
@@ -347,12 +356,14 @@ class RefsPanel(QWidget):
         self.create_branch_action.setVisible(branch is not None or root_label == "Branches")
         self.checkout_action.setVisible(branch is not None)
         self.checkout_action.setEnabled(checkout)
+        self.copy_branch_action.setVisible(branch is not None)
         self.rename_action.setVisible(branch is not None)
         self.rename_action.setEnabled(editable)
         self.delete_action.setVisible(branch is not None)
         self.delete_action.setEnabled(editable)
         self.force_delete_action.setVisible(branch is not None)
         self.force_delete_action.setEnabled(editable)
+        self.remote_delete_action.setVisible(branch is not None and branch.remote)
         self.cleanup_gone_action.setVisible(root_label == "Branches")
         self.cleanup_gone_action.setEnabled(bool(self._gone_branches()))
         self.rebase_action.setVisible(branch is not None)
@@ -400,6 +411,18 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo) and not branch.remote and not branch.current:
             self.force_delete_requested.emit(branch)
+
+    @Slot()
+    def _delete_remote_selected(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo) and branch.remote:
+            self.remote_delete_requested.emit(branch)
+
+    @Slot()
+    def _copy_branch_name(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo):
+            QApplication.clipboard().setText(branch.name)
 
     @Slot()
     def _cleanup_gone_branches(self) -> None:

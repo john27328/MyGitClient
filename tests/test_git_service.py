@@ -673,6 +673,38 @@ def test_force_delete_branch_with_unmerged_commit(qtbot: QtBot, tmp_path: Path) 
     assert "feature" not in branches
 
 
+def test_remote_branch_can_be_deleted(qtbot: QtBot, tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    remote = tmp_path / "remote.git"
+    repository.mkdir()
+    _git(repository, "init", "--initial-branch=main")
+    _git(remote.parent, "init", "--bare", str(remote))
+    _git(repository, "remote", "add", "origin", str(remote))
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(repository, *identity, "commit", "--allow-empty", "-m", "initial")
+    _git(repository, "branch", "feature")
+    _git(repository, "push", "origin", "main", "feature")
+    service = GitService()
+    branch = BranchInfo(
+        "refs/remotes/origin/feature", "origin/feature", "2" * 40, True
+    )
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_delete_remote_branch(repository, branch)
+
+    result = subprocess.run(
+        ["git", "--git-dir", str(remote), "show-ref", "--verify", "refs/heads/feature"],
+        check=False,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+
+
 def test_selected_files_can_be_stashed(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     first = tmp_path / "first.txt"

@@ -259,6 +259,7 @@ class MainWindow(QMainWindow):
         refs_panel.rename_requested.connect(self._rename_branch)
         refs_panel.delete_requested.connect(self._delete_branch)
         refs_panel.force_delete_requested.connect(self._force_delete_branch)
+        refs_panel.remote_delete_requested.connect(self._delete_remote_branch)
         refs_panel.cleanup_gone_requested.connect(self._cleanup_gone_branches)
         refs_panel.rebase_requested.connect(self._preview_rebase)
         refs_panel.interactive_rebase_requested.connect(self._preview_interactive_rebase)
@@ -1436,6 +1437,26 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _force_delete_branch(self, value: object) -> None:
         self._confirm_delete_branch(value, force=True)
+
+    @Slot(object)
+    def _delete_remote_branch(self, value: object) -> None:
+        if (
+            self._repository is None
+            or not isinstance(value, BranchInfo)
+            or not value.remote
+        ):
+            return
+        detail = (
+            f"Delete remote branch '{value.name}'?\n\n"
+            "This removes the branch from the remote for every collaborator. "
+            "Any matching local branch is kept."
+        )
+        answer = QMessageBox.question(self, "Delete remote branch", detail)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Deleting remote branch {value.name}…")
+        self._git.request_delete_remote_branch(self._repository, value)
 
     @Slot(object)
     def _cleanup_gone_branches(self, value: object) -> None:

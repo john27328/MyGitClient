@@ -237,6 +237,46 @@ def test_branch_delete_requires_confirmation_and_preserves_force_choice(
     window.close()
 
 
+def test_remote_branch_delete_requires_confirmation(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    requested: list[str] = []
+
+    def confirm(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", confirm)
+
+    def record_delete(
+        _service: GitService, _repository: Path, branch: BranchInfo
+    ) -> None:
+        requested.append(branch.name)
+
+    monkeypatch.setattr(GitService, "request_delete_remote_branch", record_delete)
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=tmp_path, check=True)
+    settings = QSettings(str(tmp_path / "remote-delete.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    window.__dict__["_repository"] = tmp_path
+    branch = BranchInfo(
+        "refs/remotes/origin/feature", "origin/feature", "1" * 40, True
+    )
+    panel = window.findChild(RefsPanel)
+    assert panel is not None
+    panel.show_branches(BranchesSnapshot(tmp_path, (branch,)))
+    remotes = panel.tree.topLevelItem(1)
+    assert remotes is not None
+    origin = remotes.child(0)
+    assert origin is not None
+    remote_item = origin.child(0)
+    assert remote_item is not None
+    panel.tree.setCurrentItem(remote_item)
+
+    panel.remote_delete_action.trigger()
+
+    assert requested == ["origin/feature"]
+    window.close()
+
+
 def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> None:
     repository = tmp_path / "project"
     repository.mkdir()
