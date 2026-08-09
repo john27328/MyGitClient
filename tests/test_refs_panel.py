@@ -88,6 +88,44 @@ def test_refs_panel_exposes_branch_context_actions(qtbot: QtBot) -> None:
     assert rebased == [branch]
 
 
+def test_refs_panel_marks_local_branch_sync_states(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    current = BranchInfo(
+        "refs/heads/main",
+        "main",
+        "1" * 40,
+        False,
+        current=True,
+        upstream="origin/main",
+        ahead=2,
+        behind=1,
+    )
+    unpublished = BranchInfo("refs/heads/draft", "draft", "2" * 40, False)
+    gone = BranchInfo(
+        "refs/heads/old",
+        "old",
+        "3" * 40,
+        False,
+        upstream="origin/old",
+        upstream_gone=True,
+    )
+
+    panel.show_branches(
+        BranchesSnapshot(Path("repository"), (current, unpublished, gone))
+    )
+
+    branches = panel.tree.topLevelItem(0)
+    assert branches is not None
+    assert branches.child(0).text(0) == "main  ✓ ↑2 ↓1"
+    assert "Upstream: origin/main" in branches.child(0).toolTip(0)
+    assert branches.child(0).font(0).bold()
+    assert branches.child(1).text(0) == "draft  ○"
+    assert "Not published" in branches.child(1).toolTip(0)
+    assert branches.child(2).text(0) == "old  ⚠"
+    assert "Upstream gone: origin/old" in branches.child(2).toolTip(0)
+
+
 def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)

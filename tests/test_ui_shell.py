@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -728,7 +728,8 @@ def test_branches_tab_can_checkout_and_create_branch(
     feature = None
     for index in range(local.childCount()):
         child = local.child(index)
-        if child.text(0) == "feature":
+        value = child.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(value, BranchInfo) and value.name == "feature":
             feature = child
             break
     assert feature is not None

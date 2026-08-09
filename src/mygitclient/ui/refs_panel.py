@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import cast
 
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -205,12 +206,17 @@ class RefsPanel(QWidget):
         current_item: QTreeWidgetItem | None = None
         remote_roots: dict[str, QTreeWidgetItem] = {}
         for branch in self._branches:
-            label = f"✓ {branch.name}" if branch.current else branch.name
+            label = self._branch_label(branch)
             item = QTreeWidgetItem([label])
             item.setData(0, Qt.ItemDataRole.UserRole, branch)
             item.setData(0, REF_ROLE, branch.full_name)
+            item.setToolTip(0, self._branch_tooltip(branch))
+            if branch.current:
+                font = QFont(item.font(0))
+                font.setBold(True)
+                item.setFont(0, font)
             if branch.upstream_gone:
-                item.setToolTip(0, "Upstream branch no longer exists")
+                item.setForeground(0, QBrush(QColor("#d97706")))
             if branch.remote:
                 remote_name, _, short_name = branch.name.partition("/")
                 remote_root = remote_roots.get(remote_name)
@@ -272,6 +278,38 @@ class RefsPanel(QWidget):
                 self.refs_selected.emit(self.selected_refs)
             else:
                 self._rebuild_compare_combo()
+
+    @staticmethod
+    def _branch_label(branch: BranchInfo) -> str:
+        markers: list[str] = []
+        if branch.current:
+            markers.append("✓")
+        if not branch.remote:
+            if branch.upstream_gone:
+                markers.append("⚠")
+            elif branch.upstream is None:
+                markers.append("○")
+            if branch.ahead:
+                markers.append(f"↑{branch.ahead}")
+            if branch.behind:
+                markers.append(f"↓{branch.behind}")
+        suffix = f"  {' '.join(markers)}" if markers else ""
+        return f"{branch.name}{suffix}"
+
+    @staticmethod
+    def _branch_tooltip(branch: BranchInfo) -> str:
+        if branch.remote:
+            return f"Remote branch\nCommit: {branch.oid[:8]}"
+        lines = ["Current local branch" if branch.current else "Local branch"]
+        if branch.upstream_gone:
+            lines.append(f"Upstream gone: {branch.upstream or 'unknown'}")
+        elif branch.upstream is None:
+            lines.append("Not published; no upstream configured")
+        else:
+            lines.append(f"Upstream: {branch.upstream}")
+            lines.append(f"Ahead: {branch.ahead}; behind: {branch.behind}")
+        lines.append(f"Commit: {branch.oid[:8]}")
+        return "\n".join(lines)
 
     def _root(self, label: str) -> QTreeWidgetItem:
         root = QTreeWidgetItem([label])
