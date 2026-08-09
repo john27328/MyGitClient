@@ -705,6 +705,39 @@ def test_remote_branch_can_be_deleted(qtbot: QtBot, tmp_path: Path) -> None:
     assert result.returncode != 0
 
 
+def test_branch_can_be_created_from_selected_ref(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(tmp_path, *identity, "commit", "--allow-empty", "-m", "initial")
+    _git(tmp_path, "switch", "-c", "source")
+    _git(tmp_path, *identity, "commit", "--allow-empty", "-m", "source")
+    _git(tmp_path, "switch", "main")
+    source_oid = subprocess.check_output(
+        ["git", "rev-parse", "source"], cwd=tmp_path, text=True
+    ).strip()
+    service = GitService()
+    source = BranchInfo("refs/heads/source", "source", source_oid, False)
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_create_branch_from(tmp_path, "new-from-source", source)
+
+    assert (
+        subprocess.check_output(["git", "branch", "--show-current"], cwd=tmp_path, text=True)
+        .strip()
+        == "new-from-source"
+    )
+    assert (
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True)
+        .strip()
+        == source_oid
+    )
+
+
 def test_selected_files_can_be_stashed(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     first = tmp_path / "first.txt"

@@ -416,6 +416,24 @@ class GitService(QObject):
         )
         return runner
 
+    def request_create_branch_from(
+        self, repository: Path, name: str, start_point: BranchInfo
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = f"branch:{name}"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(
+                ("switch", "-c", name, start_point.name),
+                repository,
+                "create branch from ref",
+            ),
+        )
+        return runner
+
     def request_rename_branch(
         self, repository: Path, branch: BranchInfo, new_name: str
     ) -> GitRunner:

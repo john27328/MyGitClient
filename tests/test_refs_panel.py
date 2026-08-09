@@ -110,6 +110,43 @@ def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None
     assert deleted == [branch]
 
 
+def test_refs_panel_creates_publishes_and_compares_from_context(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    local = BranchInfo(
+        "refs/heads/feature",
+        "feature",
+        "2" * 40,
+        False,
+        upstream="origin/feature",
+    )
+    unpublished = BranchInfo("refs/heads/draft", "draft", "3" * 40, False)
+    remote = BranchInfo(
+        "refs/remotes/origin/feature", "origin/feature", "2" * 40, True
+    )
+    panel.show_branches(
+        BranchesSnapshot(Path("repository"), (local, unpublished, remote))
+    )
+    created: list[object] = []
+    published: list[object] = []
+    selected: list[object] = []
+    panel.create_branch_from_requested.connect(created.append)
+    panel.publish_branch_requested.connect(published.append)
+    panel.refs_selected.connect(selected.append)
+    branches = panel.tree.topLevelItem(0)
+    assert branches is not None
+
+    panel.tree.setCurrentItem(branches.child(0))
+    panel.create_branch_from_action.trigger()
+    panel.compare_upstream_action.trigger()
+    panel.tree.setCurrentItem(branches.child(1))
+    panel.publish_branch_action.trigger()
+
+    assert created == [local]
+    assert ("refs/heads/feature", "refs/remotes/origin/feature") in selected
+    assert published == [unpublished]
+
+
 def test_cleanup_gone_branches_emits_only_safe_candidates(qtbot: QtBot) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)

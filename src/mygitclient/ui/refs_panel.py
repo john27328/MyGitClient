@@ -41,6 +41,8 @@ class RefsPanel(QWidget):
     merge_requested = Signal(object)
     create_tag_requested = Signal()
     create_branch_requested = Signal()
+    create_branch_from_requested = Signal(object)
+    publish_branch_requested = Signal(object)
     delete_tag_requested = Signal(object)
     push_tag_requested = Signal(object)
     stash_apply_requested = Signal(object)
@@ -85,11 +87,20 @@ class RefsPanel(QWidget):
         self.context_menu = QMenu(self)
         self.create_branch_action = self.context_menu.addAction("New branch…")
         self.create_branch_action.triggered.connect(self.create_branch_requested)
+        self.create_branch_from_action = self.context_menu.addAction("New branch from this…")
+        self.create_branch_from_action.setObjectName("createBranchFromRefAction")
+        self.create_branch_from_action.triggered.connect(self._create_branch_from_selected)
         self.checkout_action = self.context_menu.addAction("Checkout")
         self.checkout_action.triggered.connect(self._checkout_selected)
         self.copy_branch_action = self.context_menu.addAction("Copy branch name")
         self.copy_branch_action.setObjectName("copyBranchNameAction")
         self.copy_branch_action.triggered.connect(self._copy_branch_name)
+        self.compare_upstream_action = self.context_menu.addAction("Compare with upstream")
+        self.compare_upstream_action.setObjectName("compareBranchWithUpstreamAction")
+        self.compare_upstream_action.triggered.connect(self._compare_with_upstream)
+        self.publish_branch_action = self.context_menu.addAction("Publish to origin")
+        self.publish_branch_action.setObjectName("publishBranchAction")
+        self.publish_branch_action.triggered.connect(self._publish_selected)
         self.context_menu.addSeparator()
         self.rename_action = self.context_menu.addAction("Rename…")
         self.rename_action.triggered.connect(self._rename_selected)
@@ -354,9 +365,15 @@ class RefsPanel(QWidget):
         checkout = branch is not None and not branch.current
         editable = branch is not None and not branch.remote and not branch.current
         self.create_branch_action.setVisible(branch is not None or root_label == "Branches")
+        self.create_branch_from_action.setVisible(branch is not None)
         self.checkout_action.setVisible(branch is not None)
         self.checkout_action.setEnabled(checkout)
         self.copy_branch_action.setVisible(branch is not None)
+        upstream_ref = self._upstream_ref(branch)
+        self.compare_upstream_action.setVisible(upstream_ref is not None)
+        self.publish_branch_action.setVisible(
+            branch is not None and not branch.remote and branch.upstream is None
+        )
         self.rename_action.setVisible(branch is not None)
         self.rename_action.setEnabled(editable)
         self.delete_action.setVisible(branch is not None)
@@ -393,6 +410,42 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo) and not branch.current:
             self.checkout_requested.emit(branch)
+
+    @Slot()
+    def _create_branch_from_selected(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo):
+            self.create_branch_from_requested.emit(branch)
+
+    @Slot()
+    def _publish_selected(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo) and not branch.remote and branch.upstream is None:
+            self.publish_branch_requested.emit(branch)
+
+    @Slot()
+    def _compare_with_upstream(self) -> None:
+        value = self._selected_value()
+        branch = value if isinstance(value, BranchInfo) else None
+        upstream_ref = self._upstream_ref(branch)
+        if branch is None or upstream_ref is None:
+            return
+        self._selected_ref = branch.full_name
+        self._comparison_ref = upstream_ref
+        self._rebuild_compare_combo()
+        self.refs_selected.emit(self.selected_refs)
+
+    def _upstream_ref(self, branch: BranchInfo | None) -> str | None:
+        if branch is None or branch.remote or branch.upstream is None:
+            return None
+        return next(
+            (
+                candidate.full_name
+                for candidate in self._branches
+                if candidate.remote and candidate.name == branch.upstream
+            ),
+            None,
+        )
 
     @Slot()
     def _rename_selected(self) -> None:

@@ -265,6 +265,8 @@ class MainWindow(QMainWindow):
         refs_panel.interactive_rebase_requested.connect(self._preview_interactive_rebase)
         refs_panel.merge_requested.connect(self._preview_merge)
         refs_panel.create_branch_requested.connect(self._create_branch)
+        refs_panel.create_branch_from_requested.connect(self._create_branch_from)
+        refs_panel.publish_branch_requested.connect(self._publish_branch)
         refs_panel.create_tag_requested.connect(self._create_tag)
         refs_panel.delete_tag_requested.connect(self._delete_tag)
         refs_panel.push_tag_requested.connect(self._push_tag)
@@ -1416,6 +1418,42 @@ class MainWindow(QMainWindow):
         self._history_panel.refs_panel.setEnabled(False)
         self._status_label.setText(f"Creating branch {name}…")
         self._git.request_create_branch(self._repository, name)
+
+    @Slot(object)
+    def _create_branch_from(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, BranchInfo):
+            return
+        suggested = value.name.rpartition("/")[2]
+        name, accepted = QInputDialog.getText(
+            self,
+            "New branch from ref",
+            f"New branch name (start at {value.name}):",
+            text=suggested,
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Creating branch {name} from {value.name}…")
+        self._git.request_create_branch_from(self._repository, name, value)
+
+    @Slot(object)
+    def _publish_branch(self, value: object) -> None:
+        if (
+            self._repository is None
+            or not isinstance(value, BranchInfo)
+            or value.remote
+            or value.upstream is not None
+        ):
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Publishing {value.name} to origin…")
+        self._set_network_busy("Push")
+        self._git.request_push(
+            self._repository,
+            branch=value.name,
+            set_upstream=True,
+        )
 
     @Slot(object)
     def _rename_branch(self, value: object) -> None:
