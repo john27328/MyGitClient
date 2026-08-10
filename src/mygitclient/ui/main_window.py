@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
     QUrl,
+    Signal,
     Slot,
 )
 from PySide6.QtGui import (
@@ -118,10 +119,15 @@ from mygitclient.workspace import (
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, settings: QSettings, theme: Theme) -> None:
+    repository_tab_requested = Signal(object, bool)
+
+    def __init__(
+        self, settings: QSettings, theme: Theme, *, session_mode: bool = False
+    ) -> None:
         super().__init__()
         self._settings = settings
         self._theme = theme
+        self._session_mode = session_mode
         self._apply_saved_ui_font()
         self._workspace = WorkspaceManager(settings)
         self._workspace_discovery = WorkspaceDiscoveryService(self)
@@ -182,7 +188,8 @@ class MainWindow(QMainWindow):
         self._connect_services()
         self._populate_recent_repositories()
         self._restore_window_state()
-        self._restore_open_repositories()
+        if not self._session_mode:
+            self._restore_open_repositories()
 
     def _build_ui(self) -> None:
         self._repositories_panel = RepositoriesPanel()
@@ -778,6 +785,13 @@ class MainWindow(QMainWindow):
                 "Not a Git repository",
                 f"No Git repository was found in or above:\n{selected_path}",
             )
+            return
+        if (
+            self._session_mode
+            and self._repository is not None
+            and repository != self._repository
+        ):
+            self.repository_tab_requested.emit(repository, remember)
             return
         if repository not in self._open_repositories:
             self._open_repositories.append(repository)
@@ -1861,7 +1875,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _repository_selected(self, value: object) -> None:
         if isinstance(value, Path) and value != self._repository and value.is_dir():
-            self._activate_repository(value)
+            self.open_repository(value, remember=False)
 
     def _restore_open_repositories(self) -> None:
         self._open_repositories = list(self._workspace.open_repositories())
@@ -3359,6 +3373,12 @@ class MainWindow(QMainWindow):
         self._splitter.setSizes([240, 0, 360, 900])
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        self._refresh_timer.stop()
+        self._queue_duration_timer.stop()
+        self._repository_activation += 1
+        self._status_runner = None
+        self._git.blockSignals(True)
+        self._workspace_discovery.blockSignals(True)
         self._git.shutdown()
         self._workspace_discovery.shutdown()
         self._settings.setValue("window/geometry", self.saveGeometry())

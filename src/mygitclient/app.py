@@ -11,10 +11,10 @@ from mygitclient import __version__
 from mygitclient.logging_config import configure_logging
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme, apply_theme
-from mygitclient.ui.main_window import MainWindow
+from mygitclient.ui.app_shell import AppShell
 
 
-def create_application(arguments: Sequence[str]) -> tuple[QApplication, MainWindow]:
+def create_application(arguments: Sequence[str]) -> tuple[QApplication, AppShell]:
     _set_windows_app_id()
     QCoreApplication.setOrganizationName("MyGitClient")
     QCoreApplication.setApplicationName("MyGitClient")
@@ -31,7 +31,7 @@ def create_application(arguments: Sequence[str]) -> tuple[QApplication, MainWind
     theme = Theme.from_value(settings.value("appearance/theme", Theme.SYSTEM.value))
     apply_theme(app, theme)
 
-    window = MainWindow(settings=settings, theme=theme)
+    window = AppShell(settings=settings, theme=theme)
     return app, window
 
 

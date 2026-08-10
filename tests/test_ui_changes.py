@@ -458,9 +458,9 @@ def test_discard_requires_confirmation_and_restores_selected_files(
     def restored_text(path: Path) -> str | None:
         try:
             return path.read_text(encoding="utf-8")
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             # git restore replaces a file through filesystem operations that can be
-            # observed between exists() and open() on Windows runners.
+            # observed as a missing or briefly locked path on Windows runners.
             return None
 
     qtbot.waitUntil(
