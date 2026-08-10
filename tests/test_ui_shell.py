@@ -427,7 +427,7 @@ def test_recent_repository_can_be_removed_with_context_action(
     window.close()
 
 
-def test_open_repositories_are_restored_and_switchable(
+def test_open_repositories_are_restored_on_home_without_activation(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
     repositories = [tmp_path / "first", tmp_path / "second"]
@@ -445,21 +445,19 @@ def test_open_repositories_are_restored_and_switchable(
 
     window = MainWindow(settings, Theme.SYSTEM)
     switcher = window.findChild(QComboBox, "repositorySwitcher")
-    workspace_tabs = window.findChild(QTabWidget, "workspaceTabs")
+    home = window.findChild(QWidget, "homePanel")
+    recent = window.findChild(QTreeWidget, "homeRecentRepositories")
     diff_container = window.findChild(QWidget, "diffContainer")
     assert switcher is not None
-    assert workspace_tabs is not None
+    assert home is not None
+    assert recent is not None
     assert diff_container is not None
     assert switcher.count() == 2
-    qtbot.waitUntil(lambda: window.windowTitle().startswith("second —"), timeout=5000)
-
-    workspace_tabs.setCurrentIndex(1)
-    switcher.setCurrentIndex(0)
-    qtbot.waitUntil(lambda: window.windowTitle().startswith("first —"), timeout=5000)
-    assert switcher.currentText() == "first"
+    assert recent.topLevelItemCount() == 0
+    assert window.windowTitle() == "MyGitClient"
+    assert home.isVisibleTo(window)
     assert diff_container.isHidden()
-    assert workspace_tabs.currentIndex() == 1
-    assert settings.value("workspace/lastRepository") == str(repositories[0])
+    assert settings.value("workspace/lastRepository") == str(repositories[1])
     window.close()
 
 

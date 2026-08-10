@@ -97,6 +97,7 @@ from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.conflict_editor import ConflictEditor
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
+from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.interactive_rebase import InteractiveRebaseDialog
 from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
@@ -187,13 +188,10 @@ class MainWindow(QMainWindow):
         self._repositories_panel = RepositoriesPanel()
         self._repositories = self._repositories_panel.tree
 
-        self._welcome = QPlainTextEdit()
-        self._welcome.setObjectName("welcomePanel")
-        self._welcome.setReadOnly(True)
-        self._welcome.setPlainText(
-            "Welcome to MyGitClient\n\n"
-            "Open a Git repository with File → Open Repository."
-        )
+        self._welcome = HomePanel()
+        self._welcome.choose_repository_requested.connect(self._choose_repository)
+        self._welcome.open_repository_requested.connect(self._open_home_repository)
+        self._welcome.open_workspace_requested.connect(self._open_named_workspace)
 
         self._changes_panel = ChangesPanel(self._settings)
         self._changes_container = self._changes_panel
@@ -738,13 +736,20 @@ class MainWindow(QMainWindow):
         self._diff_view.set_font_size(diff_size.value())
 
     def _populate_recent_repositories(self) -> None:
-        self._repositories_panel.set_recent(self._workspace.recent_repositories())
+        repositories = self._workspace.recent_repositories()
+        self._repositories_panel.set_recent(repositories)
+        self._welcome.set_recent(repositories)
 
     @Slot()
     def _choose_repository(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Open Git Repository")
         if selected:
             self.open_repository(Path(selected))
+
+    @Slot(object)
+    def _open_home_repository(self, value: object) -> None:
+        if isinstance(value, Path):
+            self.open_repository(value)
 
     @Slot(object, bool)
     def _open_recent_repository(self, value: object, remember: bool) -> None:
@@ -1864,8 +1869,9 @@ class MainWindow(QMainWindow):
         if last is not None and last not in self._open_repositories:
             self._open_repositories.append(last)
         self._populate_repository_switcher()
-        if last is not None:
-            self._activate_repository(last)
+        self._welcome.show()
+        self._workspace_container.hide()
+        self._diff_container.hide()
 
     @Slot()
     def _save_workspace(self) -> None:
@@ -1877,7 +1883,9 @@ class MainWindow(QMainWindow):
 
     def _populate_workspace_menu(self) -> None:
         self._load_workspace_menu.clear()
-        for name in self._workspace.named_workspaces():
+        names = self._workspace.named_workspaces()
+        self._welcome.set_workspaces(names)
+        for name in names:
             action = QAction(name, self)
             action.setData(name)
             action.triggered.connect(self._load_workspace)
@@ -1892,6 +1900,10 @@ class MainWindow(QMainWindow):
         name = action.data()
         if not isinstance(name, str):
             return
+        self._open_named_workspace(name)
+
+    @Slot(str)
+    def _open_named_workspace(self, name: str) -> None:
         repositories = list(self._workspace.load_named_workspace(name))
         if not repositories:
             return
