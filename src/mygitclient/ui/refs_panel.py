@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import cast
 
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt, Signal, Slot
@@ -251,14 +252,27 @@ class RefsPanel(QWidget):
             stashes_root.addChild(item)
             if stash.ref == previous_ref:
                 selected_item = item
-        for linked in self._linked_repositories:
-            if linked.kind != "submodule":
-                continue
-            label = linked.path.name
-            item = QTreeWidgetItem([label])
+        submodule_items: dict[Path, QTreeWidgetItem] = {}
+        submodules = sorted(
+            (
+                linked
+                for linked in self._linked_repositories
+                if linked.kind == "submodule"
+            ),
+            key=lambda linked: (len(linked.path.parts), str(linked.path).casefold()),
+        )
+        for linked in submodules:
+            item = QTreeWidgetItem([linked.path.name])
             item.setData(0, Qt.ItemDataRole.UserRole, linked)
             item.setToolTip(0, str(linked.path))
-            submodules_root.addChild(item)
+            parents = [path for path in submodule_items if linked.path.is_relative_to(path)]
+            if parents:
+                parent_path = max(parents, key=lambda path: len(path.parts))
+                submodule_items[parent_path].addChild(item)
+                submodule_items[parent_path].setExpanded(True)
+            else:
+                submodules_root.addChild(item)
+            submodule_items[linked.path] = item
         for root in (local_root, remotes_root, tags_root, stashes_root, submodules_root):
             root.setExpanded(True)
         for remote_root in remote_roots.values():

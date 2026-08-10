@@ -494,11 +494,18 @@ class GitService(QObject):
         return runner
 
     def request_pull(
-        self, repository: Path, *, rebase: bool, autostash: bool
+        self,
+        repository: Path,
+        *,
+        rebase: bool,
+        autostash: bool,
+        recurse_submodules: bool = False,
     ) -> GitRunner:
         arguments = ["pull", "--progress", "--rebase" if rebase else "--no-rebase"]
         if autostash:
             arguments.append("--autostash")
+        if recurse_submodules:
+            arguments.append("--recurse-submodules")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "pull"
@@ -509,7 +516,12 @@ class GitService(QObject):
         )
         return runner
 
-    def request_fetch(self, repository: Path) -> GitRunner:
+    def request_fetch(
+        self, repository: Path, *, recurse_submodules: bool = False
+    ) -> GitRunner:
+        arguments = ["fetch", "--progress", "--prune"]
+        if recurse_submodules:
+            arguments.append("--recurse-submodules")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "fetch"
@@ -517,7 +529,7 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
             runner,
-            GitCommand(("fetch", "--progress", "--prune"), repository, "fetch changes"),
+            GitCommand(tuple(arguments), repository, "fetch changes"),
         )
         return runner
 
@@ -528,10 +540,13 @@ class GitService(QObject):
         branch: str,
         set_upstream: bool,
         force_with_lease: bool = False,
+        recurse_submodules: bool = False,
     ) -> GitRunner:
         arguments = ["push", "--progress"]
         if force_with_lease:
             arguments.append("--force-with-lease")
+        if recurse_submodules:
+            arguments.append("--recurse-submodules=on-demand")
         if set_upstream:
             arguments.extend(("--set-upstream", "origin", branch))
         runner = GitRunner(parent=self)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import cast
 
 from PySide6.QtCore import (
@@ -13,9 +14,10 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
+from PySide6.QtGui import QBrush, QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QColorDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -171,7 +173,7 @@ class HistoryPanel(QWidget):
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for column, width in enumerate((60, 230, 360, 150, 190, 90)):
             self.tree.setColumnWidth(column, width)
-        for column in (3, 4, 5):
+        for column in (4, 5):
             self.tree.setColumnHidden(column, True)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionResizeMode(2, self.tree.header().ResizeMode.Stretch)
@@ -432,11 +434,28 @@ class HistoryPanel(QWidget):
         revert_action.setEnabled(
             all(len(commit.parent_oids) <= 1 for commit in commits)
         )
+        menu.addSeparator()
+        author = commits[0]
+        author_menu = menu.addMenu(f"Author: {author.author_name}")
+        color_action = author_menu.addAction("Set color...")
+        color_action.setObjectName("historySetAuthorColorAction")
+        clear_color_action = author_menu.addAction("Clear color")
+        clear_color_action.setObjectName("historyClearAuthorColorAction")
+        clear_color_action.setEnabled(self._author_color(author) is not None)
         chosen = menu.exec(self.tree.viewport().mapToGlobal(position))
         if chosen is action:
             self.cherry_pick_requested.emit(commits)
         elif chosen is revert_action:
             self.revert_requested.emit(tuple(reversed(commits)))
+        elif chosen is color_action:
+            initial = self._author_color(author) or self.palette().highlight().color()
+            color = QColorDialog.getColor(
+                initial, self, f"Color for {author.author_name}"
+            )
+            if color.isValid():
+                self._set_author_color(author, color)
+        elif chosen is clear_color_action:
+            self._set_author_color(author, None)
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def _commit_changed(
@@ -514,6 +533,36 @@ class HistoryPanel(QWidget):
         item.setData(1, BADGES_ROLE, tuple(badges))
         item.setText(2, commit.subject)
         item.setToolTip(1, "\n".join(label for _kind, label in badges))
+        color = self._author_color(commit)
+        item.setForeground(3, QBrush(color) if color is not None else QBrush())
+
+    @staticmethod
+    def _author_identity(commit: CommitSummary) -> str:
+        return (commit.author_email.strip() or commit.author_name.strip()).casefold()
+
+    def _author_color_key(self, commit: CommitSummary) -> str:
+        identity = self._author_identity(commit).encode("utf-8", errors="surrogateescape")
+        digest = hashlib.sha256(identity).hexdigest()
+        return f"history/authorColors/{digest}"
+
+    def _author_color(self, commit: CommitSummary) -> QColor | None:
+        if self._settings is None:
+            return None
+        value = self._settings.value(self._author_color_key(commit))
+        if not isinstance(value, str):
+            return None
+        color = QColor(value)
+        return color if color.isValid() else None
+
+    def _set_author_color(self, commit: CommitSummary, color: QColor | None) -> None:
+        if self._settings is None:
+            return
+        key = self._author_color_key(commit)
+        if color is None:
+            self._settings.remove(key)
+        else:
+            self._settings.setValue(key, color.name(QColor.NameFormat.HexRgb))
+        self._refresh_commit_labels()
 
     @Slot(str)
     def _apply_filter(self, text: str) -> None:

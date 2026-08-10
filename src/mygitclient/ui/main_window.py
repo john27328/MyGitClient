@@ -150,6 +150,7 @@ class MainWindow(QMainWindow):
         self._repository_activation = 0
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
+        self._submodule_paths: dict[Path, str] = {}
         self._repository_operation: RepositoryOperation | None = None
         self._interactive_rebase_pending = False
         self._rewrite_recovery_head = ""
@@ -243,6 +244,7 @@ class MainWindow(QMainWindow):
         self._changes_panel.presentation_mode_changed.connect(
             self._changes_view_mode_changed
         )
+        self._changes_panel.file_activated.connect(self._changed_file_activated)
         self._update_commit_controls()
 
         self._history_panel = HistoryPanel(self._settings)
@@ -410,7 +412,6 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         toolbar.addAction(open_action)
-        toolbar.addWidget(self._repositories_panel.recent_button)
         self._repository_switcher = self._repositories_panel.switcher
         refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
         refresh_action.setObjectName("refreshAction")
@@ -422,11 +423,13 @@ class MainWindow(QMainWindow):
         self._fetch_action.setObjectName("fetchAction")
         self._fetch_action.triggered.connect(self._fetch_repository)
         fetch_menu = QMenu(self)
-        self._fetch_all_action = fetch_menu.addAction(
-            load_icon("fetch.svg"), "Fetch all open repositories"
+        self._fetch_submodules_action = fetch_menu.addAction("Include submodules")
+        self._fetch_submodules_action.setObjectName("fetchSubmodulesAction")
+        self._fetch_submodules_action.setCheckable(True)
+        self._fetch_submodules_action.setChecked(
+            self._read_bool_setting("sync/fetchSubmodules")
         )
-        self._fetch_all_action.setObjectName("fetchAllAction")
-        self._fetch_all_action.triggered.connect(self._fetch_all_repositories)
+        self._fetch_submodules_action.triggered.connect(self._sync_options_changed)
         self._fetch_button = QToolButton()
         self._fetch_button.setObjectName("fetchButton")
         self._fetch_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
@@ -463,10 +466,17 @@ class MainWindow(QMainWindow):
         self._pull_autostash_action.setChecked(
             self._read_bool_setting("sync/pullAutostash")
         )
+        self._pull_submodules_action = pull_menu.addAction("Include submodules")
+        self._pull_submodules_action.setObjectName("pullSubmodulesAction")
+        self._pull_submodules_action.setCheckable(True)
+        self._pull_submodules_action.setChecked(
+            self._read_bool_setting("sync/pullSubmodules")
+        )
         for option in (
             self._pull_merge_action,
             self._pull_rebase_action,
             self._pull_autostash_action,
+            self._pull_submodules_action,
         ):
             option.triggered.connect(self._pull_options_changed)
         self._pull_button = QToolButton()
@@ -486,6 +496,14 @@ class MainWindow(QMainWindow):
         )
         self._force_push_action.setObjectName("forcePushAction")
         self._force_push_action.triggered.connect(self._force_push_repository)
+        push_menu.addSeparator()
+        self._push_submodules_action = push_menu.addAction("Include submodules")
+        self._push_submodules_action.setObjectName("pushSubmodulesAction")
+        self._push_submodules_action.setCheckable(True)
+        self._push_submodules_action.setChecked(
+            self._read_bool_setting("sync/pushSubmodules")
+        )
+        self._push_submodules_action.triggered.connect(self._sync_options_changed)
         self._push_button = QToolButton()
         self._push_button.setObjectName("pushButton")
         self._push_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
@@ -804,6 +822,7 @@ class MainWindow(QMainWindow):
         activation = self._repository_activation
         if repository != self._repository:
             self._changes_panel.clear_checked_files()
+            self._submodule_paths.clear()
         if repository not in self._open_repositories:
             self._open_repositories.append(repository)
             self._workspace.save_open_repositories(self._open_repositories)
@@ -1859,6 +1878,25 @@ class MainWindow(QMainWindow):
         self._repositories_panel.set_linked(value.repository, value.repositories)
         if value.repository == self._repository:
             self._history_panel.refs_panel.show_linked_repositories(value.repositories)
+            self._submodule_paths = {
+                linked.path.resolve(): linked.path.relative_to(value.repository).as_posix()
+                for linked in value.repositories
+                if linked.kind == "submodule"
+            }
+            for repository in self._submodule_paths:
+                self._git.request_status(repository)
+
+    @Slot(object)
+    def _changed_file_activated(self, value: object) -> None:
+        if (
+            not isinstance(value, FileStatus)
+            or value.submodule == "N..."
+            or self._repository is None
+        ):
+            return
+        repository = (self._repository / value.path).resolve()
+        if repository.is_dir():
+            self.open_repository(repository, remember=False)
 
     @Slot(object)
     def _open_linked_repository(self, value: object) -> None:
@@ -1947,6 +1985,7 @@ class MainWindow(QMainWindow):
             self._repository,
             rebase=self._pull_rebase_action.isChecked(),
             autostash=self._pull_autostash_action.isChecked(),
+            recurse_submodules=self._pull_submodules_action.isChecked(),
         )
 
     @Slot()
@@ -1955,7 +1994,19 @@ class MainWindow(QMainWindow):
         self._settings.setValue(
             "sync/pullAutostash", self._pull_autostash_action.isChecked()
         )
+        self._settings.setValue(
+            "sync/pullSubmodules", self._pull_submodules_action.isChecked()
+        )
         self._update_pull_button()
+
+    @Slot()
+    def _sync_options_changed(self) -> None:
+        self._settings.setValue(
+            "sync/fetchSubmodules", self._fetch_submodules_action.isChecked()
+        )
+        self._settings.setValue(
+            "sync/pushSubmodules", self._push_submodules_action.isChecked()
+        )
 
     def _update_pull_button(self) -> None:
         rebase = self._pull_rebase_action.isChecked()
@@ -2013,17 +2064,10 @@ class MainWindow(QMainWindow):
             return
         self._status_label.setText("Fetching changes…")
         self._set_network_busy("Fetch")
-        self._git.request_fetch(self._repository)
-
-    @Slot()
-    def _fetch_all_repositories(self) -> None:
-        repositories = [path for path in self._open_repositories if path.is_dir()]
-        if not repositories:
-            return
-        self._refresh_all_after_queue = True
-        self._status_label.setText(f"Queueing fetch for {len(repositories)} repositories…")
-        for repository in repositories:
-            self._git.request_fetch(repository)
+        self._git.request_fetch(
+            self._repository,
+            recurse_submodules=self._fetch_submodules_action.isChecked(),
+        )
 
     @Slot()
     def _push_repository(self) -> None:
@@ -2074,6 +2118,7 @@ class MainWindow(QMainWindow):
             branch=branch.head,
             set_upstream=set_upstream,
             force_with_lease=force_with_lease,
+            recurse_submodules=self._push_submodules_action.isChecked(),
         )
 
     def _set_network_busy(self, operation: str | None) -> None:
@@ -2271,6 +2316,11 @@ class MainWindow(QMainWindow):
         self._repositories_panel.set_sync_status(
             value.repository, ahead=branch.ahead, behind=branch.behind
         )
+        submodule_path = self._submodule_paths.get(value.repository.resolve())
+        if submodule_path is not None:
+            self._changes_panel.set_submodule_sync(
+                submodule_path, ahead=branch.ahead, behind=branch.behind
+            )
         if self._repository is None or value.repository != self._repository:
             return
         self._status_runner = None

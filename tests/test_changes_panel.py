@@ -108,6 +108,26 @@ def test_current_file_is_action_target_when_no_checkbox_is_selected(
     assert not panel.unstage_action.isEnabled()
 
 
+def test_submodule_is_labelled_shows_sync_and_activates(qtbot: QtBot) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    submodule = FileStatus("plugins/board-notes", ".", "M", submodule="SC..")
+    item = panel.show_files([(submodule, Qt.CheckState.Unchecked)], submodule.path)
+    activated = QSignalSpy(panel.file_activated)
+
+    assert item is not None
+    assert "submodule" in item.text(0)
+    assert "Double-click" in item.toolTip(0)
+
+    panel.set_submodule_sync(submodule.path, ahead=2, behind=1)
+
+    assert "Push ↑2" in item.text(0)
+    assert "Pull ↓1" in item.text(0)
+    panel.tree.itemDoubleClicked.emit(item, 0)
+    assert activated.count() == 1
+    assert activated.at(0)[0] == submodule
+
+
 def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
     qtbot: QtBot, tmp_path: Path
 ) -> None:

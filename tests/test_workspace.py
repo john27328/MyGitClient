@@ -96,3 +96,29 @@ def test_discover_nested_submodule_and_worktree(tmp_path: Path) -> None:
         (submodule, "submodule"),
         (worktree, "worktree"),
     }
+
+
+def test_discover_submodules_recursively(tmp_path: Path) -> None:
+    repository = tmp_path / "main"
+    child = repository / "vendor" / "library"
+    grandchild = child / "dependencies" / "codec"
+    (repository / ".git").mkdir(parents=True)
+    child.mkdir(parents=True)
+    (child / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+    grandchild.mkdir(parents=True)
+    (grandchild / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+    (repository / ".gitmodules").write_text(
+        '[submodule "library"]\n\tpath = vendor/library\n\turl = ../library\n',
+        encoding="utf-8",
+    )
+    (child / ".gitmodules").write_text(
+        '[submodule "codec"]\n\tpath = dependencies/codec\n\turl = ../codec\n',
+        encoding="utf-8",
+    )
+
+    linked = discover_linked_repositories(repository)
+
+    assert [(item.path, item.kind) for item in linked] == [
+        (child.resolve(), "submodule"),
+        (grandchild.resolve(), "submodule"),
+    ]

@@ -30,17 +30,7 @@ def discover_linked_repositories(
     discovered: dict[Path, str] = {}
     if is_cancelled():
         return ()
-    gitmodules = root / ".gitmodules"
-    if gitmodules.is_file():
-        parser = configparser.ConfigParser()
-        parser.read(gitmodules, encoding="utf-8")
-        for section in parser.sections():
-            if is_cancelled():
-                return ()
-            path_value = parser.get(section, "path", fallback="").strip()
-            path = (root / path_value).resolve()
-            if path_value and _is_repository_directory(path):
-                discovered[path] = "submodule"
+    _discover_submodules(root, discovered, is_cancelled, set())
 
     worktrees = root / ".git" / "worktrees"
     if worktrees.is_dir():
@@ -72,6 +62,32 @@ def discover_linked_repositories(
         LinkedRepository(path, kind)
         for path, kind in sorted(discovered.items(), key=lambda item: str(item[0]).casefold())
     )
+
+
+def _discover_submodules(
+    repository: Path,
+    discovered: dict[Path, str],
+    is_cancelled: Callable[[], bool],
+    visited: set[Path],
+) -> None:
+    repository = repository.resolve()
+    if repository in visited or is_cancelled():
+        return
+    visited.add(repository)
+    gitmodules = repository / ".gitmodules"
+    if not gitmodules.is_file():
+        return
+    parser = configparser.ConfigParser()
+    parser.read(gitmodules, encoding="utf-8")
+    for section in parser.sections():
+        if is_cancelled():
+            return
+        path_value = parser.get(section, "path", fallback="").strip()
+        path = (repository / path_value).resolve()
+        if not path_value or not _is_repository_directory(path):
+            continue
+        discovered[path] = "submodule"
+        _discover_submodules(path, discovered, is_cancelled, visited)
 
 
 def find_repository_root(path: Path) -> Path | None:

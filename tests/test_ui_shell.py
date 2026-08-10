@@ -59,6 +59,9 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     pull_button = window.findChild(QToolButton, "pullButton")
     pull_rebase = window.findChild(QAction, "pullRebaseAction")
     pull_autostash = window.findChild(QAction, "pullAutostashAction")
+    fetch_submodules = window.findChild(QAction, "fetchSubmodulesAction")
+    pull_submodules = window.findChild(QAction, "pullSubmodulesAction")
+    push_submodules = window.findChild(QAction, "pushSubmodulesAction")
     font_sizes = window.findChild(QAction, "fontSizesAction")
     assert toolbar is not None
     assert refresh_action is not None
@@ -68,6 +71,9 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert pull_button is not None
     assert pull_rebase is not None
     assert pull_autostash is not None
+    assert fetch_submodules is not None
+    assert pull_submodules is not None
+    assert push_submodules is not None
     assert font_sizes is not None
     assert not fetch_action.icon().isNull()
     assert not push_action.icon().isNull()
@@ -287,21 +293,14 @@ def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> N
     window = MainWindow(settings, Theme.SYSTEM)
     repositories = window.findChild(QTreeWidget, "repositoriesTree")
     repositories_panel = window.findChild(QWidget, "repositoriesPanel")
-    recent_button = window.findChild(QToolButton, "recentRepositoriesButton")
 
     assert repositories is not None
     assert repositories_panel is not None
-    assert recent_button is not None
     item = repositories.topLevelItem(0)
     assert item is not None
     assert item.text(0) == "project"
     assert repositories_panel.isHidden()
-    assert recent_button.menu() is not None
-    menu_tree = window.findChild(QTreeWidget, "repositoryMenuTree")
-    assert menu_tree is not None
-    menu_item = menu_tree.topLevelItem(0)
-    assert menu_item is not None
-    assert menu_item.text(0) == "project"
+    assert window.findChild(QToolButton, "recentRepositoriesButton") is None
     window.close()
 
 
@@ -461,7 +460,7 @@ def test_open_repositories_are_restored_on_home_without_activation(
     window.close()
 
 
-def test_fetch_all_queues_every_open_repository(
+def test_fetch_submodules_option_is_saved_and_used_for_current_repository(
     qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
     repositories = [tmp_path / "first", tmp_path / "second"]
@@ -477,16 +476,28 @@ def test_fetch_all_queues_every_open_repository(
     settings.setValue("workspace/openRepositories", [str(path) for path in repositories])
     settings.setValue("workspace/lastRepository", str(repositories[0]))
     window = MainWindow(settings, Theme.SYSTEM)
-    fetch_all = window.findChild(QAction, "fetchAllAction")
+    fetch_submodules = window.findChild(QAction, "fetchSubmodulesAction")
+    fetch = window.findChild(QAction, "fetchAction")
     service = window.findChild(GitService)
-    assert fetch_all is not None
+    assert fetch_submodules is not None
+    assert fetch is not None
     assert service is not None
-    requested: list[Path] = []
-    monkeypatch.setattr(service, "request_fetch", requested.append)
+    requested: list[tuple[Path, bool]] = []
 
-    fetch_all.trigger()
+    def record_fetch(
+        repository: Path, *, recurse_submodules: bool = False
+    ) -> None:
+        requested.append((repository, recurse_submodules))
 
-    assert requested == repositories
+    monkeypatch.setattr(service, "request_fetch", record_fetch)
+    window.open_repository(repositories[0])
+
+    fetch_submodules.trigger()
+    fetch.trigger()
+
+    assert requested == [(repositories[0], True)]
+    assert settings.value("sync/fetchSubmodules") is True
+    assert window.findChild(QAction, "fetchAllAction") is None
     window.close()
 
 

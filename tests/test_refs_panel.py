@@ -255,3 +255,20 @@ def test_refs_panel_shows_stashes_and_submodules(qtbot: QtBot, tmp_path: Path) -
     assert popped == [stash]
     assert dropped == [stash]
     assert opened == [submodule]
+
+
+def test_refs_panel_nests_recursive_submodules(qtbot: QtBot, tmp_path: Path) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    parent = LinkedRepository(tmp_path / "vendor" / "library", "submodule")
+    child = LinkedRepository(parent.path / "dependencies" / "codec", "submodule")
+
+    panel.show_linked_repositories((child, parent))
+
+    root = panel.tree.topLevelItem(4)
+    assert root is not None
+    assert root.childCount() == 1
+    parent_item = root.child(0)
+    assert parent_item.text(0) == "library"
+    assert parent_item.childCount() == 1
+    assert parent_item.child(0).text(0) == "codec"

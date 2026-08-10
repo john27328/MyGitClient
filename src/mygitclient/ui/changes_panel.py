@@ -96,12 +96,14 @@ class ChangesPanel(QWidget):
     discard_requested = Signal()
     view_mode_changed = Signal(str)
     presentation_mode_changed = Signal(str)
+    file_activated = Signal(object)
 
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
         self._selected_paths: set[str] = set()
         self._visible_files: dict[str, FileStatus] = {}
+        self._submodule_sync: dict[str, tuple[int, int]] = {}
         self._amend_mode = False
         self._render_generation = 0
         self._pending_scroll_restore: tuple[int, int, int] | None = None
@@ -115,6 +117,7 @@ class ChangesPanel(QWidget):
         for tree in self.all_trees:
             tree.itemChanged.connect(self._item_changed)
             tree.itemSelectionChanged.connect(self._tree_selection_changed)
+            tree.itemDoubleClicked.connect(self._item_activated)
 
         self.open_action = QAction("Open", self.tree)
         self.open_action.setObjectName("openChangedFileAction")
@@ -427,6 +430,49 @@ class ChangesPanel(QWidget):
     def refresh_selection_controls(self) -> None:
         self._update_selection_controls()
 
+    def set_submodule_sync(self, path: str, *, ahead: int, behind: int) -> None:
+        self._submodule_sync[path] = (ahead, behind)
+        for tree in self.all_trees:
+            item = self._find_file_item(tree, path)
+            if item is None:
+                continue
+            file = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(file, FileStatus):
+                item.setText(0, self._file_label(file))
+                item.setToolTip(0, self._file_tooltip(file))
+
+    @Slot(QTreeWidgetItem, int)
+    def _item_activated(self, item: QTreeWidgetItem, _column: int) -> None:
+        file = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(file, FileStatus):
+            self.file_activated.emit(file)
+
+    def _file_label(self, file: FileStatus) -> str:
+        name = PurePosixPath(file.path).name if self.tree_mode else file.path
+        if file.submodule == "N...":
+            return name
+        ahead, behind = self._submodule_sync.get(file.path, (0, 0))
+        sync: list[str] = []
+        if ahead:
+            sync.append(f"Push ↑{ahead}")
+        if behind:
+            sync.append(f"Pull ↓{behind}")
+        suffix = " · ".join(("submodule", *sync))
+        return f"{name}  [{suffix}]"
+
+    def _file_tooltip(self, file: FileStatus) -> str:
+        tooltip = _status_tooltip(file)
+        if file.submodule == "N...":
+            return tooltip
+        ahead, behind = self._submodule_sync.get(file.path, (0, 0))
+        details = [tooltip, "Git submodule"]
+        if ahead:
+            details.append(f"Commits to push: {ahead}")
+        if behind:
+            details.append(f"Commits to pull: {behind}")
+        details.append("Double-click to open this repository")
+        return "\n".join(details)
+
     def _render_tree(
         self,
         tree: ChangesTreeWidget,
@@ -447,7 +493,6 @@ class ChangesPanel(QWidget):
         folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
         for file, state in sorted(files, key=lambda value: value[0].path.casefold()):
             parent: QTreeWidgetItem | None = None
-            display_name = file.path
             if self.tree_mode:
                 parts = PurePosixPath(file.path).parts
                 for depth in range(len(parts) - 1):
@@ -471,15 +516,14 @@ class ChangesPanel(QWidget):
                             parent.addChild(folder)
                         folders[key] = folder
                     parent = folder
-                display_name = parts[-1]
-            item = QTreeWidgetItem([display_name])
+            item = QTreeWidgetItem([self._file_label(file)])
             staged_view = (
                 True
                 if tree is self.staged_tree
                 else False if tree is self.unstaged_tree else None
             )
             item.setIcon(0, _status_icon(file, staged_view=staged_view))
-            item.setToolTip(0, _status_tooltip(file))
+            item.setToolTip(0, self._file_tooltip(file))
             item.setData(0, Qt.ItemDataRole.UserRole, file)
             if checkable:
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)

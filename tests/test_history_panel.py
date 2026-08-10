@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QColor
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
@@ -95,7 +97,7 @@ def test_history_layout_stacks_commit_details_and_can_focus_diff(
     assert panel.splitter.widget(1) is panel.content_splitter
     assert panel.content_splitter.orientation() is Qt.Orientation.Vertical
     assert panel.content_splitter.widget(1) is panel.details
-    assert panel.tree.isColumnHidden(3)
+    assert not panel.tree.isColumnHidden(3)
     assert panel.tree.isColumnHidden(4)
     assert panel.tree.isColumnHidden(5)
 
@@ -110,6 +112,25 @@ def test_history_layout_stacks_commit_details_and_can_focus_diff(
     qtbot.addWidget(restored)
     assert restored.focus_mode
     assert restored.refs_panel.isHidden()
+
+
+def test_history_panel_persists_author_color(qtbot: QtBot, tmp_path: Path) -> None:
+    settings_path = tmp_path / "history-author-color.ini"
+    settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    commit = _commit("colored", "Highlighted work", "root")
+    panel = HistoryPanel(settings)
+    qtbot.addWidget(panel)
+    identity = commit.author_email.casefold().encode()
+    key = f"history/authorColors/{hashlib.sha256(identity).hexdigest()}"
+    settings.setValue(key, QColor("#c65d21").name())
+    settings.sync()
+    restored_settings = QSettings(str(settings_path), QSettings.Format.IniFormat)
+    restored = HistoryPanel(restored_settings)
+    qtbot.addWidget(restored)
+    restored.show_page(CommitPage(Path("repository"), (commit,), 0, False))
+    restored_item = restored.tree.topLevelItem(0)
+    assert restored_item is not None
+    assert restored_item.foreground(3).color().name() == "#c65d21"
 
 
 def test_history_panel_labels_branch_remote_tag_and_branch_point(qtbot: QtBot) -> None:

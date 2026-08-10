@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
@@ -18,6 +19,7 @@ from mygitclient.git.models import (
     ConflictVersionsSnapshot,
     DiffSnapshot,
     FileStatus,
+    GitCommand,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
     RebaseTodoItem,
@@ -28,6 +30,7 @@ from mygitclient.git.models import (
     StashesSnapshot,
     TagsSnapshot,
 )
+from mygitclient.git.operation_queue import GitOperationQueue
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService, detect_repository_operation
 
@@ -1425,3 +1428,37 @@ def test_fetch_and_push_with_upstream(qtbot: QtBot, tmp_path: Path) -> None:
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_fetch(repository)
+
+
+def test_sync_commands_can_recurse_into_submodules(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    service = GitService()
+    commands: list[GitCommand] = []
+    queue = service.findChild(GitOperationQueue)
+    assert queue is not None
+
+    def capture_command(_runner: GitRunner, command: GitCommand) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(queue, "enqueue", capture_command)
+
+    service.request_fetch(repository, recurse_submodules=True)
+    service.request_pull(
+        repository,
+        rebase=True,
+        autostash=False,
+        recurse_submodules=True,
+    )
+    service.request_push(
+        repository,
+        branch="main",
+        set_upstream=False,
+        recurse_submodules=True,
+    )
+
+    assert "--recurse-submodules" in commands[0].arguments
+    assert "--recurse-submodules" in commands[1].arguments
+    assert "--recurse-submodules=on-demand" in commands[2].arguments
