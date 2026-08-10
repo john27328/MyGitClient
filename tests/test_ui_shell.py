@@ -793,59 +793,27 @@ def test_external_checkout_is_detected_by_poll_and_refresh(
     window.close()
 
 
-def test_theme_actions_are_exclusive_and_persisted(qapp: QApplication, tmp_path: Path) -> None:
+def test_theme_actions_are_exclusive_persisted_and_request_restart(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     settings = QSettings(str(tmp_path / "theme.ini"), QSettings.Format.IniFormat)
     window = MainWindow(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
     system_action = window.findChild(QAction, "themeAction_system")
-    light_action = window.findChild(QAction, "themeAction_light")
     dark_action = window.findChild(QAction, "themeAction_dark")
-    diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
-    side_old = window.findChild(QPlainTextEdit, "sideBySideOld")
-    side_new = window.findChild(QPlainTextEdit, "sideBySideNew")
-    gutter = window.findChild(QPlainTextEdit, "diffGutter")
-    side_gutter = window.findChild(QPlainTextEdit, "sideBySideOldGutter")
-    view_mode = window.findChild(QComboBox, "diffViewModeCombo")
-    initial_base = qapp.palette().base().color()
 
     assert system_action is not None
-    assert light_action is not None
     assert dark_action is not None
-    assert diff_panel is not None
-    assert side_old is not None
-    assert side_new is not None
-    assert gutter is not None
-    assert side_gutter is not None
-    assert view_mode is not None
-    window.show()
-    dark_action.trigger()
-    qapp.processEvents()
+    with qtbot.waitSignal(window.restart_requested):
+        dark_action.trigger()
 
     assert dark_action.isChecked()
     assert not system_action.isChecked()
     assert settings.value("appearance/theme") == Theme.DARK.value
-    assert qapp.palette().base().color().lightness() < 128
-    themed_editors = (diff_panel, side_old, side_new, gutter, side_gutter)
-    assert all(editor.palette().base().color().lightness() < 128 for editor in themed_editors)
-    assert qapp.palette().highlight().color().name() == "#2f80ed"
-    assert "checkbox-checked.svg" in qapp.styleSheet()
-    assert "checkbox-partial.svg" in qapp.styleSheet()
 
-    light_action.trigger()
-    view_mode.setCurrentIndex(view_mode.findData("side-by-side"))
-    qapp.processEvents()
-    assert light_action.isChecked()
-    assert all(editor.palette().base().color().lightness() >= 128 for editor in themed_editors)
-
-    dark_action.trigger()
-    view_mode.setCurrentIndex(view_mode.findData("unified"))
-    qapp.processEvents()
-    assert all(editor.palette().base().color().lightness() < 128 for editor in themed_editors)
-
-    system_action.trigger()
-    qapp.processEvents()
+    with qtbot.waitSignal(window.restart_requested):
+        system_action.trigger()
     assert system_action.isChecked()
     assert not dark_action.isChecked()
-    assert qapp.styleSheet() == ""
-    assert qapp.palette().base().color() == initial_base
-    assert all(editor.palette().base().color() == initial_base for editor in themed_editors)
+    assert settings.value("appearance/theme") == Theme.SYSTEM.value
     window.close()

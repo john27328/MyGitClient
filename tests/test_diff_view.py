@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QLabel,
@@ -76,6 +76,18 @@ def test_diff_selection_actions_share_explicit_signals(
         button.click()
 
     assert requested == ["stage", "stash", "unstage", "discard"]
+
+
+def test_diff_editors_allow_text_selection(qtbot: QtBot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "text-selection.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+
+    for editor in (view.diff, view.side_old, view.side_new):
+        flags = editor.textInteractionFlags()
+        assert flags & Qt.TextInteractionFlag.TextSelectableByMouse
+        assert flags & Qt.TextInteractionFlag.TextSelectableByKeyboard
+        assert "selection-background-color" in editor.styleSheet()
 
 
 def test_history_close_button_is_explicit_and_preserves_saved_selections(
@@ -209,6 +221,45 @@ def test_diff_view_reset_clears_both_presentations(qtbot: QtBot, tmp_path: Path)
     assert view.side_old_gutter.toPlainText() == ""
     assert view.side_new_gutter.toPlainText() == ""
     assert view.file_header.text() == ""
+
+
+def test_unchanged_refresh_preserves_text_selection(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "text-refresh.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+    diff = parse_unified_diff(
+        b"diff --git a/file.txt b/file.txt\n"
+        b"--- a/file.txt\n"
+        b"+++ b/file.txt\n"
+        b"@@ -1 +1 @@\n"
+        b"-before\n"
+        b"+after\n",
+        "file.txt",
+        staged=False,
+    )
+    key = (tmp_path, diff.path, False)
+    view.display_diff(
+        diff,
+        selection_key=key,
+        preserve_scroll=False,
+        whole_file_staged=False,
+    )
+    view.diff.setTextCursor(view.diff.document().find("before"))
+    view.side_old.setTextCursor(view.side_old.document().find("before"))
+    view.side_new.setTextCursor(view.side_new.document().find("after"))
+
+    view.display_diff(
+        diff,
+        selection_key=key,
+        preserve_scroll=True,
+        whole_file_staged=False,
+    )
+
+    assert view.diff.textCursor().selectedText() == "before"
+    assert view.side_old.textCursor().selectedText() == "before"
+    assert view.side_new.textCursor().selectedText() == "after"
 
 
 def test_diff_view_hides_git_metadata_and_labels_hunks(

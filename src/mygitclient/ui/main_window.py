@@ -92,7 +92,7 @@ from mygitclient.git.operation_queue import OperationQueueSnapshot, QueuedOperat
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.resources import load_icon
-from mygitclient.theme import Theme, apply_theme
+from mygitclient.theme import Theme
 from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.conflict_editor import ConflictEditor
@@ -120,6 +120,7 @@ from mygitclient.workspace import (
 
 class MainWindow(QMainWindow):
     repository_tab_requested = Signal(object, bool)
+    restart_requested = Signal()
 
     def __init__(
         self, settings: QSettings, theme: Theme, *, session_mode: bool = False
@@ -230,8 +231,6 @@ class MainWindow(QMainWindow):
         self._use_theirs_action.triggered.connect(
             lambda: self._use_selected_conflict_side("theirs")
         )
-        self._discard_action.triggered.connect(self._discard_selected_file)
-        self._stash_action.triggered.connect(self._stash_selected_files)
         self._ignore_action.triggered.connect(self._ignore_selected_file)
         self._commit_message.textChanged.connect(self._update_commit_controls)
         self._amend.toggled.connect(self._amend_toggled)
@@ -2794,9 +2793,6 @@ class MainWindow(QMainWindow):
         else:
             self._use_ours_action.setText("Use current branch version")
             self._use_theirs_action.setText("Use incoming branch version")
-        safe_files = bool(files) and all(not selected.unmerged for selected in files)
-        self._discard_action.setEnabled(safe_files)
-        self._stash_action.setEnabled(safe_files)
         self._ignore_action.setEnabled(file is not None and file.index_status == "?")
 
     def _selected_file_path(self, file: FileStatus | None) -> Path | None:
@@ -2930,7 +2926,7 @@ class MainWindow(QMainWindow):
         return tuple(files)
 
     def _checked_files(self) -> tuple[FileStatus, ...]:
-        return self._changes_panel.checked_files()
+        return self._changes_panel.action_files()
 
     @Slot()
     def _update_selection_actions(self) -> None:
@@ -3064,37 +3060,6 @@ class MainWindow(QMainWindow):
             return None
         value = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
         return value if isinstance(value, FileStatus) else None
-
-    @Slot()
-    def _discard_selected_file(self) -> None:
-        files = self._selected_files()
-        repository = self._repository
-        if repository is None or not files or any(file.unmerged for file in files):
-            return
-        target = files[0].path if len(files) == 1 else f"{len(files)} selected files"
-        answer = QMessageBox.question(
-            self,
-            "Discard changes",
-            f"Permanently discard all changes to {target}?",
-            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Cancel,
-        )
-        if answer != QMessageBox.StandardButton.Discard:
-            return
-        self._changes_container.setEnabled(False)
-        self._status_label.setText(f"Discarding changes to {target}…")
-        self._clear_change_selection_after_mutation = True
-        self._git.request_discard_files(repository, files)
-
-    @Slot()
-    def _stash_selected_files(self) -> None:
-        files = self._selected_files()
-        repository = self._repository
-        if repository is None or not files or any(file.unmerged for file in files):
-            return
-        self._changes_container.setEnabled(False)
-        self._status_label.setText(f"Stashing {len(files)} selected file(s)…")
-        self._git.request_stash_files(repository, files)
 
     @Slot()
     def _ignore_selected_file(self) -> None:
@@ -3347,11 +3312,8 @@ class MainWindow(QMainWindow):
         theme = Theme.from_value(action.data())
         self._theme = theme
         self._settings.setValue("appearance/theme", theme.value)
-        app = QApplication.instance()
-        if isinstance(app, QApplication):
-            apply_theme(app, theme)
-            self._diff_view.refresh_theme()
-            self._conflict_editor.refresh_theme()
+        self._settings.sync()
+        self.restart_requested.emit()
 
     def _restore_window_state(self) -> None:
         geometry = self._settings.value("window/geometry")

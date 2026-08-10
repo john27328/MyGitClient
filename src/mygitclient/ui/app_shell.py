@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, Slot
+from PySide6.QtCore import QProcess, QSettings, Qt, Slot
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QFileDialog,
     QMainWindow,
     QMenu,
@@ -121,6 +123,7 @@ class AppShell(QMainWindow):
 
         controller = MainWindow(self._settings, self._theme, session_mode=True)
         controller.repository_tab_requested.connect(self._open_session_repository)
+        controller.restart_requested.connect(self._restart_application)
         controller.open_repository(repository)
         session = RepositorySessionTab(controller)
         self._sessions[repository] = session
@@ -186,6 +189,26 @@ class AppShell(QMainWindow):
     def _refresh_home(self) -> None:
         self.home.set_recent(self._workspace.recent_repositories())
         self.home.set_workspaces(self._workspace.named_workspaces())
+
+    @Slot()
+    def _restart_application(self) -> None:
+        if getattr(sys, "frozen", False):
+            program = sys.executable
+            arguments = sys.argv[1:]
+        else:
+            program = sys.executable
+            arguments = ["-m", "mygitclient", *sys.argv[1:]]
+        started, _process_id = QProcess.startDetached(program, arguments, str(Path.cwd()))
+        if not started:
+            QMessageBox.warning(
+                self,
+                "Restart failed",
+                "The theme was saved, but MyGitClient could not restart automatically.",
+            )
+            return
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            app.quit()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._closing:

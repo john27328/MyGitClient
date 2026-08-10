@@ -406,7 +406,7 @@ def test_commit_and_amend_from_commit_panel(
     window.close()
 
 
-def test_discard_requires_confirmation_and_restores_selected_files(
+def test_context_discard_uses_current_file_when_no_checkboxes_are_selected(
     qapp: QApplication, qtbot: QtBot, monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
     repository = tmp_path / "repository"
@@ -442,12 +442,13 @@ def test_discard_requires_confirmation_and_restores_selected_files(
     assert discard is not None
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 2, timeout=5000)
-    first_item = changes.topLevelItem(0)
-    second_item = changes.topLevelItem(1)
-    assert first_item is not None
-    assert second_item is not None
-    changes.setCurrentItem(first_item)
-    second_item.setSelected(True)
+    tracked_item = next(
+        item
+        for index in range(changes.topLevelItemCount())
+        if (item := changes.topLevelItem(index)) is not None
+        and item.text(0) == "tracked.txt"
+    )
+    changes.setCurrentItem(tracked_item)
 
     def confirm_discard(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
         return QMessageBox.StandardButton.Discard
@@ -467,10 +468,7 @@ def test_discard_requires_confirmation_and_restores_selected_files(
         lambda: restored_text(tracked) == "before\n",
         timeout=5000,
     )
-    qtbot.waitUntil(
-        lambda: restored_text(second) == "second before\n",
-        timeout=5000,
-    )
+    assert restored_text(second) == "second after\n"
     window.close()
 
 

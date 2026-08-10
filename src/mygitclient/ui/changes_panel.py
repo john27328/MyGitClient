@@ -114,6 +114,7 @@ class ChangesPanel(QWidget):
         self._active_split_tree = self.unstaged_tree
         for tree in self.all_trees:
             tree.itemChanged.connect(self._item_changed)
+            tree.itemSelectionChanged.connect(self._tree_selection_changed)
 
         self.open_action = QAction("Open", self.tree)
         self.open_action.setObjectName("openChangedFileAction")
@@ -135,15 +136,25 @@ class ChangesPanel(QWidget):
         self.conflict_actions_separator = QAction(self.tree)
         self.conflict_actions_separator.setSeparator(True)
         self.conflict_actions_separator.setVisible(False)
+        self.stage_action = QAction("Stage", self.tree)
+        self.stage_action.setObjectName("stageChangesAction")
+        self.stage_action.setEnabled(False)
+        self.stage_action.triggered.connect(self.stage_requested)
+        self.unstage_action = QAction("Unstage", self.tree)
+        self.unstage_action.setObjectName("unstageChangesAction")
+        self.unstage_action.setEnabled(False)
+        self.unstage_action.triggered.connect(self.unstage_requested)
         self.discard_action = QAction("Discard changes…", self.tree)
         self.discard_action.setObjectName("discardChangesAction")
         self.discard_action.setEnabled(False)
+        self.discard_action.triggered.connect(self.discard_requested)
         self.ignore_action = QAction("Add to .gitignore", self.tree)
         self.ignore_action.setObjectName("ignoreFileAction")
         self.ignore_action.setEnabled(False)
         self.stash_action = QAction("Stash selected changes", self.tree)
         self.stash_action.setObjectName("stashSelectedAction")
         self.stash_action.setEnabled(False)
+        self.stash_action.triggered.connect(self.stash_requested)
         for tree in self.all_trees:
             tree.addAction(self.open_action)
             tree.addAction(self.open_with_action)
@@ -152,8 +163,10 @@ class ChangesPanel(QWidget):
             tree.addAction(self.use_ours_action)
             tree.addAction(self.use_theirs_action)
             tree.addAction(self.conflict_actions_separator)
-            tree.addAction(self.discard_action)
+            tree.addAction(self.stage_action)
             tree.addAction(self.stash_action)
+            tree.addAction(self.unstage_action)
+            tree.addAction(self.discard_action)
             tree.addAction(self.ignore_action)
 
         self.stage_all = QCheckBox("Select all changes")
@@ -173,7 +186,6 @@ class ChangesPanel(QWidget):
         self.discard_button = QPushButton("Discard")
         self.discard_button.setObjectName("discardSelectedButton")
         self.discard_button.clicked.connect(self.discard_requested)
-        self._update_selection_controls()
 
         self.view_mode = QComboBox()
         self.view_mode.setObjectName("changesViewModeCombo")
@@ -254,6 +266,7 @@ class ChangesPanel(QWidget):
         layout.addWidget(self.commit_description)
         layout.addWidget(commit_actions)
         layout.addWidget(self.commit_error)
+        self._update_selection_controls()
         self.hide()
 
     @property
@@ -386,6 +399,21 @@ class ChangesPanel(QWidget):
             for path, file in self._visible_files.items()
             if path in self._selected_paths
         )
+
+    def action_files(self) -> tuple[FileStatus, ...]:
+        checked = self.checked_files()
+        if checked:
+            return checked
+        item = cast(QTreeWidgetItem | None, self.active_tree().currentItem())
+        if item is None:
+            return ()
+        file = item.data(0, Qt.ItemDataRole.UserRole)
+        return (file,) if isinstance(file, FileStatus) else ()
+
+    @Slot()
+    def _tree_selection_changed(self) -> None:
+        self._update_selection_controls()
+        self.selection_changed.emit()
 
     def clear_checked_files(self) -> None:
         self._selected_paths.clear()
@@ -609,7 +637,7 @@ class ChangesPanel(QWidget):
                 self._set_descendant_state(item, state)
 
     def _update_selection_controls(self) -> None:
-        files = self.checked_files()
+        files = self.action_files()
         selected = bool(files)
         count = len(files)
         has_unstaged = any(file.has_worktree_change or file.unmerged for file in files)
@@ -619,6 +647,10 @@ class ChangesPanel(QWidget):
         self.unstage_button.setEnabled(selected and (self._amend_mode or has_staged))
         self.stash_button.setEnabled(safe and has_unstaged)
         self.discard_button.setEnabled(safe and has_unstaged)
+        self.stage_action.setEnabled(self.stage_button.isEnabled())
+        self.unstage_action.setEnabled(self.unstage_button.isEnabled())
+        self.stash_action.setEnabled(self.stash_button.isEnabled())
+        self.discard_action.setEnabled(self.discard_button.isEnabled())
         suffix = f" ({count})" if count else ""
         self.stage_button.setText(f"Stage{suffix}")
         self.stash_button.setText(f"Stash{suffix}")

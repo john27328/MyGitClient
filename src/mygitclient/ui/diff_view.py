@@ -48,6 +48,10 @@ _INDEX_BADGE_STYLE = (
     "QLabel { color: white; background: #2f6fed; border-radius: 7px; "
     "padding: 2px 8px; font-weight: 600; }"
 )
+_DIFF_EDITOR_STYLE = (
+    "QPlainTextEdit { selection-background-color: palette(highlight); "
+    "selection-color: palette(highlighted-text); }"
+)
 
 
 def _gutter_style(gutter: QWidget) -> str:
@@ -104,6 +108,11 @@ class DiffView(QWidget):
         self.diff = QPlainTextEdit()
         self.diff.setObjectName("diffPanel")
         self.diff.setReadOnly(True)
+        self.diff.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        self.diff.setStyleSheet(_DIFF_EDITOR_STYLE)
         self.diff.setPlaceholderText("Select a changed file to view its diff.")
         self.diff.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.diff.setMinimumWidth(400)
@@ -392,6 +401,11 @@ class DiffView(QWidget):
         editor = QPlainTextEdit()
         editor.setObjectName(object_name)
         editor.setReadOnly(True)
+        editor.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        editor.setStyleSheet(_DIFF_EDITOR_STYLE)
         editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         font.setStyleHint(QFont.StyleHint.Monospace)
@@ -463,6 +477,7 @@ class DiffView(QWidget):
         self._scroll_restore_timer.stop()
         self._pending_scroll_positions = None
         positions = self._scroll_positions()
+        text_selections = self._text_selections() if preserve_scroll else None
         self._remember_selection()
         if selection_key is not None and self._current_selection_key is not None:
             current_file = self._current_selection_key[:2]
@@ -522,8 +537,38 @@ class DiffView(QWidget):
             self._pending_scroll_positions = positions
             self._scroll_restore_timer.start(0)
         self.render_selection()
+        if text_selections is not None:
+            self._restore_text_selections(text_selections)
         self._update_hunk_button()
         self.selection_changed.emit()
+
+    def _text_selections(self) -> tuple[tuple[int, int] | None, ...]:
+        selections: list[tuple[int, int] | None] = []
+        for editor in (self.diff, self.side_old, self.side_new):
+            cursor = editor.textCursor()
+            selections.append(
+                (cursor.selectionStart(), cursor.selectionEnd())
+                if cursor.hasSelection()
+                else None
+            )
+        return tuple(selections)
+
+    def _restore_text_selections(
+        self, selections: tuple[tuple[int, int] | None, ...]
+    ) -> None:
+        for editor, selection in zip(
+            (self.diff, self.side_old, self.side_new), selections, strict=True
+        ):
+            if selection is None:
+                continue
+            maximum = max(0, editor.document().characterCount() - 1)
+            start, end = selection
+            cursor = editor.textCursor()
+            cursor.setPosition(min(start, maximum))
+            cursor.setPosition(
+                min(end, maximum), QTextCursor.MoveMode.KeepAnchor
+            )
+            editor.setTextCursor(cursor)
 
     def reset(self) -> None:
         self._saved_selections.clear()
@@ -733,36 +778,6 @@ class DiffView(QWidget):
             "Full file" if lines > 100_000 else ("Expanded" if lines > 3 else "Context")
         )
         self.context_requested.emit(lines)
-
-    def refresh_theme(self) -> None:
-        """Refresh every palette-dependent part after a live theme change."""
-
-        # Reassign local palette-based styles so Qt resolves their roles against the
-        # new application palette instead of a cached palette from the previous theme.
-        self.file_header.setStyleSheet("")
-        self.file_header.setStyleSheet(_FILE_HEADER_STYLE)
-        for gutter in (self.gutter, self.side_old_gutter, self.side_new_gutter):
-            gutter.setStyleSheet("")
-            gutter.setStyleSheet(_gutter_style(gutter))
-        self.diff_highlighter.rehighlight()
-        self.side_old_highlighter.rehighlight()
-        self.side_new_highlighter.rehighlight()
-        self.render_selection()
-        for widget in (
-            self.diff,
-            self.gutter,
-            self.side_old,
-            self.side_new,
-            self.side_old_gutter,
-            self.side_new_gutter,
-            self.overview,
-            self.side_old_overview,
-            self.side_new_overview,
-        ):
-            widget.update()
-
-    def rehighlight(self) -> None:
-        self.refresh_theme()
 
     def _render_gutter(self, diff: UnifiedDiff, selection: DiffSelection) -> None:
         old_width = max(

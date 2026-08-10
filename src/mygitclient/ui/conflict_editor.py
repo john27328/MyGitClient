@@ -480,19 +480,6 @@ class ConflictEditor(QWidget):
         self.result_edit.setTextCursor(cursor)
         self.result_edit.centerCursor()
 
-    def refresh_theme(self) -> None:
-        """Recreate palette-derived conflict decorations for the active theme."""
-
-        blocks = parse_conflict_blocks(self.result_edit.toPlainText())
-        if blocks:
-            self._current_conflict = min(self._current_conflict, len(blocks) - 1)
-            block = blocks[self._current_conflict]
-            self._decorate_result(block.start, block.separator, block.end)
-        else:
-            self.result_edit.setExtraSelections([])
-        self._refresh_comparison()
-        self.update()
-
     @staticmethod
     def _soft_color(color: QColor, alpha: int) -> QColor:
         result = QColor(color)

@@ -43,6 +43,8 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
     assert panel.findChild(QPushButton, "stashSelectedButton") is panel.stash_button
     assert panel.findChild(QPushButton, "unstageSelectedButton") is panel.unstage_button
     assert panel.findChild(QPushButton, "discardSelectedButton") is panel.discard_button
+    assert panel.findChild(QAction, "stageChangesAction") is panel.stage_action
+    assert panel.findChild(QAction, "unstageChangesAction") is panel.unstage_action
     assert panel.findChild(QAction, "discardChangesAction") is panel.discard_action
     assert panel.findChild(QAction, "stashSelectedAction") is panel.stash_action
     assert panel.findChild(QAction, "ignoreFileAction") is panel.ignore_action
@@ -83,6 +85,27 @@ def test_clicking_file_text_does_not_toggle_checkbox(qtbot: QtBot) -> None:
     assert item.checkState(0) is Qt.CheckState.Unchecked
     assert item_changed.count() == 1
     tree.close()
+
+
+def test_current_file_is_action_target_when_no_checkbox_is_selected(
+    qtbot: QtBot,
+) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    file = FileStatus("src/example.py", ".", "M")
+    item = panel.show_files([(file, Qt.CheckState.Unchecked)], file.path)
+
+    assert item is not None
+    panel.tree.setCurrentItem(item)
+    assert panel.checked_files() == ()
+    assert panel.action_files() == (file,)
+    assert panel.stage_button.isEnabled()
+    assert panel.stash_button.isEnabled()
+    assert panel.discard_button.isEnabled()
+    assert panel.stage_action.isEnabled()
+    assert panel.stash_action.isEnabled()
+    assert panel.discard_action.isEnabled()
+    assert not panel.unstage_action.isEnabled()
 
 
 def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(

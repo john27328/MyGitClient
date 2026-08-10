@@ -35,13 +35,6 @@ class HomePanel(QWidget):
         title.setFont(title_font)
         layout.addWidget(title)
 
-        subtitle = QLabel(
-            "Open a repository in its own tab. Repository state and Git operations "
-            "stay isolated between tabs."
-        )
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
         actions = QHBoxLayout()
         self.open_button = QPushButton("Open local repository…")
         self.open_button.setObjectName("homeOpenRepositoryButton")
