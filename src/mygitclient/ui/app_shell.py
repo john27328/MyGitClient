@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QTabWidget,
-    QToolBar,
     QVBoxLayout,
     QWidget,
 )
@@ -27,19 +26,15 @@ class RepositorySessionTab(QWidget):
         super().__init__()
         self.controller = controller
         self._stopped = False
-        controller.hide()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        for toolbar in controller.findChildren(
-            QToolBar, options=Qt.FindChildOption.FindDirectChildrenOnly
-        ):
-            controller.removeToolBar(toolbar)
-            toolbar.setParent(self)
-            layout.addWidget(toolbar)
-        central = controller.takeCentralWidget()
-        layout.addWidget(central, 1)
+        controller.setParent(self)
+        controller.setWindowFlags(Qt.WindowType.Widget)
+        controller.menuBar().hide()
+        layout.addWidget(controller)
+        controller.show()
 
     def open_repository(self, repository: Path) -> None:
         self.controller.open_repository(repository)

@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
+from PySide6.QtWidgets import QToolBar
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.service import GitService
@@ -90,4 +91,23 @@ def test_active_repository_exposes_its_menus(qtbot: QtBot, tmp_path: Path) -> No
     assert [action.text().replace("&", "") for action in shell.menuBar().actions()] == [
         "File"
     ]
+    shell.close()
+
+
+def test_repository_toolbar_remains_visible_in_session_tab(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    settings = QSettings(str(tmp_path / "toolbar.ini"), QSettings.Format.IniFormat)
+    shell = AppShell(settings, Theme.SYSTEM)
+    qtbot.addWidget(shell)
+    shell.show()
+
+    shell.open_repository(repository)
+    session = shell.tabs.currentWidget()
+    assert isinstance(session, RepositorySessionTab)
+    toolbar = session.findChild(QToolBar, "repositoryToolbar")
+    assert toolbar is not None
+    assert toolbar.isVisibleTo(session)
     shell.close()
