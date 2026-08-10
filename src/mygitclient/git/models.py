@@ -137,9 +137,10 @@ class RepositoryOperationSnapshot:
 class ConflictVersionsSnapshot:
     repository: Path
     path: str
-    base: str
-    current: str
-    incoming: str
+    base: bytes
+    current: bytes
+    incoming: bytes
+    attributes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

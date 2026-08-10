@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import mimetypes
 from difflib import SequenceMatcher
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QColor, QTextCursor
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QFontDatabase, QPixmap, QTextCursor
+from PySide6.QtPdf import QPdfDocument
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -30,6 +35,7 @@ class ConflictEditor(QWidget):
 
     save_requested = Signal(object, str)
     mergetool_requested = Signal()
+    binary_choice_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -40,6 +46,7 @@ class ConflictEditor(QWidget):
         self._base_text = ""
         self._current_text = ""
         self._incoming_text = ""
+        self._binary = False
 
         self.file_label = QLabel()
         self.file_label.setObjectName("conflictFileLabel")
@@ -90,12 +97,30 @@ class ConflictEditor(QWidget):
         self.mode_stack.addWidget(self.result_edit)
         self.mode_stack.addWidget(compare_splitter)
 
+        self.binary_current = QLabel()
+        self.binary_current.setObjectName("binaryCurrentPreview")
+        self.binary_current.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.binary_incoming = QLabel()
+        self.binary_incoming.setObjectName("binaryIncomingPreview")
+        self.binary_incoming.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        binary_splitter = QSplitter(Qt.Orientation.Horizontal)
+        binary_splitter.addWidget(
+            self._labeled_preview(QLabel("Current"), self.binary_current)
+        )
+        binary_splitter.addWidget(
+            self._labeled_preview(QLabel("Incoming"), self.binary_incoming)
+        )
+        self.mode_stack.addWidget(binary_splitter)
+
         self.use_current_button = QPushButton("Use current")
         self.use_current_button.setObjectName("useCurrentConflictBlockButton")
         self.use_both_button = QPushButton("Use both")
         self.use_both_button.setObjectName("useBothConflictBlockButton")
         self.use_incoming_button = QPushButton("Use incoming")
         self.use_incoming_button.setObjectName("useIncomingConflictBlockButton")
+        self.delete_binary_button = QPushButton("Delete result")
+        self.delete_binary_button.setObjectName("deleteBinaryConflictButton")
+        self.delete_binary_button.setVisible(False)
         self.save_button = QPushButton("Save and mark resolved")
         self.save_button.setObjectName("saveResolvedConflictButton")
         self.mergetool_button = QPushButton("External merge tool…")
@@ -104,6 +129,7 @@ class ConflictEditor(QWidget):
         actions.addWidget(self.use_current_button)
         actions.addWidget(self.use_both_button)
         actions.addWidget(self.use_incoming_button)
+        actions.addWidget(self.delete_binary_button)
         actions.addStretch(1)
         actions.addWidget(self.mergetool_button)
         actions.addWidget(self.save_button)
@@ -124,6 +150,9 @@ class ConflictEditor(QWidget):
         self.use_both_button.clicked.connect(lambda: self._resolve_current("both"))
         self.use_incoming_button.clicked.connect(
             lambda: self._resolve_current("incoming")
+        )
+        self.delete_binary_button.clicked.connect(
+            lambda: self.binary_choice_requested.emit("delete")
         )
         self.save_button.clicked.connect(self._save)
         self.mergetool_button.clicked.connect(self.mergetool_requested)
@@ -149,11 +178,20 @@ class ConflictEditor(QWidget):
         layout.addWidget(edit, 1)
         return container
 
+    @staticmethod
+    def _labeled_preview(label: QLabel, preview: QLabel) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(label)
+        layout.addWidget(preview, 1)
+        return container
+
     def load_file(self, path: Path, display_path: str) -> None:
         if self._path == path and self.result_edit.document().isModified():
             return
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            data = path.read_bytes()
         except OSError as error:
             self.clear()
             self.file_label.setText(display_path)
@@ -162,6 +200,8 @@ class ConflictEditor(QWidget):
             return
         self._path = path
         self.file_label.setText(display_path)
+        self._binary = b"\0" in data
+        text = "" if self._binary else data.decode("utf-8", errors="replace")
         self.result_edit.setReadOnly(False)
         self._updating = True
         self.result_edit.setPlainText(text)
@@ -170,11 +210,143 @@ class ConflictEditor(QWidget):
         self._current_conflict = 0
         self._refresh()
 
-    def set_versions(self, base: str, current: str, incoming: str) -> None:
-        self._base_text = base
-        self._current_text = current
-        self._incoming_text = incoming
+    def set_versions(
+        self,
+        base: bytes,
+        current: bytes,
+        incoming: bytes,
+        attributes: tuple[tuple[str, str], ...] = (),
+    ) -> None:
+        attribute_map = dict(attributes)
+        self._binary = (
+            attribute_map.get("binary") == "set"
+            or attribute_map.get("diff") == "unset"
+            or any(b"\0" in value for value in (base, current, incoming))
+        )
+        if self._binary:
+            self._show_binary_versions(current, incoming, attribute_map)
+            return
+        self.result_button.setEnabled(True)
+        self.comparison_combo.setEnabled(True)
+        self.use_both_button.setVisible(True)
+        self.delete_binary_button.setVisible(False)
+        self._set_compare_mode(False)
+        self._base_text = base.decode("utf-8", errors="replace")
+        self._current_text = current.decode("utf-8", errors="replace")
+        self._incoming_text = incoming.decode("utf-8", errors="replace")
         self._refresh_comparison()
+
+    def _show_binary_versions(
+        self, current: bytes, incoming: bytes, attributes: dict[str, str]
+    ) -> None:
+        self.mode_stack.setCurrentIndex(2)
+        self.status_label.setText("Binary conflict")
+        self.result_button.setEnabled(False)
+        self.compare_button.setEnabled(False)
+        self.comparison_combo.setEnabled(False)
+        self.use_both_button.setVisible(False)
+        self.delete_binary_button.setVisible(True)
+        self.use_current_button.setEnabled(bool(current))
+        self.use_incoming_button.setEnabled(bool(incoming))
+        self.save_button.setEnabled(False)
+        self._set_binary_preview(self.binary_current, current, attributes)
+        self._set_binary_preview(self.binary_incoming, incoming, attributes)
+
+    def _set_binary_preview(
+        self, label: QLabel, data: bytes, attributes: dict[str, str]
+    ) -> None:
+        pixmap = QPixmap()
+        if data and pixmap.loadFromData(data):
+            scaled = pixmap.scaled(
+                720, 720, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            label.setPixmap(scaled)
+            label.setToolTip(self._binary_details(data, attributes, pixmap))
+            return
+        suffix = Path(self.file_label.text()).suffix.casefold()
+        if suffix == ".pdf" and self._set_pdf_preview(label, data, attributes):
+            return
+        if suffix in {".zip", ".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp"}:
+            archive = self._archive_details(data)
+            if archive is not None:
+                label.setPixmap(QPixmap())
+                label.setText(f"{archive}\n\n{self._binary_details(data, attributes, None)}")
+                return
+        if suffix in {".ttf", ".otf", ".ttc"} and self._set_font_preview(
+            label, data, attributes
+        ):
+            return
+        label.setPixmap(QPixmap())
+        label.setText(self._binary_details(data, attributes, None))
+
+    def _set_pdf_preview(
+        self, label: QLabel, data: bytes, attributes: dict[str, str]
+    ) -> bool:
+        buffer = QBuffer(label)
+        buffer.setData(QByteArray(data))
+        if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
+            return False
+        document = QPdfDocument(label)
+        document.load(buffer)
+        if document.error() != QPdfDocument.Error.None_ or document.pageCount() < 1:
+            return False
+        image = document.render(0, QSize(720, 720))
+        if image.isNull():
+            return False
+        label.setPixmap(QPixmap.fromImage(image))
+        label.setToolTip(
+            f"PDF · {document.pageCount()} pages\n"
+            f"{self._binary_details(data, attributes, None)}"
+        )
+        return True
+
+    @staticmethod
+    def _archive_details(data: bytes) -> str | None:
+        try:
+            with ZipFile(BytesIO(data)) as archive:
+                names = [info.filename for info in archive.infolist() if not info.is_dir()]
+        except (BadZipFile, OSError):
+            return None
+        shown = names[:18]
+        listing = "\n".join(f"• {name}" for name in shown)
+        remaining = len(names) - len(shown)
+        if remaining:
+            listing += f"\n… and {remaining} more"
+        return f"Archive contents · {len(names)} files\n{listing or '(empty archive)'}"
+
+    def _set_font_preview(
+        self, label: QLabel, data: bytes, attributes: dict[str, str]
+    ) -> bool:
+        font_id = QFontDatabase.addApplicationFontFromData(QByteArray(data))
+        if font_id < 0:
+            return False
+        families = QFontDatabase.applicationFontFamilies(font_id)
+        if not families:
+            return False
+        font = label.font()
+        font.setFamily(families[0])
+        font.setPointSize(22)
+        label.setFont(font)
+        label.setText(
+            f"{families[0]}\n\nAa Бб 0123\nThe quick brown fox\n"
+            f"Съешь ещё этих мягких французских булок\n\n"
+            f"{self._binary_details(data, attributes, None)}"
+        )
+        return True
+
+    def _binary_details(
+        self, data: bytes, attributes: dict[str, str], pixmap: QPixmap | None
+    ) -> str:
+        mime = mimetypes.guess_type(self.file_label.text())[0] or "binary data"
+        dimensions = ""
+        if pixmap is not None:
+            dimensions = f"\n{pixmap.width()} × {pixmap.height()} px"
+        merge = attributes.get("merge", "unspecified")
+        return (
+            f"{mime}{dimensions}\n{len(data):,} bytes\nSHA-256: {sha256(data).hexdigest()}"
+            f"\nGit merge attribute: {merge}"
+        )
 
     def clear(self) -> None:
         self._path = None
@@ -186,9 +358,14 @@ class ConflictEditor(QWidget):
         self._base_text = ""
         self._current_text = ""
         self._incoming_text = ""
+        self._binary = False
         self._updating = False
         self.file_label.setText("Select a conflicted file.")
         self.status_label.clear()
+        self.result_button.setEnabled(True)
+        self.comparison_combo.setEnabled(True)
+        self.use_both_button.setVisible(True)
+        self.delete_binary_button.setVisible(False)
         self._update_controls(0)
 
     @Slot()
@@ -335,6 +512,12 @@ class ConflictEditor(QWidget):
         self.compare_button.setChecked(compare)
 
     def _resolve_current(self, choice: ConflictChoice) -> None:
+        if self._binary:
+            if choice != "both":
+                self.binary_choice_requested.emit(
+                    "ours" if choice == "current" else "theirs"
+                )
+            return
         text = self.result_edit.toPlainText()
         try:
             resolved = resolve_conflict_block(text, self._current_conflict, choice)

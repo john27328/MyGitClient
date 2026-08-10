@@ -322,6 +322,9 @@ class MainWindow(QMainWindow):
         self._conflict_editor = ConflictEditor()
         self._conflict_editor.save_requested.connect(self._save_conflict_result)
         self._conflict_editor.mergetool_requested.connect(self._launch_mergetool)
+        self._conflict_editor.binary_choice_requested.connect(
+            self._use_selected_conflict_side
+        )
         self._diff_container = QStackedWidget()
         self._diff_container.setObjectName("diffContainer")
         self._diff_container.addWidget(self._diff_view)
@@ -2833,6 +2836,11 @@ class MainWindow(QMainWindow):
         repository = self._repository
         if repository is None or file is None or not file.unmerged:
             return
+        if side == "delete":
+            self._set_changes_trees_enabled(False)
+            self._status_label.setText(f"Deleting conflicted file {file.path}…")
+            self._git.request_delete_conflict(repository, file)
+            return
         self._set_changes_trees_enabled(False)
         self._status_label.setText(f"Using {side} version of {file.path}…")
         self._git.request_conflict_side(repository, file, side=side)
@@ -2847,7 +2855,9 @@ class MainWindow(QMainWindow):
             or file.path != value.path
         ):
             return
-        self._conflict_editor.set_versions(value.base, value.current, value.incoming)
+        self._conflict_editor.set_versions(
+            value.base, value.current, value.incoming, value.attributes
+        )
 
     @Slot()
     def _launch_mergetool(self) -> None:

@@ -185,15 +185,24 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
         service.request_conflict_versions(tmp_path, conflict)
     snapshot = versions[-1]
     assert isinstance(snapshot, ConflictVersionsSnapshot)
-    assert snapshot.base == "base\n"
-    assert snapshot.current == "main\n"
-    assert snapshot.incoming == "feature\n"
+    assert snapshot.base == b"base\n"
+    assert snapshot.current == b"main\n"
+    assert snapshot.incoming == b"feature\n"
+    assert dict(snapshot.attributes) == {
+        "binary": "unspecified",
+        "diff": "unspecified",
+        "merge": "unspecified",
+    }
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_conflict_side(tmp_path, conflict, side="ours")
     assert tracked.read_text(encoding="utf-8") == "main\n"
-    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
-        service.request_conflict_side(tmp_path, conflict, side="theirs")
-    assert tracked.read_text(encoding="utf-8") == "feature\n"
+    unresolved = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    assert unresolved.stdout == b""
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_resolve_conflict(tmp_path, conflict, "resolved\n")
     assert tracked.read_text(encoding="utf-8") == "resolved\n"

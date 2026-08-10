@@ -1,4 +1,6 @@
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 from PySide6.QtWidgets import QComboBox, QPlainTextEdit, QPushButton, QStackedWidget
 from pytestqt.qtbot import QtBot
@@ -96,7 +98,7 @@ def test_conflict_editor_compares_full_sides_with_base(qtbot: QtBot, tmp_path: P
     editor = ConflictEditor()
     qtbot.addWidget(editor)
     editor.load_file(path, "conflicted.txt")
-    editor.set_versions("same\nbase\n", "same\ncurrent\n", "same\nincoming\n")
+    editor.set_versions(b"same\nbase\n", b"same\ncurrent\n", b"same\nincoming\n")
     combo = editor.findChild(QComboBox, "conflictComparisonCombo")
     assert combo is not None
 
@@ -116,3 +118,44 @@ def test_conflict_editor_requests_external_merge_tool(qtbot: QtBot) -> None:
 
     with qtbot.waitSignal(editor.mergetool_requested, timeout=1000):
         editor.mergetool_button.click()
+
+
+def test_conflict_editor_uses_binary_mode_and_emits_side_choice(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    path = tmp_path / "asset.bin"
+    path.write_bytes(b"\x00worktree")
+    editor = ConflictEditor()
+    qtbot.addWidget(editor)
+    choices: list[str] = []
+    editor.binary_choice_requested.connect(choices.append)
+
+    editor.load_file(path, "asset.bin")
+    editor.set_versions(
+        b"\x00base", b"\x00current", b"\x00incoming",
+        (("binary", "set"), ("diff", "unset"), ("merge", "custom-driver")),
+    )
+
+    assert editor.mode_stack.currentIndex() == 2
+    assert "SHA-256" in editor.binary_current.text()
+    assert "custom-driver" in editor.binary_current.text()
+    editor.use_incoming_button.click()
+    assert choices == ["theirs"]
+
+
+def test_conflict_editor_previews_archive_contents(qtbot: QtBot, tmp_path: Path) -> None:
+    archive_bytes = BytesIO()
+    with ZipFile(archive_bytes, "w") as archive:
+        archive.writestr("docs/readme.txt", "hello")
+        archive.writestr("images/icon.png", b"not-an-image")
+    data = archive_bytes.getvalue()
+    path = tmp_path / "bundle.zip"
+    path.write_bytes(data)
+    editor = ConflictEditor()
+    qtbot.addWidget(editor)
+
+    editor.load_file(path, "bundle.zip")
+    editor.set_versions(b"", data, data, (("binary", "set"),))
+
+    assert "Archive contents · 2 files" in editor.binary_current.text()
+    assert "docs/readme.txt" in editor.binary_current.text()

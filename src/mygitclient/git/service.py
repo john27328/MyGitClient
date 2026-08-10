@@ -104,8 +104,16 @@ class _ConflictVersionsWorkflow:
     repository: Path
     file: FileStatus
     request_id: int
-    stage: int = 1
-    contents: list[str] | None = None
+    stage: int = 0
+    contents: list[bytes] | None = None
+    attributes: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ConflictSideWorkflow:
+    repository: Path
+    file: FileStatus
+    side: str
 
 
 @dataclass(slots=True)
@@ -200,6 +208,7 @@ class GitService(QObject):
         self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
         self._reflog_requests: dict[GitRunner, Path] = {}
         self._conflict_versions_workflows: dict[GitRunner, _ConflictVersionsWorkflow] = {}
+        self._conflict_side_workflows: dict[GitRunner, _ConflictSideWorkflow] = {}
         self._latest_conflict_versions_request: dict[tuple[Path, str], int] = {}
         self._operation_queue = GitOperationQueue(self)
         self._operation_queue.changed.connect(self.queue_changed)
@@ -1213,6 +1222,32 @@ class GitService(QObject):
         self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
+    @Slot(object)
+    def _handle_conflict_side_checkout(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        workflow = self._conflict_side_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not select conflict side")
+            return
+        stage_runner = GitRunner(parent=self)
+        self._runners.add(stage_runner)
+        self._mutation_requests[stage_runner] = workflow.file.path
+        stage_runner.completed.connect(self._handle_mutation)
+        stage_runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            stage_runner,
+            GitCommand(
+                ("add", "--", workflow.file.path),
+                workflow.repository,
+                f"mark {workflow.side} conflict side resolved",
+            ),
+        )
+
     def request_conflict_side(
         self, repository: Path, file: FileStatus, *, side: str
     ) -> GitRunner:
@@ -1222,8 +1257,10 @@ class GitService(QObject):
             raise ValueError(f"Unsupported conflict side: {side}")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
-        self._mutation_requests[runner] = file.path
-        runner.completed.connect(self._handle_mutation)
+        self._conflict_side_workflows[runner] = _ConflictSideWorkflow(
+            repository, file, side
+        )
+        runner.completed.connect(self._handle_conflict_side_checkout)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
             runner,
@@ -1245,15 +1282,31 @@ class GitService(QObject):
         workflow = _ConflictVersionsWorkflow(repository, file, request_id, contents=[])
         return self._run_conflict_version(workflow)
 
+    def request_delete_conflict(self, repository: Path, file: FileStatus) -> GitRunner:
+        if not file.unmerged:
+            raise ValueError("Only an unmerged file can be deleted as a resolution")
+        return self._request_simple_mutation(
+            repository,
+            ("rm", "--", file.path),
+            file.path,
+            "delete conflicted file",
+        )
+
     def _run_conflict_version(self, workflow: _ConflictVersionsWorkflow) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._conflict_versions_workflows[runner] = workflow
         runner.completed.connect(self._handle_conflict_version)
         runner.failed_to_start.connect(self._handle_start_error)
+        arguments = (
+            ("check-attr", "-z", "binary", "diff", "merge", "--", workflow.file.path)
+            if workflow.stage == 0
+            else ("show", f":{workflow.stage}:{workflow.file.path}")
+        )
         runner.run(GitCommand(
-            ("show", f":{workflow.stage}:{workflow.file.path}"),
+            arguments,
             workflow.repository,
+            "read conflict attributes" if workflow.stage == 0 else
             f"read conflict stage {workflow.stage}",
         ))
         return runner
@@ -2291,12 +2344,22 @@ class GitService(QObject):
             self._latest_conflict_versions_request.pop(key, None)
             return
         contents = workflow.contents if workflow.contents is not None else []
+        if workflow.stage == 0:
+            if result.succeeded:
+                fields = result.stdout.decode("utf-8", errors="surrogateescape").split("\0")
+                workflow.attributes = tuple(
+                    (fields[index + 1], fields[index + 2])
+                    for index in range(0, len(fields) - 2, 3)
+                )
+            workflow.stage = 1
+            self._run_conflict_version(workflow)
+            return
         if result.succeeded:
-            contents.append(result.stdout.decode("utf-8", errors="replace"))
+            contents.append(result.stdout)
         else:
             error = result.error_text.casefold()
             if "does not exist" in error or "not at stage" in error:
-                contents.append("")
+                contents.append(b"")
             else:
                 self._latest_conflict_versions_request.pop(key, None)
                 self.operation_failed.emit(result.error_text or "Could not read conflict version")
@@ -2309,7 +2372,8 @@ class GitService(QObject):
         self._latest_conflict_versions_request.pop(key, None)
         base, current, incoming = contents
         self.conflict_versions_ready.emit(ConflictVersionsSnapshot(
-            workflow.repository, workflow.file.path, base, current, incoming
+            workflow.repository, workflow.file.path, base, current, incoming,
+            workflow.attributes,
         ))
 
     @Slot(object)
