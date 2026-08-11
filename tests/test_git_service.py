@@ -1480,9 +1480,15 @@ def test_submodule_commands_are_scoped_to_selected_path(
     service.request_submodule_init(tmp_path, "plugins/module")
     service.request_submodule_update(tmp_path, "plugins/module")
     service.request_submodule_sync(tmp_path, "plugins/module")
+    service.request_submodule_init(tmp_path, "plugins/module", recursive=True)
+    service.request_submodule_update(tmp_path, "plugins/module", recursive=True)
+    service.request_submodule_sync(tmp_path, "plugins/module", recursive=True)
 
     assert [command.arguments for command in commands] == [
         ("submodule", "update", "--init", "--", "plugins/module"),
         ("submodule", "update", "--", "plugins/module"),
         ("submodule", "sync", "--", "plugins/module"),
+        ("submodule", "update", "--init", "--recursive", "--", "plugins/module"),
+        ("submodule", "update", "--recursive", "--", "plugins/module"),
+        ("submodule", "sync", "--recursive", "--", "plugins/module"),
     ]

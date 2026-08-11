@@ -248,6 +248,15 @@ class MainWindow(QMainWindow):
         self._changes_panel.submodule_init_requested.connect(self._init_submodule)
         self._changes_panel.submodule_update_requested.connect(self._update_submodule)
         self._changes_panel.submodule_sync_requested.connect(self._sync_submodule)
+        self._changes_panel.submodule_init_recursive_requested.connect(
+            self._init_submodule_recursive
+        )
+        self._changes_panel.submodule_update_recursive_requested.connect(
+            self._update_submodule_recursive
+        )
+        self._changes_panel.submodule_sync_recursive_requested.connect(
+            self._sync_submodule_recursive
+        )
         self._update_commit_controls()
 
         self._history_panel = HistoryPanel(self._settings)
@@ -1919,6 +1928,39 @@ class MainWindow(QMainWindow):
     def _sync_submodule(self, value: object) -> None:
         if isinstance(value, FileStatus) and self._repository is not None:
             self._git.request_submodule_sync(self._repository, value.path)
+
+    def _confirm_recursive_submodule_action(
+        self, value: object, *, action: str
+    ) -> FileStatus | None:
+        if not isinstance(value, FileStatus) or self._repository is None:
+            return None
+        answer = QMessageBox.question(
+            self,
+            f"{action.title()} submodule recursively",
+            f"{action.title()} {value.path} and all of its nested submodules?",
+        )
+        return value if answer == QMessageBox.StandardButton.Yes else None
+
+    def _init_submodule_recursive(self, value: object) -> None:
+        file = self._confirm_recursive_submodule_action(value, action="initialize")
+        if file is not None and self._repository is not None:
+            self._git.request_submodule_init(
+                self._repository, file.path, recursive=True
+            )
+
+    def _update_submodule_recursive(self, value: object) -> None:
+        file = self._confirm_recursive_submodule_action(value, action="update")
+        if file is not None and self._repository is not None:
+            self._git.request_submodule_update(
+                self._repository, file.path, recursive=True
+            )
+
+    def _sync_submodule_recursive(self, value: object) -> None:
+        file = self._confirm_recursive_submodule_action(value, action="sync")
+        if file is not None and self._repository is not None:
+            self._git.request_submodule_sync(
+                self._repository, file.path, recursive=True
+            )
 
     @Slot(object)
     def _open_linked_repository(self, value: object) -> None:

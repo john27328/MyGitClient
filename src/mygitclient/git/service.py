@@ -1400,26 +1400,44 @@ class GitService(QObject):
         self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
-    def request_submodule_init(self, repository: Path, path: str) -> GitRunner:
+    def request_submodule_init(
+        self, repository: Path, path: str, *, recursive: bool = False
+    ) -> GitRunner:
+        arguments = ["submodule", "update", "--init"]
+        if recursive:
+            arguments.append("--recursive")
+        arguments.extend(("--", path))
         return self._request_simple_mutation(
             repository,
-            ("submodule", "update", "--init", "--", path),
+            tuple(arguments),
             f"submodule:init:{path}",
             f"initialize submodule {path}",
         )
 
-    def request_submodule_update(self, repository: Path, path: str) -> GitRunner:
+    def request_submodule_update(
+        self, repository: Path, path: str, *, recursive: bool = False
+    ) -> GitRunner:
+        arguments = ["submodule", "update"]
+        if recursive:
+            arguments.append("--recursive")
+        arguments.extend(("--", path))
         return self._request_simple_mutation(
             repository,
-            ("submodule", "update", "--", path),
+            tuple(arguments),
             f"submodule:update:{path}",
             f"update submodule {path}",
         )
 
-    def request_submodule_sync(self, repository: Path, path: str) -> GitRunner:
+    def request_submodule_sync(
+        self, repository: Path, path: str, *, recursive: bool = False
+    ) -> GitRunner:
+        arguments = ["submodule", "sync"]
+        if recursive:
+            arguments.append("--recursive")
+        arguments.extend(("--", path))
         return self._request_simple_mutation(
             repository,
-            ("submodule", "sync", "--", path),
+            tuple(arguments),
             f"submodule:sync:{path}",
             f"sync submodule {path}",
         )

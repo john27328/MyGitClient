@@ -100,6 +100,9 @@ class ChangesPanel(QWidget):
     submodule_init_requested = Signal(object)
     submodule_update_requested = Signal(object)
     submodule_sync_requested = Signal(object)
+    submodule_init_recursive_requested = Signal(object)
+    submodule_update_recursive_requested = Signal(object)
+    submodule_sync_recursive_requested = Signal(object)
 
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -155,6 +158,34 @@ class ChangesPanel(QWidget):
         self.submodule_sync_action.setObjectName("syncSubmoduleAction")
         self.submodule_sync_action.setVisible(False)
         self.submodule_sync_action.triggered.connect(self._request_submodule_sync)
+        self.submodule_init_recursive_action = QAction(
+            "Initialize recursively…", self.tree
+        )
+        self.submodule_init_recursive_action.setObjectName(
+            "initializeSubmoduleRecursiveAction"
+        )
+        self.submodule_init_recursive_action.setVisible(False)
+        self.submodule_init_recursive_action.triggered.connect(
+            self._request_submodule_init_recursive
+        )
+        self.submodule_update_recursive_action = QAction(
+            "Update recursively…", self.tree
+        )
+        self.submodule_update_recursive_action.setObjectName(
+            "updateSubmoduleRecursiveAction"
+        )
+        self.submodule_update_recursive_action.setVisible(False)
+        self.submodule_update_recursive_action.triggered.connect(
+            self._request_submodule_update_recursive
+        )
+        self.submodule_sync_recursive_action = QAction("Sync recursively…", self.tree)
+        self.submodule_sync_recursive_action.setObjectName(
+            "syncSubmoduleRecursiveAction"
+        )
+        self.submodule_sync_recursive_action.setVisible(False)
+        self.submodule_sync_recursive_action.triggered.connect(
+            self._request_submodule_sync_recursive
+        )
         self.submodule_actions_separator = QAction(self.tree)
         self.submodule_actions_separator.setSeparator(True)
         self.submodule_actions_separator.setVisible(False)
@@ -188,6 +219,9 @@ class ChangesPanel(QWidget):
             tree.addAction(self.submodule_init_action)
             tree.addAction(self.submodule_update_action)
             tree.addAction(self.submodule_sync_action)
+            tree.addAction(self.submodule_init_recursive_action)
+            tree.addAction(self.submodule_update_recursive_action)
+            tree.addAction(self.submodule_sync_recursive_action)
             tree.addAction(self.submodule_actions_separator)
             tree.addAction(self.stage_action)
             tree.addAction(self.stash_action)
@@ -759,6 +793,13 @@ class ChangesPanel(QWidget):
         self.submodule_init_action.setVisible(submodule is not None and not initialized)
         self.submodule_update_action.setVisible(submodule is not None and initialized)
         self.submodule_sync_action.setVisible(submodule is not None)
+        self.submodule_init_recursive_action.setVisible(
+            submodule is not None and not initialized
+        )
+        self.submodule_update_recursive_action.setVisible(
+            submodule is not None and initialized
+        )
+        self.submodule_sync_recursive_action.setVisible(submodule is not None)
         self.submodule_actions_separator.setVisible(submodule is not None)
         suffix = f" ({count})" if count else ""
         self.stage_button.setText(f"Stage{suffix}")
@@ -795,6 +836,21 @@ class ChangesPanel(QWidget):
     def _request_submodule_sync(self) -> None:
         if (file := self._current_submodule()) is not None:
             self.submodule_sync_requested.emit(file)
+
+    @Slot()
+    def _request_submodule_init_recursive(self) -> None:
+        if (file := self._current_submodule()) is not None:
+            self.submodule_init_recursive_requested.emit(file)
+
+    @Slot()
+    def _request_submodule_update_recursive(self) -> None:
+        if (file := self._current_submodule()) is not None:
+            self.submodule_update_recursive_requested.emit(file)
+
+    @Slot()
+    def _request_submodule_sync_recursive(self) -> None:
+        if (file := self._current_submodule()) is not None:
+            self.submodule_sync_recursive_requested.emit(file)
 
     @Slot(int)
     def _view_mode_selected(self, _index: int) -> None:

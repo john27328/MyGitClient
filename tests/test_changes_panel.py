@@ -51,6 +51,18 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
     assert panel.findChild(QAction, "initializeSubmoduleAction") is panel.submodule_init_action
     assert panel.findChild(QAction, "updateSubmoduleAction") is panel.submodule_update_action
     assert panel.findChild(QAction, "syncSubmoduleAction") is panel.submodule_sync_action
+    assert (
+        panel.findChild(QAction, "initializeSubmoduleRecursiveAction")
+        is panel.submodule_init_recursive_action
+    )
+    assert (
+        panel.findChild(QAction, "updateSubmoduleRecursiveAction")
+        is panel.submodule_update_recursive_action
+    )
+    assert (
+        panel.findChild(QAction, "syncSubmoduleRecursiveAction")
+        is panel.submodule_sync_recursive_action
+    )
     assert panel.tree.columnCount() == 1
     assert panel.tree.headerItem().text(0) == "Changes"
 
@@ -153,11 +165,14 @@ def test_submodule_shows_expected_checkout_and_context_actions(qtbot: QtBot) -> 
     assert "checked out checked" in item.text(0)
     assert panel.submodule_update_action.isVisible()
     assert panel.submodule_sync_action.isVisible()
+    assert panel.submodule_update_recursive_action.isVisible()
+    assert panel.submodule_sync_recursive_action.isVisible()
     assert not panel.submodule_init_action.isVisible()
 
     panel.set_submodule_checkout(submodule.path, checked_oid=None, initialized=False)
     assert "not initialized" in item.text(0)
     assert panel.submodule_init_action.isVisible()
+    assert panel.submodule_init_recursive_action.isVisible()
     assert not panel.submodule_update_action.isVisible()
 
 
