@@ -284,6 +284,7 @@ class MainWindow(QMainWindow):
         refs_panel.merge_requested.connect(self._preview_merge)
         refs_panel.create_branch_requested.connect(self._create_branch)
         refs_panel.create_branch_from_requested.connect(self._create_branch_from)
+        refs_panel.create_worktree_requested.connect(self._create_worktree)
         refs_panel.publish_branch_requested.connect(self._publish_branch)
         refs_panel.create_tag_requested.connect(self._create_tag)
         refs_panel.delete_tag_requested.connect(self._delete_tag)
@@ -1490,6 +1491,39 @@ class MainWindow(QMainWindow):
         self._git.request_create_branch_from(self._repository, name, value)
 
     @Slot(object)
+    def _create_worktree(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, BranchInfo):
+            return
+        parent = QFileDialog.getExistingDirectory(
+            self,
+            "Select worktree parent directory",
+            str(self._repository.parent),
+        )
+        if not parent:
+            return
+        suggested = value.name.replace("/", "-")
+        name, accepted = QInputDialog.getText(
+            self,
+            "New worktree",
+            "Folder name:",
+            text=suggested,
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        target = (Path(parent) / name).resolve()
+        if target.exists():
+            QMessageBox.warning(
+                self,
+                "Worktree directory exists",
+                f"Choose a new folder name. This path already exists:\n{target}",
+            )
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Creating worktree for {value.name}…")
+        self._git.request_create_worktree(self._repository, target, value)
+
+    @Slot(object)
     def _publish_branch(self, value: object) -> None:
         if (
             self._repository is None
@@ -2631,6 +2665,10 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Tags updated")
         elif path == "stashes:changed":
             self._status_label.setText("Stashes updated")
+        elif path == "worktrees:changed":
+            self._status_label.setText("Worktree created")
+            if self._repository is not None:
+                self._show_linked_repositories(self._repository)
         elif path.startswith("submodule:"):
             self._status_label.setText("Submodule updated")
             if self._repository is not None:

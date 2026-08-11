@@ -36,7 +36,7 @@ def test_refs_panel_groups_filters_and_selects_refs(qtbot: QtBot) -> None:
         )
     )
 
-    assert panel.tree.topLevelItemCount() == 5
+    assert panel.tree.topLevelItemCount() == 6
     assert panel.selected_ref == "refs/heads/main"
     assert selected == [("refs/heads/main",)]
     remotes = panel.tree.topLevelItem(1)
@@ -166,9 +166,11 @@ def test_refs_panel_creates_publishes_and_compares_from_context(qtbot: QtBot) ->
         BranchesSnapshot(Path("repository"), (local, unpublished, remote))
     )
     created: list[object] = []
+    worktrees: list[object] = []
     published: list[object] = []
     selected: list[object] = []
     panel.create_branch_from_requested.connect(created.append)
+    panel.create_worktree_requested.connect(worktrees.append)
     panel.publish_branch_requested.connect(published.append)
     panel.refs_selected.connect(selected.append)
     branches = panel.tree.topLevelItem(0)
@@ -176,11 +178,13 @@ def test_refs_panel_creates_publishes_and_compares_from_context(qtbot: QtBot) ->
 
     panel.tree.setCurrentItem(branches.child(0))
     panel.create_branch_from_action.trigger()
+    panel.create_worktree_action.trigger()
     panel.compare_upstream_action.trigger()
     panel.tree.setCurrentItem(branches.child(1))
     panel.publish_branch_action.trigger()
 
     assert created == [local]
+    assert worktrees == [local]
     assert ("refs/heads/feature", "refs/remotes/origin/feature") in selected
     assert published == [unpublished]
 
@@ -223,18 +227,24 @@ def test_cleanup_gone_branches_emits_only_safe_candidates(qtbot: QtBot) -> None:
     assert requested == [(gone,)]
 
 
-def test_refs_panel_shows_stashes_and_submodules(qtbot: QtBot, tmp_path: Path) -> None:
+def test_refs_panel_shows_stashes_submodules_and_worktrees(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)
     stash = StashInfo("stash@{0}", "4" * 40, "On main: saved work")
     submodule = LinkedRepository(tmp_path / "library", "submodule")
+    worktree = LinkedRepository(tmp_path / "feature-worktree", "worktree")
     panel.show_stashes(StashesSnapshot(Path("repository"), (stash,)))
-    panel.show_linked_repositories((submodule,))
+    panel.show_linked_repositories((submodule, worktree))
 
     stashes = panel.tree.topLevelItem(3)
     submodules = panel.tree.topLevelItem(4)
+    worktrees = panel.tree.topLevelItem(5)
     assert stashes is not None and "saved work" in stashes.child(0).text(0)
     assert submodules is not None and submodules.child(0).text(0) == "library"
+    assert worktrees is not None and worktrees.child(0).text(0) == "feature-worktree"
+    assert "Git worktree" in worktrees.child(0).toolTip(0)
     applied: list[object] = []
     popped: list[object] = []
     dropped: list[object] = []
@@ -250,11 +260,12 @@ def test_refs_panel_shows_stashes_and_submodules(qtbot: QtBot, tmp_path: Path) -
     panel.drop_stash_action.trigger()
     panel.tree.setCurrentItem(submodules.child(0))
     panel.open_repository_action.trigger()
+    panel.tree.itemDoubleClicked.emit(worktrees.child(0), 0)
 
     assert applied == [stash]
     assert popped == [stash]
     assert dropped == [stash]
-    assert opened == [submodule]
+    assert opened == [submodule, worktree]
 
 
 def test_refs_panel_nests_recursive_submodules(qtbot: QtBot, tmp_path: Path) -> None:

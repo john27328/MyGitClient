@@ -750,6 +750,36 @@ def test_branch_can_be_created_from_selected_ref(qtbot: QtBot, tmp_path: Path) -
     )
 
 
+def test_worktree_can_be_created_from_selected_branch(qtbot: QtBot, tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init", "--initial-branch=main")
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    _git(repository, *identity, "commit", "--allow-empty", "-m", "initial")
+    _git(repository, "branch", "feature")
+    feature_oid = subprocess.check_output(
+        ["git", "rev-parse", "feature"], cwd=repository, text=True
+    ).strip()
+    service = GitService()
+    feature = BranchInfo("refs/heads/feature", "feature", feature_oid, False)
+    worktree = tmp_path / "feature-worktree"
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_create_worktree(repository, worktree, feature)
+
+    assert worktree.is_dir()
+    assert (
+        subprocess.check_output(["git", "branch", "--show-current"], cwd=worktree, text=True)
+        .strip()
+        == "feature"
+    )
+
+
 def test_selected_files_can_be_stashed(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     first = tmp_path / "first.txt"

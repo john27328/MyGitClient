@@ -44,6 +44,7 @@ class RefsPanel(QWidget):
     create_tag_requested = Signal()
     create_branch_requested = Signal()
     create_branch_from_requested = Signal(object)
+    create_worktree_requested = Signal(object)
     publish_branch_requested = Signal(object)
     delete_tag_requested = Signal(object)
     push_tag_requested = Signal(object)
@@ -92,6 +93,9 @@ class RefsPanel(QWidget):
         self.create_branch_from_action = self.context_menu.addAction("New branch from this…")
         self.create_branch_from_action.setObjectName("createBranchFromRefAction")
         self.create_branch_from_action.triggered.connect(self._create_branch_from_selected)
+        self.create_worktree_action = self.context_menu.addAction("New worktree from this…")
+        self.create_worktree_action.setObjectName("createWorktreeFromRefAction")
+        self.create_worktree_action.triggered.connect(self._create_worktree_selected)
         self.checkout_action = self.context_menu.addAction("Checkout")
         self.checkout_action.triggered.connect(self._checkout_selected)
         self.copy_branch_action = self.context_menu.addAction("Copy branch name")
@@ -203,6 +207,7 @@ class RefsPanel(QWidget):
         tags_root = self._root("Tags")
         stashes_root = self._root("Stashes")
         submodules_root = self._root("Submodules")
+        worktrees_root = self._root("Worktrees")
         selected_item: QTreeWidgetItem | None = None
         current_item: QTreeWidgetItem | None = None
         remote_roots: dict[str, QTreeWidgetItem] = {}
@@ -273,7 +278,27 @@ class RefsPanel(QWidget):
             else:
                 submodules_root.addChild(item)
             submodule_items[linked.path] = item
-        for root in (local_root, remotes_root, tags_root, stashes_root, submodules_root):
+        worktrees = sorted(
+            (
+                linked
+                for linked in self._linked_repositories
+                if linked.kind == "worktree"
+            ),
+            key=lambda linked: str(linked.path).casefold(),
+        )
+        for linked in worktrees:
+            item = QTreeWidgetItem([linked.path.name])
+            item.setData(0, Qt.ItemDataRole.UserRole, linked)
+            item.setToolTip(0, f"Git worktree\n{linked.path}")
+            worktrees_root.addChild(item)
+        for root in (
+            local_root,
+            remotes_root,
+            tags_root,
+            stashes_root,
+            submodules_root,
+            worktrees_root,
+        ):
             root.setExpanded(True)
         for remote_root in remote_roots.values():
             remote_root.setExpanded(True)
@@ -418,6 +443,10 @@ class RefsPanel(QWidget):
         editable = branch is not None and not branch.remote and not branch.current
         self.create_branch_action.setVisible(branch is not None or root_label == "Branches")
         self.create_branch_from_action.setVisible(branch is not None)
+        self.create_worktree_action.setVisible(branch is not None)
+        self.create_worktree_action.setEnabled(
+            branch is not None and not branch.remote and not branch.current
+        )
         self.checkout_action.setVisible(branch is not None)
         self.checkout_action.setEnabled(checkout)
         self.copy_branch_action.setVisible(branch is not None)
@@ -468,6 +497,12 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo):
             self.create_branch_from_requested.emit(branch)
+
+    @Slot()
+    def _create_worktree_selected(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo) and not branch.remote and not branch.current:
+            self.create_worktree_requested.emit(branch)
 
     @Slot()
     def _publish_selected(self) -> None:

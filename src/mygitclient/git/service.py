@@ -443,6 +443,16 @@ class GitService(QObject):
         )
         return runner
 
+    def request_create_worktree(
+        self, repository: Path, path: Path, branch: BranchInfo
+    ) -> GitRunner:
+        return self._request_simple_mutation(
+            repository,
+            ("worktree", "add", str(path), branch.name),
+            "worktrees:changed",
+            f"create worktree for {branch.name}",
+        )
+
     def request_rename_branch(
         self, repository: Path, branch: BranchInfo, new_name: str
     ) -> GitRunner:
