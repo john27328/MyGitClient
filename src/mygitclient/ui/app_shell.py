@@ -55,6 +55,8 @@ class AppShell(QMainWindow):
         self._theme = theme
         self._workspace = WorkspaceManager(settings)
         self._sessions: dict[Path, RepositorySessionTab] = {}
+        self._last_session: RepositorySessionTab | None = None
+        self._menu_proxies: list[QMenu] = []
         self._closing = False
 
         self.setObjectName("appShell")
@@ -155,10 +157,13 @@ class AppShell(QMainWindow):
         self.tabs.removeTab(index)
         if repository is not None:
             session = self._sessions.pop(repository)
+            if self._last_session is session:
+                self._last_session = next(iter(self._sessions.values()), None)
             session.shutdown()
             session.deleteLater()
         self._workspace.save_open_repositories(list(self._sessions))
         self._refresh_home()
+        self._rebuild_menu_bar()
 
     @Slot(int)
     def _current_tab_changed(self, index: int) -> None:
@@ -167,6 +172,8 @@ class AppShell(QMainWindow):
             (path for path, session in self._sessions.items() if session is widget),
             None,
         )
+        if isinstance(widget, RepositorySessionTab):
+            self._last_session = widget
         self.setWindowTitle(
             "MyGitClient" if repository is None else f"{repository.name} — MyGitClient"
         )
@@ -178,13 +185,24 @@ class AppShell(QMainWindow):
             return
         menu_bar = self.menuBar()
         menu_bar.clear()
+        for menu in self._menu_proxies:
+            menu.deleteLater()
+        self._menu_proxies.clear()
         menu_bar.addMenu(self._file_menu)
         current = self.tabs.currentWidget()
-        if not isinstance(current, RepositorySessionTab):
+        source = current if isinstance(current, RepositorySessionTab) else self._last_session
+        if source is None:
             return
-        for action in current.controller.menuBar().actions():
-            if action.text().replace("&", "") != "File":
-                menu_bar.addAction(action)
+        for action in source.controller.menuBar().actions():
+            source_menu = action.menu()
+            if action.text().replace("&", "") == "File" or not isinstance(
+                source_menu, QMenu
+            ):
+                continue
+            proxy = QMenu(source_menu.title(), self)
+            proxy.addActions(source_menu.actions())
+            self._menu_proxies.append(proxy)
+            menu_bar.addMenu(proxy)
 
     def _refresh_home(self) -> None:
         self.home.set_recent(self._workspace.recent_repositories())

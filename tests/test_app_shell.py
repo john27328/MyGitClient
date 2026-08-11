@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QToolBar
+from PySide6.QtWidgets import QMenu, QToolBar
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.service import GitService
@@ -88,9 +88,33 @@ def test_active_repository_exposes_its_menus(qtbot: QtBot, tmp_path: Path) -> No
     assert {"File", "Workspace", "View", "Help"} <= repository_menus
 
     shell.tabs.setCurrentIndex(0)
-    assert [action.text().replace("&", "") for action in shell.menuBar().actions()] == [
-        "File"
-    ]
+    home_menus = {
+        action.text().replace("&", "") for action in shell.menuBar().actions()
+    }
+    assert {"File", "Workspace", "View", "Help"} <= home_menus
+    shell.close()
+
+
+def test_home_keeps_menus_from_last_active_repository(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    _make_repository(repository)
+    settings = QSettings(str(tmp_path / "home-menus.ini"), QSettings.Format.IniFormat)
+    shell = AppShell(settings, Theme.SYSTEM)
+    qtbot.addWidget(shell)
+    shell.open_repository(repository)
+
+    shell.tabs.setCurrentWidget(shell.home)
+
+    menus = {action.text().replace("&", "") for action in shell.menuBar().actions()}
+    assert {"File", "Workspace", "View", "Help"} <= menus
+    view_action = next(
+        action for action in shell.menuBar().actions() if action.text().replace("&", "") == "View"
+    )
+    view_menu = view_action.menu()
+    assert isinstance(view_menu, QMenu)
+    assert any(action.text() == "Font Sizes…" for action in view_menu.actions())
     shell.close()
 
 
