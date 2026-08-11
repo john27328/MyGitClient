@@ -303,8 +303,8 @@
 
 - [x] Показывать иерархию submodules, включая рекурсивно вложенные submodules.
 - [x] Помечать submodule в Changes, показывать его Push/Pull статус и открывать двойным кликом.
-- [ ] Показывать ожидаемый и фактически checkout-нутый commit submodule.
-- [ ] Реализовать init, update и sync.
+- [x] Показывать ожидаемый и фактически checkout-нутый commit submodule.
+- [x] Реализовать init, update и sync через контекстное меню submodule в Changes.
 - [ ] Добавить рекурсивные операции с подтверждением.
 - [x] Добавить сохраняемые опции Include submodules для Fetch, Pull и Push текущего репозитория.
 - [ ] Показывать и создавать worktrees.

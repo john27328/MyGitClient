@@ -1462,3 +1462,27 @@ def test_sync_commands_can_recurse_into_submodules(
     assert "--recurse-submodules" in commands[0].arguments
     assert "--recurse-submodules" in commands[1].arguments
     assert "--recurse-submodules=on-demand" in commands[2].arguments
+
+
+def test_submodule_commands_are_scoped_to_selected_path(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    service = GitService()
+    commands: list[GitCommand] = []
+    queue = service.findChild(GitOperationQueue)
+    assert queue is not None
+
+    def capture_command(_runner: GitRunner, command: GitCommand) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(queue, "enqueue", capture_command)
+
+    service.request_submodule_init(tmp_path, "plugins/module")
+    service.request_submodule_update(tmp_path, "plugins/module")
+    service.request_submodule_sync(tmp_path, "plugins/module")
+
+    assert [command.arguments for command in commands] == [
+        ("submodule", "update", "--init", "--", "plugins/module"),
+        ("submodule", "update", "--", "plugins/module"),
+        ("submodule", "sync", "--", "plugins/module"),
+    ]

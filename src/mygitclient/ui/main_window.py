@@ -245,6 +245,9 @@ class MainWindow(QMainWindow):
             self._changes_view_mode_changed
         )
         self._changes_panel.file_activated.connect(self._changed_file_activated)
+        self._changes_panel.submodule_init_requested.connect(self._init_submodule)
+        self._changes_panel.submodule_update_requested.connect(self._update_submodule)
+        self._changes_panel.submodule_sync_requested.connect(self._sync_submodule)
         self._update_commit_controls()
 
         self._history_panel = HistoryPanel(self._settings)
@@ -1883,8 +1886,15 @@ class MainWindow(QMainWindow):
                 for linked in value.repositories
                 if linked.kind == "submodule"
             }
-            for repository in self._submodule_paths:
-                self._git.request_status(repository)
+            for linked in value.repositories:
+                if linked.kind != "submodule":
+                    continue
+                relative_path = linked.path.relative_to(value.repository).as_posix()
+                self._changes_panel.set_submodule_checkout(
+                    relative_path, checked_oid=None, initialized=linked.initialized
+                )
+                if linked.initialized:
+                    self._git.request_status(linked.path)
 
     @Slot(object)
     def _changed_file_activated(self, value: object) -> None:
@@ -1897,6 +1907,18 @@ class MainWindow(QMainWindow):
         repository = (self._repository / value.path).resolve()
         if repository.is_dir():
             self.open_repository(repository, remember=False)
+
+    def _init_submodule(self, value: object) -> None:
+        if isinstance(value, FileStatus) and self._repository is not None:
+            self._git.request_submodule_init(self._repository, value.path)
+
+    def _update_submodule(self, value: object) -> None:
+        if isinstance(value, FileStatus) and self._repository is not None:
+            self._git.request_submodule_update(self._repository, value.path)
+
+    def _sync_submodule(self, value: object) -> None:
+        if isinstance(value, FileStatus) and self._repository is not None:
+            self._git.request_submodule_sync(self._repository, value.path)
 
     @Slot(object)
     def _open_linked_repository(self, value: object) -> None:
@@ -2321,6 +2343,9 @@ class MainWindow(QMainWindow):
             self._changes_panel.set_submodule_sync(
                 submodule_path, ahead=branch.ahead, behind=branch.behind
             )
+            self._changes_panel.set_submodule_checkout(
+                submodule_path, checked_oid=branch.oid, initialized=True
+            )
         if self._repository is None or value.repository != self._repository:
             return
         self._status_runner = None
@@ -2564,6 +2589,10 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Tags updated")
         elif path == "stashes:changed":
             self._status_label.setText("Stashes updated")
+        elif path.startswith("submodule:"):
+            self._status_label.setText("Submodule updated")
+            if self._repository is not None:
+                self._show_linked_repositories(self._repository)
         elif path == "pull":
             self._status_label.setText("Pull completed")
         elif path == "fetch":

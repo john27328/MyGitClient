@@ -20,6 +20,7 @@ _MAX_RECENT_REPOSITORIES = 12
 class LinkedRepository:
     path: Path
     kind: str
+    initialized: bool = True
 
 
 def discover_linked_repositories(
@@ -59,7 +60,11 @@ def discover_linked_repositories(
                 discovered.setdefault(candidate, "nested")
                 directories.remove(name)
     return tuple(
-        LinkedRepository(path, kind)
+        LinkedRepository(
+            path,
+            "submodule" if kind == "submodule-uninitialized" else kind,
+            initialized=kind != "submodule-uninitialized",
+        )
         for path, kind in sorted(discovered.items(), key=lambda item: str(item[0]).casefold())
     )
 
@@ -84,10 +89,12 @@ def _discover_submodules(
             return
         path_value = parser.get(section, "path", fallback="").strip()
         path = (repository / path_value).resolve()
-        if not path_value or not _is_repository_directory(path):
+        if not path_value:
             continue
-        discovered[path] = "submodule"
-        _discover_submodules(path, discovered, is_cancelled, visited)
+        initialized = _is_repository_directory(path)
+        discovered[path] = "submodule" if initialized else "submodule-uninitialized"
+        if initialized:
+            _discover_submodules(path, discovered, is_cancelled, visited)
 
 
 def find_repository_root(path: Path) -> Path | None:

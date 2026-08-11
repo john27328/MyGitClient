@@ -122,3 +122,19 @@ def test_discover_submodules_recursively(tmp_path: Path) -> None:
         (child.resolve(), "submodule"),
         (grandchild.resolve(), "submodule"),
     ]
+
+
+def test_discover_uninitialized_submodule(tmp_path: Path) -> None:
+    repository = tmp_path / "main"
+    (repository / ".git").mkdir(parents=True)
+    (repository / ".gitmodules").write_text(
+        '[submodule "library"]\n\tpath = vendor/library\n\turl = ../library\n',
+        encoding="utf-8",
+    )
+
+    linked = discover_linked_repositories(repository)
+
+    assert len(linked) == 1
+    assert linked[0].path == (repository / "vendor" / "library").resolve()
+    assert linked[0].kind == "submodule"
+    assert not linked[0].initialized

@@ -388,14 +388,14 @@ def _parse_ordinary(record: str) -> FileStatus:
     parts = record.split(" ", 8)
     if len(parts) != 9:
         raise GitParseError(f"Malformed ordinary status record: {record!r}")
-    return _file_status(parts[1], parts[2], parts[8])
+    return _file_status(parts[1], parts[2], parts[8], expected_oid=parts[7])
 
 
 def _parse_renamed(record: str, original_path: str) -> FileStatus:
     parts = record.split(" ", 9)
     if len(parts) != 10:
         raise GitParseError(f"Malformed rename status record: {record!r}")
-    status = _file_status(parts[1], parts[2], parts[9])
+    status = _file_status(parts[1], parts[2], parts[9], expected_oid=parts[7])
     return replace(status, original_path=original_path)
 
 
@@ -407,7 +407,15 @@ def _parse_unmerged(record: str) -> FileStatus:
     return replace(status, unmerged=True)
 
 
-def _file_status(xy: str, submodule: str, path: str) -> FileStatus:
+def _file_status(
+    xy: str, submodule: str, path: str, *, expected_oid: str | None = None
+) -> FileStatus:
     if len(xy) != 2:
         raise GitParseError(f"Invalid XY status: {xy!r}")
-    return FileStatus(path, xy[0], xy[1], submodule=submodule)
+    return FileStatus(
+        path,
+        xy[0],
+        xy[1],
+        submodule=submodule,
+        submodule_expected_oid=expected_oid if submodule != "N..." else None,
+    )

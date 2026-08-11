@@ -1400,6 +1400,30 @@ class GitService(QObject):
         self._operation_queue.enqueue(runner, GitCommand(arguments, repository, operation))
         return runner
 
+    def request_submodule_init(self, repository: Path, path: str) -> GitRunner:
+        return self._request_simple_mutation(
+            repository,
+            ("submodule", "update", "--init", "--", path),
+            f"submodule:init:{path}",
+            f"initialize submodule {path}",
+        )
+
+    def request_submodule_update(self, repository: Path, path: str) -> GitRunner:
+        return self._request_simple_mutation(
+            repository,
+            ("submodule", "update", "--", path),
+            f"submodule:update:{path}",
+            f"update submodule {path}",
+        )
+
+    def request_submodule_sync(self, repository: Path, path: str) -> GitRunner:
+        return self._request_simple_mutation(
+            repository,
+            ("submodule", "sync", "--", path),
+            f"submodule:sync:{path}",
+            f"sync submodule {path}",
+        )
+
     def request_commit(
         self, repository: Path, message: str, description: str, *, amend: bool
     ) -> GitRunner:

@@ -425,6 +425,14 @@ def test_parse_branch_and_file_records() -> None:
     assert status.ignored_count == 1
 
 
+def test_parse_status_preserves_expected_submodule_commit() -> None:
+    status = parse_status_porcelain_v2(
+        b"1 .M SC.. 160000 160000 160000 parent expected123 plugins/module\0"
+    )
+
+    assert status.files[0].submodule_expected_oid == "expected123"
+
+
 def test_parse_rename_record_with_nul_separated_original_path() -> None:
     output = b"2 R. N... 100644 100644 100644 abc def R100 new name.txt\0old name.txt\0"
 

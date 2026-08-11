@@ -95,6 +95,7 @@ class FileStatus:
     original_path: str | None = None
     submodule: str = "N..."
     unmerged: bool = False
+    submodule_expected_oid: str | None = None
 
     @property
     def is_staged(self) -> bool:

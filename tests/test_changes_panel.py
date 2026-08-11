@@ -48,6 +48,9 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
     assert panel.findChild(QAction, "discardChangesAction") is panel.discard_action
     assert panel.findChild(QAction, "stashSelectedAction") is panel.stash_action
     assert panel.findChild(QAction, "ignoreFileAction") is panel.ignore_action
+    assert panel.findChild(QAction, "initializeSubmoduleAction") is panel.submodule_init_action
+    assert panel.findChild(QAction, "updateSubmoduleAction") is panel.submodule_update_action
+    assert panel.findChild(QAction, "syncSubmoduleAction") is panel.submodule_sync_action
     assert panel.tree.columnCount() == 1
     assert panel.tree.headerItem().text(0) == "Changes"
 
@@ -126,6 +129,36 @@ def test_submodule_is_labelled_shows_sync_and_activates(qtbot: QtBot) -> None:
     panel.tree.itemDoubleClicked.emit(item, 0)
     assert activated.count() == 1
     assert activated.at(0)[0] == submodule
+
+
+def test_submodule_shows_expected_checkout_and_context_actions(qtbot: QtBot) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    submodule = FileStatus(
+        "plugins/board-notes",
+        ".",
+        "M",
+        submodule="SC..",
+        submodule_expected_oid="expected123456",
+    )
+    item = panel.show_files([(submodule, Qt.CheckState.Unchecked)], submodule.path)
+    assert item is not None
+    panel.tree.setCurrentItem(item)
+
+    panel.set_submodule_checkout(
+        submodule.path, checked_oid="checked987654", initialized=True
+    )
+
+    assert "expected expecte" in item.text(0)
+    assert "checked out checked" in item.text(0)
+    assert panel.submodule_update_action.isVisible()
+    assert panel.submodule_sync_action.isVisible()
+    assert not panel.submodule_init_action.isVisible()
+
+    panel.set_submodule_checkout(submodule.path, checked_oid=None, initialized=False)
+    assert "not initialized" in item.text(0)
+    assert panel.submodule_init_action.isVisible()
+    assert not panel.submodule_update_action.isVisible()
 
 
 def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(

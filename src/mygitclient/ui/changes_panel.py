@@ -97,6 +97,9 @@ class ChangesPanel(QWidget):
     view_mode_changed = Signal(str)
     presentation_mode_changed = Signal(str)
     file_activated = Signal(object)
+    submodule_init_requested = Signal(object)
+    submodule_update_requested = Signal(object)
+    submodule_sync_requested = Signal(object)
 
     def __init__(self, settings: QSettings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -104,6 +107,7 @@ class ChangesPanel(QWidget):
         self._selected_paths: set[str] = set()
         self._visible_files: dict[str, FileStatus] = {}
         self._submodule_sync: dict[str, tuple[int, int]] = {}
+        self._submodule_checkout: dict[str, tuple[str | None, bool]] = {}
         self._amend_mode = False
         self._render_generation = 0
         self._pending_scroll_restore: tuple[int, int, int] | None = None
@@ -139,6 +143,21 @@ class ChangesPanel(QWidget):
         self.conflict_actions_separator = QAction(self.tree)
         self.conflict_actions_separator.setSeparator(True)
         self.conflict_actions_separator.setVisible(False)
+        self.submodule_init_action = QAction("Initialize submodule", self.tree)
+        self.submodule_init_action.setObjectName("initializeSubmoduleAction")
+        self.submodule_init_action.setVisible(False)
+        self.submodule_init_action.triggered.connect(self._request_submodule_init)
+        self.submodule_update_action = QAction("Update submodule", self.tree)
+        self.submodule_update_action.setObjectName("updateSubmoduleAction")
+        self.submodule_update_action.setVisible(False)
+        self.submodule_update_action.triggered.connect(self._request_submodule_update)
+        self.submodule_sync_action = QAction("Sync submodule URL", self.tree)
+        self.submodule_sync_action.setObjectName("syncSubmoduleAction")
+        self.submodule_sync_action.setVisible(False)
+        self.submodule_sync_action.triggered.connect(self._request_submodule_sync)
+        self.submodule_actions_separator = QAction(self.tree)
+        self.submodule_actions_separator.setSeparator(True)
+        self.submodule_actions_separator.setVisible(False)
         self.stage_action = QAction("Stage", self.tree)
         self.stage_action.setObjectName("stageChangesAction")
         self.stage_action.setEnabled(False)
@@ -166,6 +185,10 @@ class ChangesPanel(QWidget):
             tree.addAction(self.use_ours_action)
             tree.addAction(self.use_theirs_action)
             tree.addAction(self.conflict_actions_separator)
+            tree.addAction(self.submodule_init_action)
+            tree.addAction(self.submodule_update_action)
+            tree.addAction(self.submodule_sync_action)
+            tree.addAction(self.submodule_actions_separator)
             tree.addAction(self.stage_action)
             tree.addAction(self.stash_action)
             tree.addAction(self.unstage_action)
@@ -441,6 +464,20 @@ class ChangesPanel(QWidget):
                 item.setText(0, self._file_label(file))
                 item.setToolTip(0, self._file_tooltip(file))
 
+    def set_submodule_checkout(
+        self, path: str, *, checked_oid: str | None, initialized: bool
+    ) -> None:
+        self._submodule_checkout[path] = (checked_oid, initialized)
+        for tree in self.all_trees:
+            item = self._find_file_item(tree, path)
+            if item is None:
+                continue
+            file = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(file, FileStatus):
+                item.setText(0, self._file_label(file))
+                item.setToolTip(0, self._file_tooltip(file))
+        self._update_selection_controls()
+
     @Slot(QTreeWidgetItem, int)
     def _item_activated(self, item: QTreeWidgetItem, _column: int) -> None:
         file = item.data(0, Qt.ItemDataRole.UserRole)
@@ -452,7 +489,17 @@ class ChangesPanel(QWidget):
         if file.submodule == "N...":
             return name
         ahead, behind = self._submodule_sync.get(file.path, (0, 0))
+        checked_oid, initialized = self._submodule_checkout.get(file.path, (None, True))
         sync: list[str] = []
+        if not initialized:
+            sync.append("not initialized")
+        elif checked_oid:
+            expected = file.submodule_expected_oid
+            if expected and expected != checked_oid:
+                sync.append(f"expected {expected[:7]}")
+                sync.append(f"checked out {checked_oid[:7]}")
+            else:
+                sync.append(f"at {checked_oid[:7]}")
         if ahead:
             sync.append(f"Push ↑{ahead}")
         if behind:
@@ -466,6 +513,14 @@ class ChangesPanel(QWidget):
             return tooltip
         ahead, behind = self._submodule_sync.get(file.path, (0, 0))
         details = [tooltip, "Git submodule"]
+        checked_oid, initialized = self._submodule_checkout.get(file.path, (None, True))
+        if not initialized:
+            details.append("Not initialized")
+        else:
+            if file.submodule_expected_oid:
+                details.append(f"Expected commit: {file.submodule_expected_oid}")
+            if checked_oid:
+                details.append(f"Checked out commit: {checked_oid}")
         if ahead:
             details.append(f"Commits to push: {ahead}")
         if behind:
@@ -695,6 +750,16 @@ class ChangesPanel(QWidget):
         self.unstage_action.setEnabled(self.unstage_button.isEnabled())
         self.stash_action.setEnabled(self.stash_button.isEnabled())
         self.discard_action.setEnabled(self.discard_button.isEnabled())
+        current = self.action_files()
+        submodule = current[0] if len(current) == 1 and current[0].submodule != "N..." else None
+        checked_oid, initialized = self._submodule_checkout.get(
+            submodule.path if submodule else "", (None, True)
+        )
+        del checked_oid
+        self.submodule_init_action.setVisible(submodule is not None and not initialized)
+        self.submodule_update_action.setVisible(submodule is not None and initialized)
+        self.submodule_sync_action.setVisible(submodule is not None)
+        self.submodule_actions_separator.setVisible(submodule is not None)
         suffix = f" ({count})" if count else ""
         self.stage_button.setText(f"Stage{suffix}")
         self.stash_button.setText(f"Stash{suffix}")
@@ -709,6 +774,27 @@ class ChangesPanel(QWidget):
             self.stage_all.setCheckState(Qt.CheckState.PartiallyChecked)
         self.stage_all.setEnabled(bool(self._visible_files))
         del blocker
+
+    def _current_submodule(self) -> FileStatus | None:
+        files = self.action_files()
+        if len(files) == 1 and files[0].submodule != "N...":
+            return files[0]
+        return None
+
+    @Slot()
+    def _request_submodule_init(self) -> None:
+        if (file := self._current_submodule()) is not None:
+            self.submodule_init_requested.emit(file)
+
+    @Slot()
+    def _request_submodule_update(self) -> None:
+        if (file := self._current_submodule()) is not None:
+            self.submodule_update_requested.emit(file)
+
+    @Slot()
+    def _request_submodule_sync(self) -> None:
+        if (file := self._current_submodule()) is not None:
+            self.submodule_sync_requested.emit(file)
 
     @Slot(int)
     def _view_mode_selected(self, _index: int) -> None:
