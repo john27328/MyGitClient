@@ -138,6 +138,9 @@ class AppShell(QMainWindow):
         self.home = HomePanel()
         self.home.choose_repository_requested.connect(self._choose_repository)
         self.home.open_repository_requested.connect(self._open_home_repository)
+        self.home.remove_recent_repository_requested.connect(
+            self._remove_home_recent_repository
+        )
         self.home.open_workspace_requested.connect(self._open_workspace)
         self.home.clone_repository_requested.connect(self._clone_repository)
         self.home.add_github_profile_requested.connect(self._add_github_profile)
@@ -204,6 +207,13 @@ class AppShell(QMainWindow):
     def _open_home_repository(self, value: object) -> None:
         if isinstance(value, Path):
             self.open_repository(value)
+
+    @Slot(object)
+    def _remove_home_recent_repository(self, value: object) -> None:
+        if not isinstance(value, Path):
+            return
+        self._workspace.forget(value)
+        self._refresh_home()
 
     @Slot(str)
     def _open_workspace(self, name: str) -> None:

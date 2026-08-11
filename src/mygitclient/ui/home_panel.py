@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -20,6 +21,7 @@ from mygitclient.github import GitHubProfile
 class HomePanel(QWidget):
     choose_repository_requested = Signal()
     open_repository_requested = Signal(object)
+    remove_recent_repository_requested = Signal(object)
     open_workspace_requested = Signal(str)
     clone_repository_requested = Signal(str)
     add_github_profile_requested = Signal()
@@ -122,6 +124,15 @@ class HomePanel(QWidget):
         self.recent_tree.setRootIsDecorated(False)
         self.recent_tree.setAlternatingRowColors(True)
         self.recent_tree.itemDoubleClicked.connect(self._recent_activated)
+        self.recent_tree.itemSelectionChanged.connect(self._recent_selection_changed)
+        self.recent_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+        self.remove_recent_action = QAction("Remove from recent", self.recent_tree)
+        self.remove_recent_action.setObjectName("homeRemoveRecentRepositoryAction")
+        self.remove_recent_action.setShortcut("Delete")
+        self.remove_recent_action.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+        self.remove_recent_action.setEnabled(False)
+        self.remove_recent_action.triggered.connect(self._remove_recent_repository)
+        self.recent_tree.addAction(self.remove_recent_action)
         layout.addWidget(self.recent_tree, 2)
 
         layout.addWidget(QLabel("Workspaces"))
@@ -144,6 +155,7 @@ class HomePanel(QWidget):
             item.setToolTip(0, str(repository))
             self.recent_tree.addTopLevelItem(item)
         self.recent_tree.setVisible(bool(repositories))
+        self._recent_selection_changed()
 
     def set_github_profiles(
         self, profiles: tuple[GitHubProfile, ...], connected_logins: frozenset[str] = frozenset()
@@ -182,6 +194,23 @@ class HomePanel(QWidget):
         repository = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(repository, Path):
             self.open_repository_requested.emit(repository)
+
+    def _selected_recent_repository(self) -> Path | None:
+        items = self.recent_tree.selectedItems()
+        if not items:
+            return None
+        repository = items[0].data(0, Qt.ItemDataRole.UserRole)
+        return repository if isinstance(repository, Path) else None
+
+    def _recent_selection_changed(self) -> None:
+        self.remove_recent_action.setEnabled(
+            self._selected_recent_repository() is not None
+        )
+
+    def _remove_recent_repository(self) -> None:
+        repository = self._selected_recent_repository()
+        if repository is not None:
+            self.remove_recent_repository_requested.emit(repository)
 
     def _workspace_activated(self, item: QTreeWidgetItem) -> None:
         name = item.data(0, Qt.ItemDataRole.UserRole)

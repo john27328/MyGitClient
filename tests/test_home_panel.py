@@ -21,6 +21,25 @@ def test_home_panel_opens_recent_repository(qtbot: QtBot, tmp_path: Path) -> Non
     assert requested == [repository]
 
 
+def test_home_panel_removes_selected_recent_repository(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    panel = HomePanel()
+    qtbot.addWidget(panel)
+    repository = tmp_path / "example"
+    requested: list[Path] = []
+    panel.remove_recent_repository_requested.connect(requested.append)
+    panel.set_recent((repository,))
+
+    item = panel.recent_tree.topLevelItem(0)
+    assert item is not None
+    panel.recent_tree.setCurrentItem(item)
+    assert panel.remove_recent_action.isEnabled()
+    panel.remove_recent_action.trigger()
+
+    assert requested == [repository]
+
+
 def test_home_panel_opens_named_workspace(qtbot: QtBot) -> None:
     panel = HomePanel()
     qtbot.addWidget(panel)
