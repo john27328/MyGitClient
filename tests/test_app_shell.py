@@ -78,7 +78,10 @@ def test_active_repository_exposes_its_menus(qtbot: QtBot, tmp_path: Path) -> No
     qtbot.addWidget(shell)
 
     assert [action.text().replace("&", "") for action in shell.menuBar().actions()] == [
-        "File"
+        "File",
+        "Workspace",
+        "View",
+        "Help",
     ]
 
     shell.open_repository(repository)
@@ -95,17 +98,12 @@ def test_active_repository_exposes_its_menus(qtbot: QtBot, tmp_path: Path) -> No
     shell.close()
 
 
-def test_home_keeps_menus_from_last_active_repository(
+def test_home_owns_global_menus_without_open_repository(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
-    repository = tmp_path / "repository"
-    _make_repository(repository)
     settings = QSettings(str(tmp_path / "home-menus.ini"), QSettings.Format.IniFormat)
     shell = AppShell(settings, Theme.SYSTEM)
     qtbot.addWidget(shell)
-    shell.open_repository(repository)
-
-    shell.tabs.setCurrentWidget(shell.home)
 
     menus = {action.text().replace("&", "") for action in shell.menuBar().actions()}
     assert {"File", "Workspace", "View", "Help"} <= menus

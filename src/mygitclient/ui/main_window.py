@@ -401,7 +401,8 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
         self.statusBar().addWidget(self._status_label)
-        QTimer.singleShot(2500, self._automatic_update_check)
+        if not self._session_mode:
+            QTimer.singleShot(2500, self._automatic_update_check)
 
     def _read_bool_setting(self, key: str) -> bool:
         value = self._settings.value(key, False)
@@ -771,6 +772,9 @@ class MainWindow(QMainWindow):
             font.setPointSize(interface_size.value())
             app.setFont(font)
         self._diff_view.set_font_size(diff_size.value())
+
+    def set_diff_font_size(self, point_size: int) -> None:
+        self._diff_view.set_font_size(point_size)
 
     def _populate_recent_repositories(self) -> None:
         repositories = self._workspace.recent_repositories()

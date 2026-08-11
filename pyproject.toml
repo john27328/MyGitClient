@@ -23,6 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Version Control :: Git",
 ]
 dependencies = [
+    "keyring>=25.6",
     "platformdirs>=4.3",
     "PySide6>=6.8",
 ]

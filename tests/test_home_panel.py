@@ -52,13 +52,18 @@ def test_home_panel_shows_and_edits_github_profile(qtbot: QtBot) -> None:
     qtbot.addWidget(panel)
     profile = GitHubProfile("Work", "octocat", "ssh", "Octo", "octo@example.invalid")
     requested: list[object] = []
+    connected: list[object] = []
     panel.edit_github_profile_requested.connect(requested.append)
+    panel.connect_github_requested.connect(connected.append)
 
-    panel.set_github_profiles((profile,))
+    panel.set_github_profiles((profile,), frozenset({"octocat"}))
     item = panel.github_tree.topLevelItem(0)
     assert item is not None
     panel.github_tree.setCurrentItem(item)
     panel.edit_github_button.click()
+    panel.connect_github_button.click()
 
-    assert item.text(2) == "SSH"
+    assert item.text(2) == "Token saved"
+    assert item.text(3) == "SSH"
     assert requested == [profile]
+    assert connected == [profile]

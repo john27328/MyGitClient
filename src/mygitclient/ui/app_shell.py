@@ -3,33 +3,53 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, QSettings, Qt, Slot
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtCore import QProcess, QSettings, Qt, QUrl, Slot
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QInputDialog,
+    QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QProgressDialog,
+    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from mygitclient import __version__
 from mygitclient.git.clone_service import (
     CloneService,
     is_valid_clone_folder_name,
     suggested_clone_name,
 )
-from mygitclient.github import GitHubProfile, GitHubProfileStore
+from mygitclient.github import (
+    DeviceAuthorization,
+    DeviceFlowResult,
+    GitHubDeviceFlow,
+    GitHubProfile,
+    GitHubProfileStore,
+    GitHubTokenStore,
+    TokenStoreError,
+)
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
+from mygitclient.ui.github_device_dialog import GitHubDeviceDialog
 from mygitclient.ui.github_profile_dialog import GitHubProfileDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
+from mygitclient.updates import (
+    UpdateChecker,
+    UpdateDownloader,
+    UpdateInfo,
+    launch_updater,
+    portable_install_directory,
+)
 from mygitclient.workspace import WorkspaceManager, find_repository_root
 
 
@@ -65,9 +85,14 @@ class AppShell(QMainWindow):
         self._theme = theme
         self._workspace = WorkspaceManager(settings)
         self._github_profiles = GitHubProfileStore(settings)
+        self._github_tokens = GitHubTokenStore()
+        self._github_device_flow = GitHubDeviceFlow(self)
+        self._github_device_dialog: GitHubDeviceDialog | None = None
+        self._github_device_profile: GitHubProfile | None = None
+        self._github_device_flow.code_received.connect(self._github_device_code_received)
+        self._github_device_flow.completed.connect(self._github_device_completed)
+        self._github_device_flow.failed.connect(self._github_device_failed)
         self._sessions: dict[Path, RepositorySessionTab] = {}
-        self._last_session: RepositorySessionTab | None = None
-        self._menu_proxies: list[QMenu] = []
         self._closing = False
         self._clone_progress: QProgressDialog | None = None
         self._clone_service = CloneService(self)
@@ -75,11 +100,23 @@ class AppShell(QMainWindow):
         self._clone_service.completed.connect(self._clone_completed)
         self._clone_service.failed.connect(self._clone_failed)
         self._clone_service.cancelled.connect(self._clone_cancelled)
+        self._manual_update_check = False
+        self._update_progress: QProgressDialog | None = None
+        self._update_checker = UpdateChecker(self)
+        self._update_downloader = UpdateDownloader(self)
+        self._update_checker.update_available.connect(self._update_available)
+        self._update_checker.up_to_date.connect(self._update_is_current)
+        self._update_checker.failed.connect(self._update_check_failed)
+        self._update_downloader.progress.connect(self._update_download_progress)
+        self._update_downloader.ready.connect(self._update_downloaded)
+        self._update_downloader.failed.connect(self._update_download_failed)
+        self._update_downloader.cancelled.connect(self._update_download_cancelled)
 
         self.setObjectName("appShell")
         self.setWindowTitle("MyGitClient")
         self.setWindowIcon(load_icon("app-icon.png"))
         self.resize(1180, 760)
+        self._apply_saved_ui_font()
 
         self.tabs = QTabWidget()
         self.tabs.setObjectName("repositorySessionTabs")
@@ -97,21 +134,55 @@ class AppShell(QMainWindow):
         self.home.add_github_profile_requested.connect(self._add_github_profile)
         self.home.edit_github_profile_requested.connect(self._edit_github_profile)
         self.home.remove_github_profile_requested.connect(self._remove_github_profile)
+        self.home.connect_github_requested.connect(self._connect_github)
+        self.home.set_github_token_requested.connect(self._set_github_token)
+        self.home.remove_github_token_requested.connect(self._remove_github_token)
         self.tabs.addTab(self.home, "Home")
         self.tabs.tabBar().setTabButton(0, self.tabs.tabBar().ButtonPosition.RightSide, None)
 
-        self._file_menu = QMenu("&File", self)
+        self._build_global_menu()
+        self._refresh_home()
+
+    def _build_global_menu(self) -> None:
+        file_menu = self.menuBar().addMenu("&File")
         open_action = QAction(load_icon("open.svg"), "&Open Repository…", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self._choose_repository)
-        self._file_menu.addAction(open_action)
-        self._file_menu.addSeparator()
-        exit_action = self._file_menu.addAction("E&xit")
+        file_menu.addAction(open_action)
+        file_menu.addSeparator()
+        exit_action = file_menu.addAction("E&xit")
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
-        self._rebuild_menu_bar()
+        workspace_menu = self.menuBar().addMenu("&Workspace")
+        save_workspace = workspace_menu.addAction("Save Workspace…")
+        save_workspace.triggered.connect(self._save_workspace)
+        self._load_workspace_menu = workspace_menu.addMenu("Open Workspace")
+        self._populate_workspace_menu()
 
-        self._refresh_home()
+        view_menu = self.menuBar().addMenu("&View")
+        theme_menu = view_menu.addMenu("Theme")
+        self._theme_actions = QActionGroup(self)
+        self._theme_actions.setExclusive(True)
+        for theme in Theme:
+            action = theme_menu.addAction(theme.value.title())
+            action.setObjectName(f"themeAction_{theme.value}")
+            action.setCheckable(True)
+            action.setChecked(theme is self._theme)
+            action.setData(theme.value)
+            self._theme_actions.addAction(action)
+        self._theme_actions.triggered.connect(self._theme_selected)
+        view_menu.addSeparator()
+        font_sizes = view_menu.addAction("Font Sizes…")
+        font_sizes.setObjectName("fontSizesAction")
+        font_sizes.triggered.connect(self._configure_font_sizes)
+
+        help_menu = self.menuBar().addMenu("&Help")
+        check_updates = help_menu.addAction("Check for Updates…")
+        check_updates.setObjectName("checkUpdatesAction")
+        check_updates.triggered.connect(self._manual_update_check_requested)
+        about_action = help_menu.addAction("About MyGitClient")
+        about_action.setObjectName("aboutAction")
+        about_action.triggered.connect(self._show_about)
 
     @Slot()
     def _choose_repository(self) -> None:
@@ -240,6 +311,104 @@ class AppShell(QMainWindow):
             return
         self._refresh_home()
 
+    @Slot(object)
+    def _set_github_token(self, value: object) -> None:
+        if not isinstance(value, GitHubProfile):
+            return
+        token, accepted = QInputDialog.getText(
+            self,
+            "GitHub API token",
+            f"Fine-grained personal access token for {value.login}:\n"
+            "The token is stored in the system credential manager.",
+            QLineEdit.EchoMode.Password,
+        )
+        if not accepted:
+            return
+        try:
+            self._github_tokens.save(value.login, token)
+        except (TokenStoreError, ValueError) as error:
+            QMessageBox.warning(self, "GitHub token", str(error))
+            return
+        self._refresh_home()
+
+    @Slot(object)
+    def _connect_github(self, value: object) -> None:
+        if not isinstance(value, GitHubProfile):
+            return
+        client_id = str(self._settings.value("github/oauthClientId", "")).strip()
+        self._close_github_device_dialog()
+        self._github_device_profile = value
+        dialog = GitHubDeviceDialog(value.login, client_id, self)
+        dialog.cancelled.connect(self._github_device_flow.cancel)
+        dialog.start_requested.connect(self._start_github_device_flow)
+        dialog.finished.connect(self._github_device_dialog_finished)
+        self._github_device_dialog = dialog
+        dialog.show()
+
+    @Slot(str)
+    def _start_github_device_flow(self, client_id: str) -> None:
+        clean_client_id = client_id.strip()
+        if not clean_client_id:
+            return
+        self._settings.setValue("github/oauthClientId", clean_client_id)
+        self._github_device_flow.start(clean_client_id)
+
+    @Slot(object)
+    def _github_device_code_received(self, value: object) -> None:
+        if isinstance(value, DeviceAuthorization) and self._github_device_dialog is not None:
+            self._github_device_dialog.show_authorization(value)
+
+    @Slot(object)
+    def _github_device_completed(self, value: object) -> None:
+        profile = self._github_device_profile
+        if not isinstance(value, DeviceFlowResult) or profile is None:
+            return
+        if value.login.casefold() != profile.login.casefold():
+            self._github_device_failed(
+                f"GitHub authorized '{value.login}', but this profile expects '{profile.login}'."
+            )
+            return
+        try:
+            self._github_tokens.save(profile.login, value.token)
+        except (TokenStoreError, ValueError) as error:
+            self._github_device_failed(str(error))
+            return
+        self._close_github_device_dialog()
+        self._github_device_profile = None
+        self._refresh_home()
+        self.statusBar().showMessage(f"Connected GitHub account {profile.login}.", 5000)
+
+    @Slot(str)
+    def _github_device_failed(self, message: str) -> None:
+        if self._github_device_dialog is not None:
+            self._github_device_dialog.show_error(message)
+        else:
+            QMessageBox.warning(self, "GitHub authorization", message)
+
+    @Slot(int)
+    def _github_device_dialog_finished(self, _result: int) -> None:
+        self._github_device_flow.cancel()
+        self._github_device_dialog = None
+        self._github_device_profile = None
+
+    def _close_github_device_dialog(self) -> None:
+        if self._github_device_dialog is not None:
+            dialog = self._github_device_dialog
+            self._github_device_dialog = None
+            dialog.close()
+            dialog.deleteLater()
+
+    @Slot(object)
+    def _remove_github_token(self, value: object) -> None:
+        if not isinstance(value, GitHubProfile):
+            return
+        try:
+            self._github_tokens.remove(value.login)
+        except TokenStoreError as error:
+            QMessageBox.warning(self, "GitHub token", str(error))
+            return
+        self._refresh_home()
+
     def open_repository(self, selected_path: Path) -> None:
         repository = find_repository_root(selected_path)
         if repository is None:
@@ -289,13 +458,10 @@ class AppShell(QMainWindow):
         self.tabs.removeTab(index)
         if repository is not None:
             session = self._sessions.pop(repository)
-            if self._last_session is session:
-                self._last_session = next(iter(self._sessions.values()), None)
             session.shutdown()
             session.deleteLater()
         self._workspace.save_open_repositories(list(self._sessions))
         self._refresh_home()
-        self._rebuild_menu_bar()
 
     @Slot(int)
     def _current_tab_changed(self, index: int) -> None:
@@ -304,40 +470,228 @@ class AppShell(QMainWindow):
             (path for path, session in self._sessions.items() if session is widget),
             None,
         )
-        if isinstance(widget, RepositorySessionTab):
-            self._last_session = widget
         self.setWindowTitle(
             "MyGitClient" if repository is None else f"{repository.name} — MyGitClient"
         )
 
-        self._rebuild_menu_bar()
+    @Slot()
+    def _save_workspace(self) -> None:
+        name, accepted = QInputDialog.getText(self, "Save Workspace", "Workspace name:")
+        if not accepted or not name.strip():
+            return
+        self._workspace.save_named_workspace(name.strip(), list(self._sessions))
+        self._populate_workspace_menu()
+        self._refresh_home()
 
-    def _rebuild_menu_bar(self) -> None:
-        if not hasattr(self, "_file_menu"):
+    def _populate_workspace_menu(self) -> None:
+        self._load_workspace_menu.clear()
+        names = self._workspace.named_workspaces()
+        for name in names:
+            action = self._load_workspace_menu.addAction(name)
+            action.setData(name)
+            action.triggered.connect(self._load_workspace_action)
+        self._load_workspace_menu.setEnabled(bool(names))
+
+    @Slot()
+    def _load_workspace_action(self) -> None:
+        action = self.sender()
+        if isinstance(action, QAction) and isinstance(action.data(), str):
+            self._open_workspace(action.data())
+
+    @Slot(QAction)
+    def _theme_selected(self, action: QAction) -> None:
+        theme = Theme.from_value(action.data())
+        self._theme = theme
+        self._settings.setValue("appearance/theme", theme.value)
+        self._settings.sync()
+        self._restart_application()
+
+    @Slot()
+    def _configure_font_sizes(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Font Sizes")
+        form = QFormLayout(dialog)
+        interface_size = QSpinBox(dialog)
+        interface_size.setObjectName("interfaceFontSizeSpinBox")
+        interface_size.setRange(7, 24)
+        app = QApplication.instance()
+        default_size = QFontDatabase.systemFont(
+            QFontDatabase.SystemFont.GeneralFont
+        ).pointSize()
+        interface_size.setValue(
+            app.font().pointSize() if isinstance(app, QApplication) else default_size
+        )
+        diff_size = QSpinBox(dialog)
+        diff_size.setObjectName("diffFontSizeSpinBox")
+        diff_size.setRange(7, 32)
+        raw_diff_size = self._settings.value("diff/fontSize", 11)
+        try:
+            saved_diff_size = (
+                int(raw_diff_size) if isinstance(raw_diff_size, (int, str)) else 11
+            )
+        except (TypeError, ValueError):
+            saved_diff_size = 11
+        diff_size.setValue(saved_diff_size)
+        form.addRow("Interface:", interface_size)
+        form.addRow("Diff:", diff_size)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        menu_bar = self.menuBar()
-        menu_bar.clear()
-        for menu in self._menu_proxies:
-            menu.deleteLater()
-        self._menu_proxies.clear()
-        menu_bar.addMenu(self._file_menu)
-        current = self.tabs.currentWidget()
-        source = current if isinstance(current, RepositorySessionTab) else self._last_session
-        if source is None:
+        self._settings.setValue("appearance/fontSize", interface_size.value())
+        self._settings.setValue("diff/fontSize", diff_size.value())
+        if isinstance(app, QApplication):
+            font = app.font()
+            font.setPointSize(interface_size.value())
+            app.setFont(font)
+        for session in self._sessions.values():
+            session.controller.set_diff_font_size(diff_size.value())
+
+    def _apply_saved_ui_font(self) -> None:
+        app = QApplication.instance()
+        if not isinstance(app, QApplication):
             return
-        for action in source.controller.menuBar().actions():
-            source_menu = action.menu()
-            if action.text().replace("&", "") == "File" or not isinstance(
-                source_menu, QMenu
-            ):
-                continue
-            proxy = QMenu(source_menu.title(), self)
-            proxy.addActions(source_menu.actions())
-            self._menu_proxies.append(proxy)
-            menu_bar.addMenu(proxy)
+        default_size = QFontDatabase.systemFont(
+            QFontDatabase.SystemFont.GeneralFont
+        ).pointSize()
+        raw_size = self._settings.value("appearance/fontSize", default_size)
+        try:
+            point_size = int(raw_size) if isinstance(raw_size, (int, str)) else default_size
+        except ValueError:
+            point_size = default_size
+        font = app.font()
+        font.setPointSize(max(7, min(24, point_size)))
+        app.setFont(font)
+
+    @Slot()
+    def _manual_update_check_requested(self) -> None:
+        self._manual_update_check = True
+        self.statusBar().showMessage("Checking for updates…")
+        self._update_checker.check()
+
+    @Slot(object)
+    def _update_available(self, value: object) -> None:
+        if not isinstance(value, UpdateInfo):
+            return
+        self._manual_update_check = False
+        install_directory = portable_install_directory()
+        can_install = (
+            install_directory is not None
+            and value.archive_url is not None
+            and value.checksum_url is not None
+        )
+        if not can_install:
+            answer = QMessageBox.question(
+                self,
+                "Update available",
+                f"MyGitClient {value.version} is available.\n\n"
+                f"You are using {__version__}. Open the download page?",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl(value.page_url))
+            return
+        answer = QMessageBox.question(
+            self,
+            "Update available",
+            f"MyGitClient {value.version} is available.\n\n"
+            "Download it, install it, and restart MyGitClient?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        progress = QProgressDialog("Downloading update…", "Cancel", 0, 0, self)
+        progress.setObjectName("updateDownloadProgress")
+        progress.setWindowTitle("Updating MyGitClient")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.canceled.connect(self._update_downloader.cancel)
+        self._update_progress = progress
+        progress.show()
+        self._update_downloader.download(value)
+
+    @Slot(int, int)
+    def _update_download_progress(self, received: int, total: int) -> None:
+        progress = self._update_progress
+        if progress is None:
+            return
+        if total <= 0:
+            progress.setRange(0, 0)
+        else:
+            progress.setRange(0, total)
+            progress.setValue(received)
+        progress.setLabelText(f"Downloading update… {received / 1024 / 1024:.1f} MB")
+
+    @Slot(object)
+    def _update_downloaded(self, value: object) -> None:
+        self._close_update_progress()
+        if not isinstance(value, Path):
+            return
+        install_directory = portable_install_directory()
+        if install_directory is None:
+            QMessageBox.warning(self, "Update failed", "This installation is not portable.")
+            return
+        if not launch_updater(value, install_directory):
+            QMessageBox.warning(self, "Update failed", "Could not start the update installer.")
+            return
+        app = QApplication.instance()
+        if isinstance(app, QApplication):
+            app.quit()
+
+    @Slot(str)
+    def _update_download_failed(self, message: str) -> None:
+        self._close_update_progress()
+        QMessageBox.warning(self, "Update failed", message)
+
+    @Slot()
+    def _update_download_cancelled(self) -> None:
+        self._close_update_progress()
+        self.statusBar().showMessage("Update cancelled", 5000)
+
+    def _close_update_progress(self) -> None:
+        if self._update_progress is not None:
+            self._update_progress.close()
+            self._update_progress.deleteLater()
+            self._update_progress = None
+
+    @Slot()
+    def _update_is_current(self) -> None:
+        if self._manual_update_check:
+            QMessageBox.information(
+                self, "No updates", f"MyGitClient {__version__} is the latest version."
+            )
+        self._manual_update_check = False
+
+    @Slot(str)
+    def _update_check_failed(self, message: str) -> None:
+        if self._manual_update_check:
+            QMessageBox.warning(self, "Update check failed", message)
+        self._manual_update_check = False
+
+    @Slot()
+    def _show_about(self) -> None:
+        QMessageBox.about(
+            self,
+            "About MyGitClient",
+            f"MyGitClient {__version__}\n\nA focused desktop Git client.",
+        )
 
     def _refresh_home(self) -> None:
-        self.home.set_github_profiles(self._github_profiles.profiles())
+        profiles = self._github_profiles.profiles()
+        connected_logins: frozenset[str]
+        try:
+            connected_logins = frozenset(
+                profile.login.casefold()
+                for profile in profiles
+                if self._github_tokens.has_token(profile.login)
+            )
+        except TokenStoreError as error:
+            connected_logins = frozenset()
+            self.statusBar().showMessage(str(error), 8000)
+        self.home.set_github_profiles(profiles, connected_logins)
         self.home.set_recent(self._workspace.recent_repositories())
         self.home.set_workspaces(self._workspace.named_workspaces())
 

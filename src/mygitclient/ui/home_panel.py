@@ -25,6 +25,9 @@ class HomePanel(QWidget):
     add_github_profile_requested = Signal()
     edit_github_profile_requested = Signal(object)
     remove_github_profile_requested = Signal(object)
+    connect_github_requested = Signal(object)
+    set_github_token_requested = Signal(object)
+    remove_github_token_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -76,14 +79,31 @@ class HomePanel(QWidget):
         self.remove_github_button.setObjectName("homeRemoveGitHubProfileButton")
         self.remove_github_button.setEnabled(False)
         self.remove_github_button.clicked.connect(self._remove_github_profile)
+        self.set_github_token_button = QPushButton("Set token…")
+        self.set_github_token_button.setObjectName("homeSetGitHubTokenButton")
+        self.set_github_token_button.setEnabled(False)
+        self.set_github_token_button.clicked.connect(self._set_github_token)
+        self.connect_github_button = QPushButton("Connect…")
+        self.connect_github_button.setObjectName("homeConnectGitHubButton")
+        self.connect_github_button.setEnabled(False)
+        self.connect_github_button.clicked.connect(self._connect_github)
+        self.remove_github_token_button = QPushButton("Forget token")
+        self.remove_github_token_button.setObjectName("homeRemoveGitHubTokenButton")
+        self.remove_github_token_button.setEnabled(False)
+        self.remove_github_token_button.clicked.connect(self._remove_github_token)
         github_header.addWidget(self.add_github_button)
         github_header.addWidget(self.edit_github_button)
         github_header.addWidget(self.remove_github_button)
+        github_header.addWidget(self.connect_github_button)
+        github_header.addWidget(self.set_github_token_button)
+        github_header.addWidget(self.remove_github_token_button)
         layout.addLayout(github_header)
 
         self.github_tree = QTreeWidget()
         self.github_tree.setObjectName("homeGitHubProfiles")
-        self.github_tree.setHeaderLabels(["Profile", "GitHub login", "Clone", "Commit identity"])
+        self.github_tree.setHeaderLabels(
+            ["Profile", "GitHub login", "API", "Clone", "Commit identity"]
+        )
         self.github_tree.setRootIsDecorated(False)
         self.github_tree.itemSelectionChanged.connect(self._github_selection_changed)
         self.github_tree.itemDoubleClicked.connect(self._github_profile_activated)
@@ -119,14 +139,26 @@ class HomePanel(QWidget):
             self.recent_tree.addTopLevelItem(item)
         self.recent_tree.setVisible(bool(repositories))
 
-    def set_github_profiles(self, profiles: tuple[GitHubProfile, ...]) -> None:
+    def set_github_profiles(
+        self, profiles: tuple[GitHubProfile, ...], connected_logins: frozenset[str] = frozenset()
+    ) -> None:
         self.github_tree.clear()
         for profile in profiles:
             identity = profile.user_name
             if profile.user_email:
                 identity = f"{identity} <{profile.user_email}>" if identity else profile.user_email
             item = QTreeWidgetItem(
-                [profile.label, profile.login, profile.clone_transport.upper(), identity]
+                [
+                    profile.label,
+                    profile.login,
+                    (
+                        "Token saved"
+                        if profile.login.casefold() in connected_logins
+                        else "Not connected"
+                    ),
+                    profile.clone_transport.upper(),
+                    identity,
+                ]
             )
             item.setData(0, Qt.ItemDataRole.UserRole, profile)
             self.github_tree.addTopLevelItem(item)
@@ -166,6 +198,22 @@ class HomePanel(QWidget):
         selected = self._selected_github_profile() is not None
         self.edit_github_button.setEnabled(selected)
         self.remove_github_button.setEnabled(selected)
+        self.connect_github_button.setEnabled(selected)
+        profile = self._selected_github_profile()
+        self.set_github_token_button.setEnabled(selected)
+        self.remove_github_token_button.setEnabled(
+            profile is not None and profile.login.casefold() in self._connected_github_logins()
+        )
+
+    def _connected_github_logins(self) -> frozenset[str]:
+        connected: set[str] = set()
+        for index in range(self.github_tree.topLevelItemCount()):
+            item = self.github_tree.topLevelItem(index)
+            if item is not None and item.text(2) == "Token saved":
+                profile = item.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(profile, GitHubProfile):
+                    connected.add(profile.login.casefold())
+        return frozenset(connected)
 
     def _github_profile_activated(self, item: QTreeWidgetItem) -> None:
         profile = item.data(0, Qt.ItemDataRole.UserRole)
@@ -181,3 +229,18 @@ class HomePanel(QWidget):
         profile = self._selected_github_profile()
         if profile is not None:
             self.remove_github_profile_requested.emit(profile)
+
+    def _set_github_token(self) -> None:
+        profile = self._selected_github_profile()
+        if profile is not None:
+            self.set_github_token_requested.emit(profile)
+
+    def _connect_github(self) -> None:
+        profile = self._selected_github_profile()
+        if profile is not None:
+            self.connect_github_requested.emit(profile)
+
+    def _remove_github_token(self) -> None:
+        profile = self._selected_github_profile()
+        if profile is not None:
+            self.remove_github_token_requested.emit(profile)
