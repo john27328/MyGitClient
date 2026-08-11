@@ -32,3 +32,15 @@ def test_home_panel_opens_named_workspace(qtbot: QtBot) -> None:
     panel.workspace_tree.itemDoubleClicked.emit(item, 0)
 
     assert requested == ["Personal"]
+
+
+def test_home_panel_requests_clone_from_url(qtbot: QtBot) -> None:
+    panel = HomePanel()
+    qtbot.addWidget(panel)
+    requested: list[str] = []
+    panel.clone_repository_requested.connect(requested.append)
+
+    panel.clone_url.setText("https://github.com/example/project.git")
+    panel.clone_button.click()
+
+    assert requested == ["https://github.com/example/project.git"]

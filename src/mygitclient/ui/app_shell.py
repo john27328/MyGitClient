@@ -8,14 +8,21 @@ from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QInputDialog,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from mygitclient.git.clone_service import (
+    CloneService,
+    is_valid_clone_folder_name,
+    suggested_clone_name,
+)
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
 from mygitclient.ui.home_panel import HomePanel
@@ -58,6 +65,12 @@ class AppShell(QMainWindow):
         self._last_session: RepositorySessionTab | None = None
         self._menu_proxies: list[QMenu] = []
         self._closing = False
+        self._clone_progress: QProgressDialog | None = None
+        self._clone_service = CloneService(self)
+        self._clone_service.progress.connect(self._clone_progress_changed)
+        self._clone_service.completed.connect(self._clone_completed)
+        self._clone_service.failed.connect(self._clone_failed)
+        self._clone_service.cancelled.connect(self._clone_cancelled)
 
         self.setObjectName("appShell")
         self.setWindowTitle("MyGitClient")
@@ -76,6 +89,7 @@ class AppShell(QMainWindow):
         self.home.choose_repository_requested.connect(self._choose_repository)
         self.home.open_repository_requested.connect(self._open_home_repository)
         self.home.open_workspace_requested.connect(self._open_workspace)
+        self.home.clone_repository_requested.connect(self._clone_repository)
         self.tabs.addTab(self.home, "Home")
         self.tabs.tabBar().setTabButton(0, self.tabs.tabBar().ButtonPosition.RightSide, None)
 
@@ -107,6 +121,77 @@ class AppShell(QMainWindow):
     def _open_workspace(self, name: str) -> None:
         for repository in self._workspace.load_named_workspace(name):
             self.open_repository(repository)
+
+    @Slot(str)
+    def _clone_repository(self, url: str) -> None:
+        if self._clone_service.is_running:
+            QMessageBox.information(self, "Clone in progress", "A repository is already cloning.")
+            return
+        parent = QFileDialog.getExistingDirectory(self, "Select clone parent directory")
+        if not parent:
+            return
+        name, accepted = QInputDialog.getText(
+            self,
+            "Clone repository",
+            "Folder name:",
+            text=suggested_clone_name(url),
+        )
+        name = name.strip()
+        if not accepted:
+            return
+        if not is_valid_clone_folder_name(name):
+            QMessageBox.warning(
+                self,
+                "Invalid folder name",
+                "Enter a single folder name without path separators, '.' or '..'.",
+            )
+            return
+        target = (Path(parent) / name).resolve()
+        if target.exists():
+            QMessageBox.warning(
+                self,
+                "Clone destination exists",
+                f"Choose a new folder name. This path already exists:\n{target}",
+            )
+            return
+        progress = QProgressDialog("Starting clone…", "Cancel", 0, 0, self)
+        progress.setObjectName("cloneRepositoryProgress")
+        progress.setWindowTitle("Cloning repository")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.canceled.connect(self._clone_service.cancel)
+        self._clone_progress = progress
+        progress.show()
+        if not self._clone_service.clone(url, target):
+            self._close_clone_progress()
+
+    @Slot(str)
+    def _clone_progress_changed(self, message: str) -> None:
+        if self._clone_progress is not None:
+            self._clone_progress.setLabelText(message)
+
+    @Slot(object)
+    def _clone_completed(self, value: object) -> None:
+        self._close_clone_progress()
+        if not isinstance(value, Path):
+            return
+        self.home.clone_url.clear()
+        self.open_repository(value)
+
+    @Slot(str)
+    def _clone_failed(self, message: str) -> None:
+        self._close_clone_progress()
+        QMessageBox.warning(self, "Clone failed", message)
+
+    @Slot()
+    def _clone_cancelled(self) -> None:
+        self._close_clone_progress()
+
+    def _close_clone_progress(self) -> None:
+        if self._clone_progress is not None:
+            self._clone_progress.close()
+            self._clone_progress.deleteLater()
+            self._clone_progress = None
 
     def open_repository(self, selected_path: Path) -> None:
         repository = find_repository_root(selected_path)

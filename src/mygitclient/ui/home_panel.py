@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -18,6 +19,7 @@ class HomePanel(QWidget):
     choose_repository_requested = Signal()
     open_repository_requested = Signal(object)
     open_workspace_requested = Signal(str)
+    clone_repository_requested = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -40,6 +42,18 @@ class HomePanel(QWidget):
         self.open_button.setObjectName("homeOpenRepositoryButton")
         self.open_button.clicked.connect(self.choose_repository_requested)
         actions.addWidget(self.open_button)
+        self.clone_url = QLineEdit()
+        self.clone_url.setObjectName("homeCloneUrlEdit")
+        self.clone_url.setPlaceholderText("https://github.com/owner/repository.git")
+        self.clone_url.setClearButtonEnabled(True)
+        self.clone_button = QPushButton("Clone from URL…")
+        self.clone_button.setObjectName("homeCloneRepositoryButton")
+        self.clone_button.setEnabled(False)
+        self.clone_url.textChanged.connect(self._clone_url_changed)
+        self.clone_url.returnPressed.connect(self._clone_requested)
+        self.clone_button.clicked.connect(self._clone_requested)
+        actions.addWidget(self.clone_url, 1)
+        actions.addWidget(self.clone_button)
         actions.addStretch(1)
         layout.addLayout(actions)
 
@@ -59,6 +73,10 @@ class HomePanel(QWidget):
         self.workspace_tree.setRootIsDecorated(False)
         self.workspace_tree.itemDoubleClicked.connect(self._workspace_activated)
         layout.addWidget(self.workspace_tree, 1)
+
+    @Slot(str)
+    def _clone_url_changed(self, value: str) -> None:
+        self.clone_button.setEnabled(bool(value.strip()))
 
     def set_recent(self, repositories: tuple[Path, ...]) -> None:
         self.recent_tree.clear()
@@ -86,3 +104,8 @@ class HomePanel(QWidget):
         name = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(name, str):
             self.open_workspace_requested.emit(name)
+
+    def _clone_requested(self) -> None:
+        url = self.clone_url.text().strip()
+        if url:
+            self.clone_repository_requested.emit(url)
