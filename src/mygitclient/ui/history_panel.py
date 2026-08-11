@@ -40,6 +40,7 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
+    IncomingCommitsSnapshot,
     RefComparisonSnapshot,
     TagsSnapshot,
 )
@@ -277,6 +278,9 @@ class HistoryPanel(QWidget):
             kind = "remote" if branch.remote else "local"
             self._branch_labels.setdefault(branch.oid, []).append((kind, branch.name))
         self._refresh_commit_labels()
+
+    def show_incoming_commits(self, snapshot: IncomingCommitsSnapshot) -> None:
+        self.refs_panel.show_incoming_commits(snapshot)
 
     def show_tags(self, snapshot: TagsSnapshot) -> None:
         self.refs_panel.show_tags(snapshot)

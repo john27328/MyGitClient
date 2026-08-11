@@ -210,6 +210,15 @@ class CommitPage:
 
 
 @dataclass(frozen=True, slots=True)
+class IncomingCommitsSnapshot:
+    repository: Path
+    branch_ref: str
+    upstream_ref: str
+    commits: tuple[CommitSummary, ...]
+    has_more: bool
+
+
+@dataclass(frozen=True, slots=True)
 class BranchPointSnapshot:
     repository: Path
     branch_ref: str

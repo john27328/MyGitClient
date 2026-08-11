@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QProcess, QSettings, Qt, QUrl, Slot
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFontDatabase
@@ -34,6 +35,8 @@ from mygitclient.github import (
     GitHubDeviceFlow,
     GitHubProfile,
     GitHubProfileStore,
+    GitHubRepository,
+    GitHubRepositoryService,
     GitHubTokenStore,
     TokenStoreError,
 )
@@ -41,6 +44,7 @@ from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
 from mygitclient.ui.github_device_dialog import GitHubDeviceDialog
 from mygitclient.ui.github_profile_dialog import GitHubProfileDialog
+from mygitclient.ui.github_repositories_dialog import GitHubRepositoriesDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
 from mygitclient.updates import (
@@ -93,6 +97,10 @@ class AppShell(QMainWindow):
         self._github_device_flow.code_received.connect(self._github_device_code_received)
         self._github_device_flow.completed.connect(self._github_device_completed)
         self._github_device_flow.failed.connect(self._github_device_failed)
+        self._github_repositories = GitHubRepositoryService(self)
+        self._github_repositories_dialog: GitHubRepositoriesDialog | None = None
+        self._github_repositories.completed.connect(self._github_repositories_completed)
+        self._github_repositories.failed.connect(self._github_repositories_failed)
         self._sessions: dict[Path, RepositorySessionTab] = {}
         self._closing = False
         self._clone_progress: QProgressDialog | None = None
@@ -136,6 +144,7 @@ class AppShell(QMainWindow):
         self.home.edit_github_profile_requested.connect(self._edit_github_profile)
         self.home.remove_github_profile_requested.connect(self._remove_github_profile)
         self.home.connect_github_requested.connect(self._connect_github)
+        self.home.browse_github_requested.connect(self._browse_github)
         self.home.set_github_token_requested.connect(self._set_github_token)
         self.home.remove_github_token_requested.connect(self._remove_github_token)
         self.tabs.addTab(self.home, "Home")
@@ -423,6 +432,55 @@ class AppShell(QMainWindow):
             QMessageBox.warning(self, "GitHub token", str(error))
             return
         self._refresh_home()
+
+    @Slot(object)
+    def _browse_github(self, value: object) -> None:
+        if not isinstance(value, GitHubProfile):
+            return
+        try:
+            token = self._github_tokens.token(value.login)
+        except TokenStoreError as error:
+            QMessageBox.warning(self, "GitHub repositories", str(error))
+            return
+        if not token:
+            QMessageBox.information(
+                self,
+                "GitHub repositories",
+                f"Connect the GitHub account {value.login} first.",
+            )
+            return
+        if self._github_repositories_dialog is not None:
+            self._github_repositories_dialog.close()
+        dialog = GitHubRepositoriesDialog(value, self)
+        dialog.clone_requested.connect(self._clone_repository)
+        dialog.finished.connect(self._github_repositories_dialog_finished)
+        self._github_repositories_dialog = dialog
+        dialog.show()
+        self._github_repositories.load(token)
+
+    @Slot(object)
+    def _github_repositories_completed(self, value: object) -> None:
+        if not isinstance(value, tuple) or self._github_repositories_dialog is None:
+            return
+        repositories = cast(tuple[object, ...], value)
+        if not all(isinstance(repository, GitHubRepository) for repository in repositories):
+            self._github_repositories_dialog.show_error(
+                "GitHub returned an unexpected repository list"
+            )
+            return
+        self._github_repositories_dialog.show_repositories(
+            cast(tuple[GitHubRepository, ...], repositories)
+        )
+
+    @Slot(str)
+    def _github_repositories_failed(self, message: str) -> None:
+        if self._github_repositories_dialog is not None:
+            self._github_repositories_dialog.show_error(message)
+
+    @Slot(int)
+    def _github_repositories_dialog_finished(self, _result: int) -> None:
+        self._github_repositories.cancel()
+        self._github_repositories_dialog = None
 
     def open_repository(self, selected_path: Path) -> None:
         repository = find_repository_root(selected_path)

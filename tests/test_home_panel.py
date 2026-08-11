@@ -89,3 +89,20 @@ def test_connected_github_profile_does_not_offer_reconnect(qtbot: QtBot) -> None
 
     assert not panel.connect_github_button.isEnabled()
     assert panel.remove_github_token_button.isEnabled()
+    assert panel.browse_github_button.isEnabled()
+
+
+def test_connected_github_profile_opens_repository_browser(qtbot: QtBot) -> None:
+    panel = HomePanel()
+    qtbot.addWidget(panel)
+    profile = GitHubProfile("Personal", "octocat")
+    requested: list[object] = []
+    panel.browse_github_requested.connect(requested.append)
+    panel.set_github_profiles((profile,), frozenset({"octocat"}))
+    item = panel.github_tree.topLevelItem(0)
+    assert item is not None
+    panel.github_tree.setCurrentItem(item)
+
+    panel.browse_github_button.click()
+
+    assert requested == [profile]

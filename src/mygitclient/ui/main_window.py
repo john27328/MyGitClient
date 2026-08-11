@@ -72,6 +72,7 @@ from mygitclient.git.models import (
     ConflictVersionsSnapshot,
     DiffSnapshot,
     FileStatus,
+    IncomingCommitsSnapshot,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
     RefComparisonDiffSnapshot,
@@ -697,6 +698,7 @@ class MainWindow(QMainWindow):
         self._git.comparison_ready.connect(self._show_ref_comparison)
         self._git.comparison_diff_ready.connect(self._show_ref_comparison_diff)
         self._git.branches_ready.connect(self._show_branches)
+        self._git.incoming_commits_ready.connect(self._show_incoming_commits)
         self._git.branch_point_ready.connect(self._show_branch_point)
         self._git.cherry_pick_preview_ready.connect(self._show_cherry_pick_preview)
         self._git.revert_preview_ready.connect(self._show_revert_preview)
@@ -1344,6 +1346,16 @@ class MainWindow(QMainWindow):
         if not isinstance(value, BranchesSnapshot) or value.repository != self._repository:
             return
         self._history_panel.show_branches(value)
+        for branch in value.branches:
+            if (
+                not branch.remote
+                and branch.behind > 0
+                and branch.upstream
+                and not branch.upstream_gone
+            ):
+                self._git.request_incoming_commits(
+                    value.repository, branch.full_name, branch.upstream
+                )
         current = next((branch for branch in value.branches if branch.current), None)
         if current is None:
             return
@@ -1356,6 +1368,15 @@ class MainWindow(QMainWindow):
             self._git.request_branch_point(
                 value.repository, current.full_name, base.full_name
             )
+
+    @Slot(object)
+    def _show_incoming_commits(self, value: object) -> None:
+        if (
+            not isinstance(value, IncomingCommitsSnapshot)
+            or value.repository != self._repository
+        ):
+            return
+        self._history_panel.show_incoming_commits(value)
 
     @Slot(object)
     def _show_branch_point(self, value: object) -> None:

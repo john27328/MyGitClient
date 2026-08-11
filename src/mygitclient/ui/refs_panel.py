@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from mygitclient.git.models import (
     BranchesSnapshot,
     BranchInfo,
+    IncomingCommitsSnapshot,
     StashesSnapshot,
     StashInfo,
     TagInfo,
@@ -60,6 +61,7 @@ class RefsPanel(QWidget):
         self._tags: tuple[TagInfo, ...] = ()
         self._stashes: tuple[StashInfo, ...] = ()
         self._linked_repositories: tuple[LinkedRepository, ...] = ()
+        self._incoming_commits: dict[str, IncomingCommitsSnapshot] = {}
         self._selected_ref = ""
         self._comparison_ref = ""
 
@@ -171,6 +173,22 @@ class RefsPanel(QWidget):
 
     def show_branches(self, snapshot: BranchesSnapshot) -> None:
         self._branches = snapshot.branches
+        self._incoming_commits.clear()
+        self._rebuild()
+
+    def show_incoming_commits(self, snapshot: IncomingCommitsSnapshot) -> None:
+        branch = next(
+            (item for item in self._branches if item.full_name == snapshot.branch_ref),
+            None,
+        )
+        if (
+            branch is None
+            or branch.remote
+            or branch.behind <= 0
+            or branch.upstream != snapshot.upstream_ref
+        ):
+            return
+        self._incoming_commits[snapshot.branch_ref] = snapshot
         self._rebuild()
 
     def show_tags(self, snapshot: TagsSnapshot) -> None:
@@ -192,6 +210,7 @@ class RefsPanel(QWidget):
         self._tags = ()
         self._stashes = ()
         self._linked_repositories = ()
+        self._incoming_commits.clear()
         self._selected_ref = ""
         self._comparison_ref = ""
         self.filter_edit.clear()
@@ -237,6 +256,25 @@ class RefsPanel(QWidget):
                 remote_root.addChild(item)
             else:
                 local_root.addChild(item)
+                incoming = self._incoming_commits.get(branch.full_name)
+                if incoming is not None:
+                    for commit in incoming.commits:
+                        commit_item = QTreeWidgetItem([f"↓ {commit.subject}"])
+                        commit_item.setFlags(
+                            commit_item.flags() & ~Qt.ItemFlag.ItemIsSelectable
+                        )
+                        commit_item.setToolTip(
+                            0,
+                            f"{commit.oid[:8]}  {commit.author_name}\n{commit.authored_at}",
+                        )
+                        item.addChild(commit_item)
+                    if incoming.has_more:
+                        more_item = QTreeWidgetItem(["… more incoming commits"])
+                        more_item.setFlags(
+                            more_item.flags() & ~Qt.ItemFlag.ItemIsSelectable
+                        )
+                        item.addChild(more_item)
+                    item.setExpanded(True)
             if branch.full_name == previous_ref:
                 selected_item = item
             if branch.current:

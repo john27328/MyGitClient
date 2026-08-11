@@ -20,6 +20,7 @@ from mygitclient.git.models import (
     DiffSnapshot,
     FileStatus,
     GitCommand,
+    IncomingCommitsSnapshot,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
     RebaseTodoItem,
@@ -608,6 +609,38 @@ def test_branches_can_be_loaded_checked_out_and_created(
         ["git", "branch", "--format=%(refname:short)"], cwd=tmp_path, text=True
     ).splitlines()
     assert "renamed-feature" not in branches
+
+
+def test_incoming_commits_can_be_loaded_without_pull(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _git(tmp_path, "commit", "--allow-empty", "-m", "base")
+    _git(tmp_path, "switch", "-c", "upstream")
+    _git(tmp_path, "commit", "--allow-empty", "-m", "first incoming")
+    _git(tmp_path, "commit", "--allow-empty", "-m", "second incoming")
+    _git(tmp_path, "switch", "main")
+    service = GitService()
+    results: list[object] = []
+    service.incoming_commits_ready.connect(results.append)
+
+    with qtbot.waitSignal(service.incoming_commits_ready, timeout=5000):
+        service.request_incoming_commits(
+            tmp_path,
+            "refs/heads/main",
+            "refs/heads/upstream",
+        )
+
+    snapshot = results[-1]
+    assert isinstance(snapshot, IncomingCommitsSnapshot)
+    assert snapshot.branch_ref == "refs/heads/main"
+    assert snapshot.upstream_ref == "refs/heads/upstream"
+    assert [commit.subject for commit in snapshot.commits] == [
+        "second incoming",
+        "first incoming",
+    ]
+    assert not snapshot.has_more
 
 
 def test_tags_can_be_loaded_created_and_deleted(qtbot: QtBot, tmp_path: Path) -> None:

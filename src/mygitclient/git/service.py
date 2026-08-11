@@ -25,6 +25,7 @@ from mygitclient.git.models import (
     FileStatus,
     GitCommand,
     GitResult,
+    IncomingCommitsSnapshot,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
     RebaseTodoItem,
@@ -127,6 +128,7 @@ class GitService(QObject):
     amend_preview_ready = Signal(object)
     history_ready = Signal(object)
     branches_ready = Signal(object)
+    incoming_commits_ready = Signal(object)
     branch_point_ready = Signal(object)
     cherry_pick_preview_ready = Signal(object)
     commit_files_ready = Signal(object)
@@ -164,6 +166,10 @@ class GitService(QObject):
         self._discard_batches: dict[GitRunner, _DiscardBatch] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
+        self._incoming_commit_requests: dict[
+            GitRunner, tuple[Path, str, str, int, int]
+        ] = {}
+        self._latest_incoming_commit_request: dict[tuple[Path, str], int] = {}
         self._branch_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_branch_request: dict[Path, int] = {}
         self._branch_point_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
@@ -1028,6 +1034,43 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, repository, "read commit history"))
         return runner
 
+    def request_incoming_commits(
+        self,
+        repository: Path,
+        branch_ref: str,
+        upstream_ref: str,
+        *,
+        limit: int = 20,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        key = (repository, branch_ref)
+        self._latest_incoming_commit_request[key] = request_id
+        self._incoming_commit_requests[runner] = (
+            repository,
+            branch_ref,
+            upstream_ref,
+            limit,
+            request_id,
+        )
+        runner.completed.connect(self._handle_incoming_commits)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "log",
+                    f"--max-count={limit + 1}",
+                    "--date=iso-strict",
+                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    f"{branch_ref}..{upstream_ref}",
+                ),
+                repository,
+                "read incoming commits",
+            )
+        )
+        return runner
+
     def request_ref_comparison(
         self, repository: Path, base_ref: str, compare_ref: str
     ) -> GitRunner:
@@ -1740,6 +1783,7 @@ class GitService(QObject):
         self._mutation_requests.pop(runner, None)
         self._operation_action_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
+        self._incoming_commit_requests.pop(runner, None)
         self._branch_requests.pop(runner, None)
         self._tag_requests.pop(runner, None)
         checkout = self._checkout_workflows.pop(runner, None)
@@ -1791,6 +1835,44 @@ class GitService(QObject):
             return
         page = CommitPage(repository, commits[:limit], offset, len(commits) > limit)
         self.history_ready.emit(page)
+
+    @Slot(object)
+    def _handle_incoming_commits(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit(
+                "Git returned incoming commits from an unknown operation"
+            )
+            return
+        request = self._incoming_commit_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected incoming commit result")
+            return
+        repository, branch_ref, upstream_ref, limit, request_id = request
+        key = (repository, branch_ref)
+        if self._latest_incoming_commit_request.get(key) != request_id:
+            return
+        self._latest_incoming_commit_request.pop(key, None)
+        if result.cancelled:
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read incoming commits")
+            return
+        try:
+            commits = parse_commit_log(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.incoming_commits_ready.emit(
+            IncomingCommitsSnapshot(
+                repository,
+                branch_ref,
+                upstream_ref,
+                commits[:limit],
+                len(commits) > limit,
+            )
+        )
 
     @Slot(object)
     def _handle_ref_comparison(self, result: object) -> None:

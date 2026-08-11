@@ -6,6 +6,8 @@ from pytestqt.qtbot import QtBot
 from mygitclient.git.models import (
     BranchesSnapshot,
     BranchInfo,
+    CommitSummary,
+    IncomingCommitsSnapshot,
     StashesSnapshot,
     StashInfo,
     TagInfo,
@@ -124,6 +126,48 @@ def test_refs_panel_marks_local_branch_sync_states(qtbot: QtBot) -> None:
     assert "Not published" in branches.child(1).toolTip(0)
     assert branches.child(2).text(0) == "old  ⚠"
     assert "Upstream gone: origin/old" in branches.child(2).toolTip(0)
+
+
+def test_refs_panel_shows_incoming_commits_below_local_branch(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    branch = BranchInfo(
+        "refs/heads/main",
+        "main",
+        "1" * 40,
+        False,
+        current=True,
+        upstream="origin/main",
+        behind=2,
+    )
+    panel.show_branches(BranchesSnapshot(Path("repository"), (branch,)))
+    panel.show_incoming_commits(
+        IncomingCommitsSnapshot(
+            Path("repository"),
+            branch.full_name,
+            "origin/main",
+            (
+                CommitSummary(
+                    "2" * 40,
+                    ("1" * 40,),
+                    "Alice",
+                    "alice@example.invalid",
+                    "2026-08-11T12:00:00+03:00",
+                    "Incoming change",
+                ),
+            ),
+            True,
+        )
+    )
+
+    branches = panel.tree.topLevelItem(0)
+    assert branches is not None
+    branch_item = branches.child(0)
+    assert branch_item.childCount() == 2
+    assert branch_item.child(0).text(0) == "↓ Incoming change"
+    assert "Alice" in branch_item.child(0).toolTip(0)
+    assert branch_item.child(1).text(0) == "… more incoming commits"
+    assert branch_item.isExpanded()
 
 
 def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None:

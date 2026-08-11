@@ -26,6 +26,7 @@ class HomePanel(QWidget):
     edit_github_profile_requested = Signal(object)
     remove_github_profile_requested = Signal(object)
     connect_github_requested = Signal(object)
+    browse_github_requested = Signal(object)
     set_github_token_requested = Signal(object)
     remove_github_token_requested = Signal(object)
 
@@ -87,6 +88,10 @@ class HomePanel(QWidget):
         self.connect_github_button.setObjectName("homeConnectGitHubButton")
         self.connect_github_button.setEnabled(False)
         self.connect_github_button.clicked.connect(self._connect_github)
+        self.browse_github_button = QPushButton("Repositories…")
+        self.browse_github_button.setObjectName("homeBrowseGitHubButton")
+        self.browse_github_button.setEnabled(False)
+        self.browse_github_button.clicked.connect(self._browse_github)
         self.remove_github_token_button = QPushButton("Forget token")
         self.remove_github_token_button.setObjectName("homeRemoveGitHubTokenButton")
         self.remove_github_token_button.setEnabled(False)
@@ -95,6 +100,7 @@ class HomePanel(QWidget):
         github_header.addWidget(self.edit_github_button)
         github_header.addWidget(self.remove_github_button)
         github_header.addWidget(self.connect_github_button)
+        github_header.addWidget(self.browse_github_button)
         github_header.addWidget(self.set_github_token_button)
         github_header.addWidget(self.remove_github_token_button)
         layout.addLayout(github_header)
@@ -207,6 +213,9 @@ class HomePanel(QWidget):
         self.remove_github_token_button.setEnabled(
             profile is not None and profile.login.casefold() in connected
         )
+        self.browse_github_button.setEnabled(
+            profile is not None and profile.login.casefold() in connected
+        )
 
     def _connected_github_logins(self) -> frozenset[str]:
         connected: set[str] = set()
@@ -242,6 +251,11 @@ class HomePanel(QWidget):
         profile = self._selected_github_profile()
         if profile is not None:
             self.connect_github_requested.emit(profile)
+
+    def _browse_github(self) -> None:
+        profile = self._selected_github_profile()
+        if profile is not None:
+            self.browse_github_requested.emit(profile)
 
     def _remove_github_token(self) -> None:
         profile = self._selected_github_profile()
