@@ -14,12 +14,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from mygitclient.github import GitHubProfile
+
 
 class HomePanel(QWidget):
     choose_repository_requested = Signal()
     open_repository_requested = Signal(object)
     open_workspace_requested = Signal(str)
     clone_repository_requested = Signal(str)
+    add_github_profile_requested = Signal()
+    edit_github_profile_requested = Signal(object)
+    remove_github_profile_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -57,6 +62,33 @@ class HomePanel(QWidget):
         actions.addStretch(1)
         layout.addLayout(actions)
 
+        github_header = QHBoxLayout()
+        github_header.addWidget(QLabel("GitHub accounts"))
+        github_header.addStretch(1)
+        self.add_github_button = QPushButton("Add account…")
+        self.add_github_button.setObjectName("homeAddGitHubProfileButton")
+        self.add_github_button.clicked.connect(self.add_github_profile_requested)
+        self.edit_github_button = QPushButton("Edit…")
+        self.edit_github_button.setObjectName("homeEditGitHubProfileButton")
+        self.edit_github_button.setEnabled(False)
+        self.edit_github_button.clicked.connect(self._edit_github_profile)
+        self.remove_github_button = QPushButton("Remove")
+        self.remove_github_button.setObjectName("homeRemoveGitHubProfileButton")
+        self.remove_github_button.setEnabled(False)
+        self.remove_github_button.clicked.connect(self._remove_github_profile)
+        github_header.addWidget(self.add_github_button)
+        github_header.addWidget(self.edit_github_button)
+        github_header.addWidget(self.remove_github_button)
+        layout.addLayout(github_header)
+
+        self.github_tree = QTreeWidget()
+        self.github_tree.setObjectName("homeGitHubProfiles")
+        self.github_tree.setHeaderLabels(["Profile", "GitHub login", "Clone", "Commit identity"])
+        self.github_tree.setRootIsDecorated(False)
+        self.github_tree.itemSelectionChanged.connect(self._github_selection_changed)
+        self.github_tree.itemDoubleClicked.connect(self._github_profile_activated)
+        layout.addWidget(self.github_tree, 1)
+
         layout.addWidget(QLabel("Recent repositories"))
         self.recent_tree = QTreeWidget()
         self.recent_tree.setObjectName("homeRecentRepositories")
@@ -87,6 +119,19 @@ class HomePanel(QWidget):
             self.recent_tree.addTopLevelItem(item)
         self.recent_tree.setVisible(bool(repositories))
 
+    def set_github_profiles(self, profiles: tuple[GitHubProfile, ...]) -> None:
+        self.github_tree.clear()
+        for profile in profiles:
+            identity = profile.user_name
+            if profile.user_email:
+                identity = f"{identity} <{profile.user_email}>" if identity else profile.user_email
+            item = QTreeWidgetItem(
+                [profile.label, profile.login, profile.clone_transport.upper(), identity]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, profile)
+            self.github_tree.addTopLevelItem(item)
+        self._github_selection_changed()
+
     def set_workspaces(self, names: tuple[str, ...]) -> None:
         self.workspace_tree.clear()
         for name in names:
@@ -109,3 +154,30 @@ class HomePanel(QWidget):
         url = self.clone_url.text().strip()
         if url:
             self.clone_repository_requested.emit(url)
+
+    def _selected_github_profile(self) -> GitHubProfile | None:
+        items = self.github_tree.selectedItems()
+        if not items:
+            return None
+        profile = items[0].data(0, Qt.ItemDataRole.UserRole)
+        return profile if isinstance(profile, GitHubProfile) else None
+
+    def _github_selection_changed(self) -> None:
+        selected = self._selected_github_profile() is not None
+        self.edit_github_button.setEnabled(selected)
+        self.remove_github_button.setEnabled(selected)
+
+    def _github_profile_activated(self, item: QTreeWidgetItem) -> None:
+        profile = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(profile, GitHubProfile):
+            self.edit_github_profile_requested.emit(profile)
+
+    def _edit_github_profile(self) -> None:
+        profile = self._selected_github_profile()
+        if profile is not None:
+            self.edit_github_profile_requested.emit(profile)
+
+    def _remove_github_profile(self) -> None:
+        profile = self._selected_github_profile()
+        if profile is not None:
+            self.remove_github_profile_requested.emit(profile)

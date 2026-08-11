@@ -7,6 +7,7 @@ from PySide6.QtCore import QProcess, QSettings, Qt, Slot
 from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QInputDialog,
     QMainWindow,
@@ -23,8 +24,10 @@ from mygitclient.git.clone_service import (
     is_valid_clone_folder_name,
     suggested_clone_name,
 )
+from mygitclient.github import GitHubProfile, GitHubProfileStore
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
+from mygitclient.ui.github_profile_dialog import GitHubProfileDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
 from mygitclient.workspace import WorkspaceManager, find_repository_root
@@ -61,6 +64,7 @@ class AppShell(QMainWindow):
         self._settings = settings
         self._theme = theme
         self._workspace = WorkspaceManager(settings)
+        self._github_profiles = GitHubProfileStore(settings)
         self._sessions: dict[Path, RepositorySessionTab] = {}
         self._last_session: RepositorySessionTab | None = None
         self._menu_proxies: list[QMenu] = []
@@ -90,6 +94,9 @@ class AppShell(QMainWindow):
         self.home.open_repository_requested.connect(self._open_home_repository)
         self.home.open_workspace_requested.connect(self._open_workspace)
         self.home.clone_repository_requested.connect(self._clone_repository)
+        self.home.add_github_profile_requested.connect(self._add_github_profile)
+        self.home.edit_github_profile_requested.connect(self._edit_github_profile)
+        self.home.remove_github_profile_requested.connect(self._remove_github_profile)
         self.tabs.addTab(self.home, "Home")
         self.tabs.tabBar().setTabButton(0, self.tabs.tabBar().ButtonPosition.RightSide, None)
 
@@ -193,6 +200,46 @@ class AppShell(QMainWindow):
             self._clone_progress.deleteLater()
             self._clone_progress = None
 
+    @Slot()
+    def _add_github_profile(self) -> None:
+        dialog = GitHubProfileDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._save_github_profile(dialog.profile())
+
+    @Slot(object)
+    def _edit_github_profile(self, value: object) -> None:
+        if not isinstance(value, GitHubProfile):
+            return
+        dialog = GitHubProfileDialog(value, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._save_github_profile(dialog.profile(), previous_label=value.label)
+
+    @Slot(object)
+    def _remove_github_profile(self, value: object) -> None:
+        if not isinstance(value, GitHubProfile):
+            return
+        answer = QMessageBox.question(
+            self,
+            "Remove GitHub profile",
+            f"Remove the local profile '{value.label}'? No GitHub data will be changed.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._github_profiles.remove(value.label)
+        self._refresh_home()
+
+    def _save_github_profile(
+        self, profile: GitHubProfile, *, previous_label: str | None = None
+    ) -> None:
+        try:
+            self._github_profiles.save(profile, previous_label=previous_label)
+        except ValueError as error:
+            QMessageBox.warning(self, "GitHub profile", str(error))
+            return
+        self._refresh_home()
+
     def open_repository(self, selected_path: Path) -> None:
         repository = find_repository_root(selected_path)
         if repository is None:
@@ -290,6 +337,7 @@ class AppShell(QMainWindow):
             menu_bar.addMenu(proxy)
 
     def _refresh_home(self) -> None:
+        self.home.set_github_profiles(self._github_profiles.profiles())
         self.home.set_recent(self._workspace.recent_repositories())
         self.home.set_workspaces(self._workspace.named_workspaces())
 

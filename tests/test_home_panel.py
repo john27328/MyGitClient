@@ -2,6 +2,7 @@ from pathlib import Path
 
 from pytestqt.qtbot import QtBot
 
+from mygitclient.github import GitHubProfile
 from mygitclient.ui.home_panel import HomePanel
 
 
@@ -44,3 +45,20 @@ def test_home_panel_requests_clone_from_url(qtbot: QtBot) -> None:
     panel.clone_button.click()
 
     assert requested == ["https://github.com/example/project.git"]
+
+
+def test_home_panel_shows_and_edits_github_profile(qtbot: QtBot) -> None:
+    panel = HomePanel()
+    qtbot.addWidget(panel)
+    profile = GitHubProfile("Work", "octocat", "ssh", "Octo", "octo@example.invalid")
+    requested: list[object] = []
+    panel.edit_github_profile_requested.connect(requested.append)
+
+    panel.set_github_profiles((profile,))
+    item = panel.github_tree.topLevelItem(0)
+    assert item is not None
+    panel.github_tree.setCurrentItem(item)
+    panel.edit_github_button.click()
+
+    assert item.text(2) == "SSH"
+    assert requested == [profile]
