@@ -335,6 +335,8 @@
   выбранного API-аккаунта с настроенной commit/push identity.
 - [x] Реализовать OAuth Device Flow.
 - [x] Хранить токен в системном keyring.
+- [x] Объединить добавление профиля и OAuth Device Flow: получать GitHub login автоматически,
+  создавать профиль с понятным именем по умолчанию и оставлять clone/commit identity в Edit.
 - [ ] Определять GitHub-репозиторий по remote.
 - [ ] Показывать список и детали pull requests.
 - [ ] Показывать файлы, reviews и CI checks.

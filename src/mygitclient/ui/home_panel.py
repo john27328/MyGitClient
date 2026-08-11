@@ -68,7 +68,7 @@ class HomePanel(QWidget):
         github_header = QHBoxLayout()
         github_header.addWidget(QLabel("GitHub accounts"))
         github_header.addStretch(1)
-        self.add_github_button = QPushButton("Add account…")
+        self.add_github_button = QPushButton("Connect GitHub account…")
         self.add_github_button.setObjectName("homeAddGitHubProfileButton")
         self.add_github_button.clicked.connect(self.add_github_profile_requested)
         self.edit_github_button = QPushButton("Edit…")
@@ -83,7 +83,7 @@ class HomePanel(QWidget):
         self.set_github_token_button.setObjectName("homeSetGitHubTokenButton")
         self.set_github_token_button.setEnabled(False)
         self.set_github_token_button.clicked.connect(self._set_github_token)
-        self.connect_github_button = QPushButton("Connect…")
+        self.connect_github_button = QPushButton("Reconnect…")
         self.connect_github_button.setObjectName("homeConnectGitHubButton")
         self.connect_github_button.setEnabled(False)
         self.connect_github_button.clicked.connect(self._connect_github)
@@ -198,11 +198,14 @@ class HomePanel(QWidget):
         selected = self._selected_github_profile() is not None
         self.edit_github_button.setEnabled(selected)
         self.remove_github_button.setEnabled(selected)
-        self.connect_github_button.setEnabled(selected)
         profile = self._selected_github_profile()
+        connected = self._connected_github_logins()
+        self.connect_github_button.setEnabled(
+            profile is not None and profile.login.casefold() not in connected
+        )
         self.set_github_token_button.setEnabled(selected)
         self.remove_github_token_button.setEnabled(
-            profile is not None and profile.login.casefold() in self._connected_github_logins()
+            profile is not None and profile.login.casefold() in connected
         )
 
     def _connected_github_logins(self) -> frozenset[str]:

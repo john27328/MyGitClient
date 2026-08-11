@@ -6,8 +6,42 @@ from PySide6.QtWidgets import QMenu, QToolBar
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.service import GitService
+from mygitclient.github import DeviceFlowResult, GitHubProfile, GitHubTokenStore
 from mygitclient.theme import Theme
 from mygitclient.ui.app_shell import AppShell, RepositorySessionTab
+
+
+class _MemoryTokenBackend:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.values.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.values[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        self.values.pop((service, username), None)
+
+
+class _TestAppShell(AppShell):
+    def use_memory_github_tokens(self) -> None:
+        self._github_tokens = GitHubTokenStore(_MemoryTokenBackend())
+
+    def save_github_profile(self, profile: GitHubProfile) -> None:
+        self._github_profiles.save(profile)
+
+    def complete_new_github_connection(self, result: DeviceFlowResult) -> None:
+        self._github_device_add_new = True
+        self._github_device_completed(result)
+
+    @property
+    def github_profiles(self) -> tuple[GitHubProfile, ...]:
+        return self._github_profiles.profiles()
+
+    def has_github_token(self, login: str) -> bool:
+        return self._github_tokens.has_token(login)
 
 
 def _make_repository(path: Path) -> None:
@@ -132,4 +166,36 @@ def test_repository_toolbar_remains_visible_in_session_tab(
     toolbar = session.findChild(QToolBar, "repositoryToolbar")
     assert toolbar is not None
     assert toolbar.isVisibleTo(session)
+    shell.close()
+
+
+def test_connecting_new_github_account_creates_profile_from_authorized_login(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "github.ini"), QSettings.Format.IniFormat)
+    shell = _TestAppShell(settings, Theme.SYSTEM)
+    qtbot.addWidget(shell)
+    shell.use_memory_github_tokens()
+
+    shell.complete_new_github_connection(DeviceFlowResult("octocat", "secret-token"))
+
+    assert shell.github_profiles == (GitHubProfile("octocat", "octocat"),)
+    assert shell.has_github_token("octocat")
+    shell.close()
+
+
+def test_connecting_known_github_login_reuses_existing_profile(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "github-existing.ini"), QSettings.Format.IniFormat)
+    shell = _TestAppShell(settings, Theme.SYSTEM)
+    qtbot.addWidget(shell)
+    profile = GitHubProfile("Personal", "octocat", "ssh", "Octo", "octo@example.invalid")
+    shell.save_github_profile(profile)
+    shell.use_memory_github_tokens()
+
+    shell.complete_new_github_connection(DeviceFlowResult("OctoCat", "secret-token"))
+
+    assert shell.github_profiles == (profile,)
+    assert shell.has_github_token("octocat")
     shell.close()

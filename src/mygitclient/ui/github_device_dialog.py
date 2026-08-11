@@ -22,7 +22,7 @@ class GitHubDeviceDialog(QDialog):
     start_requested = Signal(str)
 
     def __init__(
-        self, login: str, client_id: str = "", parent: QWidget | None = None
+        self, login: str | None = None, client_id: str = "", parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
         self._verification_uri = "https://github.com/login/device"
@@ -32,9 +32,12 @@ class GitHubDeviceDialog(QDialog):
         self.resize(540, 330)
 
         layout = QVBoxLayout(self)
+        account = f"Reconnect <b>{login}</b>." if login else "Connect a GitHub account."
         self.instructions = QLabel(
-            f"Connect <b>{login}</b>. No additional software is required.<br>"
-            "Create a GitHub OAuth App, enable <b>Device Flow</b>, and paste its Client ID."
+            f"{account} No additional software or browser sign-in on this computer is required."
+            "<br><br>One-time setup: create a GitHub OAuth App, enable <b>Device Flow</b>, "
+            "then paste its Client ID below. A client secret is not needed. You can authorize "
+            "the code on this or another device."
         )
         self.instructions.setWordWrap(True)
         self.instructions.setTextFormat(Qt.TextFormat.RichText)
