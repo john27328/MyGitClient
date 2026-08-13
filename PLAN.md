@@ -282,6 +282,8 @@
 - [x] Показывать очищенный от credentials живой stdout/stderr для операций очереди.
 - [ ] Поддержать SSH, HTTPS, credential helpers, hooks и Git LFS через системный Git.
 - [x] Поддержать только безопасный `--force-with-lease` в основном UI.
+- [x] Добавить опасную операцию Reset to upstream: fetch и явный `reset --hard`
+  текущей ветки до её upstream с подтверждением потери локальных коммитов и изменений.
 
 ## 6. Merge workspace — v0.3
 

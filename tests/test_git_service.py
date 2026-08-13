@@ -1512,6 +1512,63 @@ def test_pull_rebase_autostash_restores_changes(qtbot: QtBot, tmp_path: Path) ->
     assert (client / "remote.txt").read_text(encoding="utf-8") == "remote update\n"
 
 
+def test_reset_to_upstream_discards_local_history_and_tracked_changes(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    client = tmp_path / "client"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", str(remote), str(seed)], check=True, capture_output=True
+    )
+    identity = (
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+    )
+    tracked = seed / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git(seed, "add", "tracked.txt")
+    _git(seed, *identity, "commit", "-m", "initial")
+    _git(seed, "push", "-u", "origin", "master")
+    subprocess.run(
+        ["git", "clone", str(remote), str(client)], check=True, capture_output=True
+    )
+
+    tracked.write_text("remote\n", encoding="utf-8")
+    _git(seed, *identity, "commit", "-am", "remote update")
+    _git(seed, "push")
+    client_file = client / "tracked.txt"
+    client_file.write_text("local commit\n", encoding="utf-8")
+    _git(client, *identity, "commit", "-am", "local commit")
+    client_file.write_text("dirty\n", encoding="utf-8")
+    _git(client, "add", "tracked.txt")
+    (client / "untracked.txt").write_text("keep me\n", encoding="utf-8")
+
+    service = GitService()
+    mutations: list[str] = []
+    service.mutation_ready.connect(mutations.append)
+    with qtbot.waitSignal(service.mutation_ready, timeout=10000):
+        service.request_reset_to_upstream(client)
+
+    assert mutations == ["reset-to-upstream"]
+    assert client_file.read_text(encoding="utf-8") == "remote\n"
+    assert (client / "untracked.txt").read_text(encoding="utf-8") == "keep me\n"
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=client, text=True
+    ).strip()
+    upstream = subprocess.check_output(
+        ["git", "rev-parse", "origin/master"], cwd=client, text=True
+    ).strip()
+    status = subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=client, text=True
+    )
+    assert head == upstream
+    assert status == "?? untracked.txt\n"
+
+
 def test_fetch_and_push_with_upstream(qtbot: QtBot, tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
     repository = tmp_path / "repository"

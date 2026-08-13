@@ -498,6 +498,15 @@ class MainWindow(QMainWindow):
         self._pull_submodules_action.setChecked(
             self._read_bool_setting("sync/pullSubmodules")
         )
+        pull_menu.addSeparator()
+        self._reset_to_upstream_action = pull_menu.addAction(
+            load_icon("remove.svg"), "Reset to upstream…"
+        )
+        self._reset_to_upstream_action.setObjectName("resetToUpstreamAction")
+        self._reset_to_upstream_action.setToolTip(
+            "Fetch, then discard local commits and tracked changes to match upstream"
+        )
+        self._reset_to_upstream_action.triggered.connect(self._reset_to_upstream)
         for option in (
             self._pull_merge_action,
             self._pull_rebase_action,
@@ -2206,6 +2215,34 @@ class MainWindow(QMainWindow):
         )
 
     @Slot()
+    def _reset_to_upstream(self) -> None:
+        if self._repository is None:
+            return
+        include_submodules = self._pull_submodules_action.isChecked()
+        submodule_warning = (
+            " The checked-out state of initialized submodules will also be reset."
+            if include_submodules
+            else ""
+        )
+        answer = QMessageBox.question(
+            self,
+            "Reset to upstream",
+            "Fetch the remote and reset the current branch to its upstream?\n\n"
+            "This permanently discards local commits that are not on the upstream "
+            "branch, plus staged and unstaged changes to tracked files. Untracked "
+            f"files are kept.{submodule_warning}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._status_label.setText("Resetting current branch to upstream…")
+        self._set_network_busy("Reset to upstream")
+        self._git.request_reset_to_upstream(
+            self._repository, recurse_submodules=include_submodules
+        )
+
+    @Slot()
     def _pull_options_changed(self) -> None:
         self._settings.setValue("sync/pullRebase", self._pull_rebase_action.isChecked())
         self._settings.setValue(
@@ -2759,7 +2796,7 @@ class MainWindow(QMainWindow):
             self._clear_change_selection_after_mutation = False
             self._changes_panel.clear_checked_files()
             self._diff_view.clear_selection()
-        if path in {"fetch", "pull", "push"}:
+        if path in {"fetch", "pull", "push", "reset-to-upstream"}:
             self._set_network_busy(None)
         self._set_changes_trees_enabled(True)
         self._changes_container.setEnabled(True)

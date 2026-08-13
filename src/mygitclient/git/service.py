@@ -131,6 +131,13 @@ class _PublishRepositoryWorkflow:
     step: str = "remote"
 
 
+@dataclass(slots=True)
+class _ResetToUpstreamWorkflow:
+    repository: Path
+    recurse_submodules: bool
+    step: str = "fetch"
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
@@ -174,6 +181,9 @@ class GitService(QObject):
         self._discard_batches: dict[GitRunner, _DiscardBatch] = {}
         self._publish_repository_workflows: dict[
             GitRunner, _PublishRepositoryWorkflow
+        ] = {}
+        self._reset_to_upstream_workflows: dict[
+            GitRunner, _ResetToUpstreamWorkflow
         ] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
@@ -550,6 +560,35 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
             runner, GitCommand(tuple(arguments), repository, "pull changes")
+        )
+        return runner
+
+    def request_reset_to_upstream(
+        self, repository: Path, *, recurse_submodules: bool = False
+    ) -> GitRunner:
+        workflow = _ResetToUpstreamWorkflow(repository, recurse_submodules)
+        arguments = ["fetch", "--progress", "--prune"]
+        if recurse_submodules:
+            arguments.append("--recurse-submodules")
+        return self._run_reset_to_upstream_workflow(
+            workflow, tuple(arguments), "fetch before resetting to upstream"
+        )
+
+    def _run_reset_to_upstream_workflow(
+        self,
+        workflow: _ResetToUpstreamWorkflow,
+        arguments: tuple[str, ...],
+        operation: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._reset_to_upstream_workflows[runner] = workflow
+        runner.completed.connect(self._handle_reset_to_upstream_workflow)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(arguments, workflow.repository, operation),
+            continuation=workflow.step != "fetch",
         )
         return runner
 
@@ -1832,6 +1871,7 @@ class GitService(QObject):
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
         publish = self._publish_repository_workflows.pop(runner, None)
+        reset_to_upstream = self._reset_to_upstream_workflows.pop(runner, None)
         self._operation_action_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
         self._incoming_commit_requests.pop(runner, None)
@@ -1858,6 +1898,11 @@ class GitService(QObject):
             return
         if publish is not None:
             self.operation_failed.emit(f"Could not publish to GitHub: {message}")
+            return
+        if reset_to_upstream is not None:
+            self.operation_failed.emit(
+                f"Could not {reset_to_upstream.step} while resetting to upstream: {message}"
+            )
             return
         self.operation_failed.emit(message)
 
@@ -1889,6 +1934,37 @@ class GitService(QObject):
             )
             return
         self.mutation_ready.emit("github:published")
+
+    @Slot(object)
+    def _handle_reset_to_upstream_workflow(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown reset-to-upstream result")
+            return
+        workflow = self._reset_to_upstream_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected reset-to-upstream result")
+            return
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                format_git_error(result.error_text, operation=result.command.operation)
+            )
+            return
+        if workflow.step == "fetch":
+            workflow.step = "reset"
+            arguments = ["reset", "--hard"]
+            if workflow.recurse_submodules:
+                arguments.append("--recurse-submodules")
+            arguments.append("@{upstream}")
+            self._run_reset_to_upstream_workflow(
+                workflow, tuple(arguments), "reset current branch to upstream"
+            )
+            return
+        self.mutation_ready.emit("reset-to-upstream")
 
     @Slot(object)
     def _handle_history(self, result: object) -> None:

@@ -63,6 +63,7 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     pull_autostash = window.findChild(QAction, "pullAutostashAction")
     fetch_submodules = window.findChild(QAction, "fetchSubmodulesAction")
     pull_submodules = window.findChild(QAction, "pullSubmodulesAction")
+    reset_to_upstream = window.findChild(QAction, "resetToUpstreamAction")
     push_submodules = window.findChild(QAction, "pushSubmodulesAction")
     font_sizes = window.findChild(QAction, "fontSizesAction")
     assert toolbar is not None
@@ -83,6 +84,8 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert pull_autostash is not None
     assert fetch_submodules is not None
     assert pull_submodules is not None
+    assert reset_to_upstream is not None
+    assert reset_to_upstream.text() == "Reset to upstream…"
     assert push_submodules is not None
     assert font_sizes is not None
     assert not fetch_action.icon().isNull()
