@@ -229,6 +229,7 @@ class HistoryPanel(QWidget):
         self._comparison_refs: tuple[str, str] | None = None
         self._branch_labels: dict[str, list[tuple[str, str]]] = {}
         self._tag_labels: dict[str, list[tuple[str, str]]] = {}
+        self._incoming_commits: dict[str, IncomingCommitsSnapshot] = {}
         self._branch_point: BranchPointSnapshot | None = None
         details_layout = QVBoxLayout(self.details)
         details_layout.setContentsMargins(0, 8, 0, 0)
@@ -263,15 +264,35 @@ class HistoryPanel(QWidget):
     def commit_count(self) -> int:
         return self.tree.topLevelItemCount()
 
+    @property
+    def history_offset(self) -> int:
+        incoming_oids = {
+            commit.oid for commit in self._incoming_for_selected_ref()
+        }
+        return sum(commit.oid not in incoming_oids for commit in self._commits())
+
     def reset(self) -> None:
         self._branch_labels.clear()
         self._tag_labels.clear()
+        self._incoming_commits.clear()
         self._branch_point = None
         self.refs_panel.reset()
         self.clear_commits()
 
     def show_branches(self, snapshot: BranchesSnapshot) -> None:
         self.refs_panel.show_branches(snapshot)
+        valid_incoming = {
+            branch.full_name: self._incoming_commits[branch.full_name]
+            for branch in snapshot.branches
+            if (
+                not branch.remote
+                and branch.behind > 0
+                and branch.full_name in self._incoming_commits
+                and self._incoming_commits[branch.full_name].upstream_ref
+                == branch.upstream
+            )
+        }
+        self._incoming_commits = valid_incoming
         self._branch_labels = {}
         self._branch_point = None
         for branch in snapshot.branches:
@@ -280,7 +301,16 @@ class HistoryPanel(QWidget):
         self._refresh_commit_labels()
 
     def show_incoming_commits(self, snapshot: IncomingCommitsSnapshot) -> None:
-        self.refs_panel.show_incoming_commits(snapshot)
+        self._incoming_commits[snapshot.branch_ref] = snapshot
+        if snapshot.branch_ref != self.refs_panel.selected_ref:
+            return
+        existing = self._commits()
+        incoming_oids = {commit.oid for commit in snapshot.commits}
+        remaining = tuple(
+            commit for commit in existing if commit.oid not in incoming_oids
+        )
+        combined = (*snapshot.commits, *remaining)
+        self._replace_commits(combined)
 
     def show_tags(self, snapshot: TagsSnapshot) -> None:
         self.refs_panel.show_tags(snapshot)
@@ -308,12 +338,48 @@ class HistoryPanel(QWidget):
     def show_page(self, page: CommitPage) -> None:
         if page.offset == 0:
             self.tree.clear()
+            incoming = self._incoming_for_selected_ref()
+            for commit in incoming:
+                self._append_commit(commit)
+            incoming_oids: set[str] = {commit.oid for commit in incoming}
+        else:
+            incoming_oids = set()
         for commit in page.commits:
-            self._append_commit(commit)
+            if commit.oid not in incoming_oids:
+                self._append_commit(commit)
         self._render_graph()
         self._apply_filter(self.filter_edit.text())
         self.load_more_button.setVisible(page.has_more)
         self.load_more_button.setEnabled(True)
+
+    def _incoming_for_selected_ref(self) -> tuple[CommitSummary, ...]:
+        selected_ref = self.refs_panel.selected_ref
+        snapshot = self._incoming_commits.get(selected_ref)
+        return snapshot.commits if snapshot is not None else ()
+
+    def _commits(self) -> tuple[CommitSummary, ...]:
+        commits: list[CommitSummary] = []
+        for row in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(row)
+            if item is None:
+                continue
+            commit = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(commit, CommitSummary):
+                commits.append(commit)
+        return tuple(commits)
+
+    def _replace_commits(self, commits: tuple[CommitSummary, ...]) -> None:
+        current_oid = self.selected_commit.oid if self.selected_commit is not None else ""
+        self.tree.clear()
+        selected_item: QTreeWidgetItem | None = None
+        for commit in commits:
+            self._append_commit(commit)
+            if commit.oid == current_oid:
+                selected_item = self.tree.topLevelItem(self.tree.topLevelItemCount() - 1)
+        self._render_graph()
+        self._apply_filter(self.filter_edit.text())
+        if selected_item is not None:
+            self.tree.setCurrentItem(selected_item)
 
     def set_expanded_layout(self, expanded: bool) -> None:
         header = self.tree.header()

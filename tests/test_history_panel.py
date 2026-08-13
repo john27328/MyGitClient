@@ -15,6 +15,7 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
+    IncomingCommitsSnapshot,
     RefComparisonSnapshot,
     TagInfo,
     TagsSnapshot,
@@ -57,6 +58,49 @@ def test_history_panel_renders_page_and_graph(qtbot: QtBot) -> None:
     assert first.text(5) == "merge"
     assert isinstance(first.data(0, GRAPH_ROLE), CommitGraphRow)
     assert not panel.load_more_button.isHidden()
+
+
+def test_history_panel_prepends_incoming_commits_to_graph(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    local = _commit("local", "Local tip", "root")
+    incoming = _commit("remote", "Remote change", "local")
+    branch = BranchInfo(
+        "refs/heads/main",
+        "main",
+        local.oid,
+        False,
+        current=True,
+        upstream="origin/main",
+        behind=1,
+    )
+    remote = BranchInfo(
+        "refs/remotes/origin/main", "origin/main", incoming.oid, True
+    )
+    panel.show_branches(BranchesSnapshot(Path("repository"), (branch, remote)))
+    panel.show_page(CommitPage(Path("repository"), (local,), 0, False))
+
+    panel.show_incoming_commits(
+        IncomingCommitsSnapshot(
+            Path("repository"),
+            branch.full_name,
+            branch.upstream or "",
+            (incoming,),
+            False,
+        )
+    )
+
+    assert panel.commit_count == 2
+    assert panel.history_offset == 1
+    first = panel.tree.topLevelItem(0)
+    second = panel.tree.topLevelItem(1)
+    assert first is not None and second is not None
+    assert first.text(2) == "Remote change"
+    assert first.text(1) == "origin/main"
+    assert second.text(2) == "Local tip"
+    branches = panel.refs_panel.tree.topLevelItem(0)
+    assert branches is not None
+    assert branches.child(0).childCount() == 0
 
 
 def test_history_panel_emits_load_more_request(qtbot: QtBot) -> None:

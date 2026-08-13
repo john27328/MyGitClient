@@ -967,7 +967,7 @@ class MainWindow(QMainWindow):
         self._status_label.setText("Loading more commits…")
         self._history_runner = self._git.request_history(
             self._repository,
-            offset=self._history_panel.commit_count,
+            offset=self._history_panel.history_offset,
             refs=self._history_refs,
         )
 
