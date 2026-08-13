@@ -123,6 +123,7 @@ class MainWindow(QMainWindow):
     repository_tab_requested = Signal(object, bool)
     restart_requested = Signal()
     github_publish_requested = Signal(object, str)
+    github_repository_requested = Signal(object)
     github_pull_request_requested = Signal(object, str)
 
     def __init__(
@@ -544,6 +545,10 @@ class MainWindow(QMainWindow):
         self._publish_github_action.setObjectName("publishGitHubAction")
         self._publish_github_action.triggered.connect(self._publish_to_github_requested)
         toolbar.addAction(self._publish_github_action)
+        self._open_github_action = QAction("Open on GitHub", self)
+        self._open_github_action.setObjectName("openGitHubRepositoryAction")
+        self._open_github_action.triggered.connect(self._open_github_repository_requested)
+        toolbar.addAction(self._open_github_action)
         self._open_pull_request_action = QAction("Open Pull Request", self)
         self._open_pull_request_action.setObjectName("openPullRequestAction")
         self._open_pull_request_action.triggered.connect(
@@ -1607,6 +1612,11 @@ class MainWindow(QMainWindow):
             self.github_publish_requested.emit(self._repository, branch)
 
     @Slot()
+    def _open_github_repository_requested(self) -> None:
+        if self._repository is not None and self._github_repository:
+            self.github_repository_requested.emit(self._repository)
+
+    @Slot()
     def _open_pull_request_requested(self) -> None:
         branch = self._current_branch_name()
         if self._repository is not None and branch and self._github_repository:
@@ -1622,6 +1632,8 @@ class MainWindow(QMainWindow):
         ready = self._repository is not None and bool(self._current_branch_name())
         self._publish_github_action.setVisible(not bool(self._github_repository))
         self._publish_github_action.setEnabled(ready and not self._github_repository)
+        self._open_github_action.setVisible(bool(self._github_repository))
+        self._open_github_action.setEnabled(bool(self._github_repository))
         self._open_pull_request_action.setVisible(bool(self._github_repository))
         self._open_pull_request_action.setEnabled(ready and bool(self._github_repository))
 

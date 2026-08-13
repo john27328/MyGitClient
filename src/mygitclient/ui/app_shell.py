@@ -529,6 +529,7 @@ class AppShell(QMainWindow):
         controller.repository_tab_requested.connect(self._open_session_repository)
         controller.restart_requested.connect(self._restart_application)
         controller.github_publish_requested.connect(self._publish_repository_to_github)
+        controller.github_repository_requested.connect(self._open_github_repository)
         controller.github_pull_request_requested.connect(self._open_github_pull_request)
         controller.open_repository(repository)
         controller.set_github_repository(self._home_remote_names.get(repository, ""))
@@ -892,6 +893,14 @@ class AppShell(QMainWindow):
     def _github_publish_failed(self, message: str) -> None:
         self._pending_github_publish = None
         QMessageBox.warning(self, "Could not publish to GitHub", message)
+
+    @Slot(object)
+    def _open_github_repository(self, repository_value: object) -> None:
+        if not isinstance(repository_value, Path):
+            return
+        full_name = self._home_remote_names.get(repository_value.resolve(), "")
+        if full_name:
+            QDesktopServices.openUrl(QUrl(f"https://github.com/{full_name}"))
 
     @Slot(object, str)
     def _open_github_pull_request(self, repository_value: object, branch: str) -> None:

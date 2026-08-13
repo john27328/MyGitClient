@@ -56,6 +56,8 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     fetch_action = window.findChild(QAction, "fetchAction")
     push_action = window.findChild(QAction, "pushAction")
     pull_action = window.findChild(QAction, "pullAction")
+    open_github = window.findChild(QAction, "openGitHubRepositoryAction")
+    open_pull_request = window.findChild(QAction, "openPullRequestAction")
     pull_button = window.findChild(QToolButton, "pullButton")
     pull_rebase = window.findChild(QAction, "pullRebaseAction")
     pull_autostash = window.findChild(QAction, "pullAutostashAction")
@@ -68,6 +70,14 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert fetch_action is not None
     assert push_action is not None
     assert pull_action is not None
+    assert open_github is not None
+    assert open_pull_request is not None
+    assert not open_github.isVisible()
+    assert not open_pull_request.isVisible()
+    window.set_github_repository("octocat/project")
+    assert open_github.isVisible()
+    assert open_github.isEnabled()
+    assert open_pull_request.isVisible()
     assert pull_button is not None
     assert pull_rebase is not None
     assert pull_autostash is not None
