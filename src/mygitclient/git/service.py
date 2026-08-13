@@ -413,6 +413,16 @@ class GitService(QObject):
         )
         return runner
 
+    def request_checkout_commit(
+        self, repository: Path, commit: CommitSummary
+    ) -> GitRunner:
+        return self._request_simple_mutation(
+            repository,
+            ("switch", "--detach", commit.oid),
+            f"commit:{commit.oid[:8]}",
+            "checkout commit",
+        )
+
     def _run_checkout_workflow(
         self,
         workflow: _CheckoutWorkflow,
@@ -1210,6 +1220,7 @@ class GitService(QObject):
                 ),
                 working_directory=repository,
                 operation="read repository status",
+                environment=(("GIT_OPTIONAL_LOCKS", "0"),),
             )
         )
         return runner

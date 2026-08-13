@@ -78,6 +78,22 @@ def test_completed_runner_is_released(qtbot: QtBot, tmp_path: Path) -> None:
     qtbot.waitUntil(lambda: not service.findChildren(GitRunner), timeout=5000)
 
 
+def test_status_does_not_compete_for_index_lock(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("tracked\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    (tmp_path / ".git" / "index.lock").touch()
+    service = GitService()
+    snapshots: list[object] = []
+    service.status_ready.connect(snapshots.append)
+
+    with qtbot.waitSignal(service.status_ready, timeout=5000):
+        service.request_status(tmp_path)
+
+    assert snapshots
+
+
 def test_rebase_operation_progress_is_detected(tmp_path: Path) -> None:
     rebase = tmp_path / "rebase-merge"
     rebase.mkdir()
@@ -609,6 +625,45 @@ def test_branches_can_be_loaded_checked_out_and_created(
         ["git", "branch", "--format=%(refname:short)"], cwd=tmp_path, text=True
     ).splitlines()
     assert "renamed-feature" not in branches
+
+
+def test_commit_can_be_checked_out_in_detached_head(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _git(tmp_path, "commit", "--allow-empty", "-m", "first")
+    first_oid = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    _git(tmp_path, "commit", "--allow-empty", "-m", "second")
+    commit = CommitSummary(
+        first_oid,
+        (),
+        "Test Author",
+        "author@example.invalid",
+        "2026-08-13T12:00:00+03:00",
+        "first",
+    )
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_checkout_commit(tmp_path, commit)
+
+    assert (
+        subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+        ).strip()
+        == first_oid
+    )
+    detached = subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert detached.returncode == 1
 
 
 def test_incoming_commits_can_be_loaded_without_pull(

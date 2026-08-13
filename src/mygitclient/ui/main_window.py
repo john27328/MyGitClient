@@ -275,6 +275,9 @@ class MainWindow(QMainWindow):
             self._preview_cherry_pick
         )
         self._history_panel.revert_requested.connect(self._preview_revert)
+        self._history_panel.checkout_commit_requested.connect(
+            self._checkout_commit
+        )
         self._history_panel.focus_mode_changed.connect(self._history_focus_mode_changed)
         self._history_panel.file_selected.connect(self._history_file_selected)
         self._history_panel.comparison_file_selected.connect(
@@ -1509,6 +1512,26 @@ class MainWindow(QMainWindow):
             value,
             autostash=self._history_panel.refs_panel.autostash.isChecked(),
         )
+
+    @Slot(object)
+    def _checkout_commit(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, CommitSummary):
+            return
+        answer = QMessageBox.question(
+            self,
+            "Checkout commit",
+            (
+                f"Checkout {value.oid[:8]} in detached HEAD mode?\n\n"
+                f"{value.subject}\n\n"
+                "You can inspect or build this commit, but new commits will not belong "
+                "to a branch until you create one."
+            ),
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Checking out commit {value.oid[:8]}\u2026")
+        self._git.request_checkout_commit(self._repository, value)
 
     @Slot()
     def _create_branch(self) -> None:

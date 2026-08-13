@@ -153,6 +153,7 @@ class HistoryPanel(QWidget):
     focus_mode_changed = Signal(bool)
     cherry_pick_requested = Signal(object)
     revert_requested = Signal(object)
+    checkout_commit_requested = Signal(object)
 
     def __init__(
         self,
@@ -486,6 +487,10 @@ class HistoryPanel(QWidget):
         if not commits:
             return
         menu = QMenu(self.tree)
+        checkout_action = menu.addAction("Checkout commit (detached HEAD)\u2026")
+        checkout_action.setObjectName("historyCheckoutCommitAction")
+        checkout_action.setEnabled(len(commits) == 1)
+        menu.addSeparator()
         label = (
             "Cherry-pick commit…"
             if len(commits) == 1
@@ -513,7 +518,9 @@ class HistoryPanel(QWidget):
         clear_color_action.setObjectName("historyClearAuthorColorAction")
         clear_color_action.setEnabled(self._author_color(author) is not None)
         chosen = menu.exec(self.tree.viewport().mapToGlobal(position))
-        if chosen is action:
+        if chosen is checkout_action:
+            self.checkout_commit_requested.emit(commits[0])
+        elif chosen is action:
             self.cherry_pick_requested.emit(commits)
         elif chosen is revert_action:
             self.revert_requested.emit(tuple(reversed(commits)))

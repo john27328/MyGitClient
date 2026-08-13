@@ -485,6 +485,8 @@ class RefsPanel(QWidget):
         value = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(value, LinkedRepository):
             self.repository_requested.emit(value)
+        elif isinstance(value, BranchInfo) and not value.current:
+            self.checkout_requested.emit(value)
 
     @Slot()
     def _checkout_selected(self) -> None:

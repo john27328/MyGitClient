@@ -88,6 +88,23 @@ def test_refs_panel_exposes_branch_context_actions(qtbot: QtBot) -> None:
     assert rebased == [branch]
 
 
+def test_refs_panel_checks_out_branch_on_double_click(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    current = BranchInfo("refs/heads/main", "main", "1" * 40, False, current=True)
+    feature = BranchInfo("refs/heads/feature", "feature", "2" * 40, False)
+    panel.show_branches(BranchesSnapshot(Path("repository"), (current, feature)))
+    branches = panel.tree.topLevelItem(0)
+    assert branches is not None
+    requested: list[object] = []
+    panel.checkout_requested.connect(requested.append)
+
+    panel.tree.itemDoubleClicked.emit(branches.child(1), 0)
+    panel.tree.itemDoubleClicked.emit(branches.child(0), 0)
+
+    assert requested == [feature]
+
+
 def test_refs_panel_marks_local_branch_sync_states(qtbot: QtBot) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)
