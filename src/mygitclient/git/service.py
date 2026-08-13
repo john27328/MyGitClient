@@ -123,6 +123,14 @@ class _DiscardBatch:
     failed: bool = False
 
 
+@dataclass(slots=True)
+class _PublishRepositoryWorkflow:
+    repository: Path
+    remote_url: str
+    branch: str
+    step: str = "remote"
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
@@ -164,6 +172,9 @@ class GitService(QObject):
         self._latest_diff_request: dict[tuple[Path, str, bool], int] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
         self._discard_batches: dict[GitRunner, _DiscardBatch] = {}
+        self._publish_repository_workflows: dict[
+            GitRunner, _PublishRepositoryWorkflow
+        ] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
         self._incoming_commit_requests: dict[
@@ -572,6 +583,34 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
             runner, GitCommand(tuple(arguments), repository, "push changes")
+        )
+        return runner
+
+    def request_publish_repository(
+        self, repository: Path, remote_url: str, branch: str
+    ) -> GitRunner:
+        workflow = _PublishRepositoryWorkflow(repository, remote_url, branch)
+        return self._run_publish_repository_workflow(
+            workflow,
+            ("remote", "add", "origin", remote_url),
+            "add GitHub remote",
+        )
+
+    def _run_publish_repository_workflow(
+        self,
+        workflow: _PublishRepositoryWorkflow,
+        arguments: tuple[str, ...],
+        operation: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._publish_repository_workflows[runner] = workflow
+        runner.completed.connect(self._handle_publish_repository_workflow)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(arguments, workflow.repository, operation),
+            continuation=workflow.step != "remote",
         )
         return runner
 
@@ -1781,6 +1820,7 @@ class GitService(QObject):
         self._operation_state_requests.pop(runner, None)
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
+        publish = self._publish_repository_workflows.pop(runner, None)
         self._operation_action_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
         self._incoming_commit_requests.pop(runner, None)
@@ -1805,7 +1845,39 @@ class GitService(QObject):
                 f"Could not {checkout.step} during checkout: {message}"
             )
             return
+        if publish is not None:
+            self.operation_failed.emit(f"Could not publish to GitHub: {message}")
+            return
         self.operation_failed.emit(message)
+
+    @Slot(object)
+    def _handle_publish_repository_workflow(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned an unknown publish result")
+            return
+        workflow = self._publish_repository_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected publish result")
+            return
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                format_git_error(result.error_text, operation="publish to GitHub")
+            )
+            return
+        if workflow.step == "remote":
+            workflow.step = "push"
+            self._run_publish_repository_workflow(
+                workflow,
+                ("push", "--progress", "--set-upstream", "origin", workflow.branch),
+                "publish current branch",
+            )
+            return
+        self.mutation_ready.emit("github:published")
 
     @Slot(object)
     def _handle_history(self, result: object) -> None:

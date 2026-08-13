@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import cast
+from urllib.parse import quote
 
 from PySide6.QtCore import QProcess, QSettings, Qt, QUrl, Slot
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFontDatabase
@@ -29,6 +30,7 @@ from mygitclient.git.clone_service import (
     is_valid_clone_folder_name,
     suggested_clone_name,
 )
+from mygitclient.git.remotes import GitRemoteReader
 from mygitclient.github import (
     DeviceAuthorization,
     DeviceFlowResult,
@@ -36,14 +38,19 @@ from mygitclient.github import (
     GitHubProfile,
     GitHubProfileStore,
     GitHubRepository,
+    GitHubRepositoryBindingStore,
+    GitHubRepositoryPublisher,
     GitHubRepositoryService,
     GitHubTokenStore,
+    PublishedGitHubRepository,
     TokenStoreError,
+    first_github_remote,
 )
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
 from mygitclient.ui.github_device_dialog import GitHubDeviceDialog
 from mygitclient.ui.github_profile_dialog import GitHubProfileDialog
+from mygitclient.ui.github_publish_dialog import GitHubPublishDialog
 from mygitclient.ui.github_repositories_dialog import GitHubRepositoriesDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
@@ -89,6 +96,7 @@ class AppShell(QMainWindow):
         self._theme = theme
         self._workspace = WorkspaceManager(settings)
         self._github_profiles = GitHubProfileStore(settings)
+        self._github_bindings = GitHubRepositoryBindingStore(settings)
         self._github_tokens = GitHubTokenStore()
         self._github_device_flow = GitHubDeviceFlow(self)
         self._github_device_dialog: GitHubDeviceDialog | None = None
@@ -101,6 +109,14 @@ class AppShell(QMainWindow):
         self._github_repositories_dialog: GitHubRepositoriesDialog | None = None
         self._github_repositories.completed.connect(self._github_repositories_completed)
         self._github_repositories.failed.connect(self._github_repositories_failed)
+        self._github_publisher = GitHubRepositoryPublisher(self)
+        self._github_publisher.completed.connect(self._github_publish_completed)
+        self._github_publisher.failed.connect(self._github_publish_failed)
+        self._pending_github_publish: tuple[MainWindow, GitHubProfile] | None = None
+        self._home_remotes = GitRemoteReader(self)
+        self._home_remotes.completed.connect(self._home_remotes_completed)
+        self._home_remote_names: dict[Path, str] = {}
+        self._home_remote_urls: dict[Path, tuple[str, ...]] = {}
         self._sessions: dict[Path, RepositorySessionTab] = {}
         self._closing = False
         self._clone_progress: QProgressDialog | None = None
@@ -141,6 +157,7 @@ class AppShell(QMainWindow):
         self.home.remove_recent_repository_requested.connect(
             self._remove_home_recent_repository
         )
+        self.home.bind_github_profile_requested.connect(self._bind_home_github_profile)
         self.home.open_workspace_requested.connect(self._open_workspace)
         self.home.clone_repository_requested.connect(self._clone_repository)
         self.home.add_github_profile_requested.connect(self._add_github_profile)
@@ -316,6 +333,7 @@ class AppShell(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             return
         self._github_profiles.remove(value.label)
+        self._github_bindings.remove_profile(value.label)
         self._refresh_home()
 
     def _save_github_profile(
@@ -510,7 +528,11 @@ class AppShell(QMainWindow):
         controller = MainWindow(self._settings, self._theme, session_mode=True)
         controller.repository_tab_requested.connect(self._open_session_repository)
         controller.restart_requested.connect(self._restart_application)
+        controller.github_publish_requested.connect(self._publish_repository_to_github)
+        controller.github_pull_request_requested.connect(self._open_github_pull_request)
         controller.open_repository(repository)
+        controller.set_github_repository(self._home_remote_names.get(repository, ""))
+        self._home_remotes.request(repository)
         session = RepositorySessionTab(controller)
         self._sessions[repository] = session
         index = self.tabs.addTab(session, repository.name)
@@ -775,8 +797,144 @@ class AppShell(QMainWindow):
             connected_logins = frozenset()
             self.statusBar().showMessage(str(error), 8000)
         self.home.set_github_profiles(profiles, connected_logins)
-        self.home.set_recent(self._workspace.recent_repositories())
+        repositories = self._workspace.recent_repositories()
+        self.home.set_recent(repositories)
+        self._home_remote_names = {
+            repository.resolve(): self._home_remote_names.get(repository.resolve(), "")
+            for repository in repositories
+        }
+        for repository in repositories:
+            self._home_remotes.request(repository)
         self.home.set_workspaces(self._workspace.named_workspaces())
+
+    @Slot(object, object)
+    def _home_remotes_completed(self, repository_value: object, urls_value: object) -> None:
+        if not isinstance(repository_value, Path) or not isinstance(urls_value, tuple):
+            return
+        values = cast(tuple[object, ...], urls_value)
+        urls = tuple(url for url in values if isinstance(url, str))
+        remote = first_github_remote(urls)
+        repository = repository_value.resolve()
+        remote_name = remote.full_name if remote is not None else ""
+        self._home_remote_urls[repository] = urls
+        self._home_remote_names[repository] = remote_name
+        self._show_home_github(repository, remote_name)
+        session = self._sessions.get(repository)
+        if session is not None:
+            session.controller.set_github_repository(remote_name)
+
+    @Slot(object, str)
+    def _publish_repository_to_github(self, repository_value: object, _branch: str) -> None:
+        if not isinstance(repository_value, Path) or self._github_publisher.is_running:
+            return
+        repository = repository_value.resolve()
+        session = self._sessions.get(repository)
+        if session is None:
+            return
+        if self._home_remote_urls.get(repository):
+            QMessageBox.information(
+                self,
+                "Repository already has a remote",
+                "Publishing creates a new GitHub repository and adds it as origin. "
+                "Remove or rename the existing remote first.",
+            )
+            return
+        profiles = tuple(
+            profile
+            for profile in self._github_profiles.profiles()
+            if self._profile_has_token(profile)
+        )
+        if not profiles:
+            QMessageBox.information(
+                self,
+                "Connect GitHub",
+                "Connect a GitHub account on Home before publishing a repository.",
+            )
+            self.tabs.setCurrentWidget(self.home)
+            return
+        default_profile = self._github_bindings.profile_label(repository) or ""
+        dialog = GitHubPublishDialog(
+            profiles, default_profile, repository.name, self
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        profile = next(
+            (item for item in profiles if item.label == dialog.profile_label), None
+        )
+        if profile is None:
+            return
+        try:
+            token = self._github_tokens.token(profile.login)
+        except TokenStoreError as error:
+            QMessageBox.warning(self, "GitHub credential error", str(error))
+            return
+        if not token:
+            QMessageBox.warning(self, "GitHub account disconnected", "Connect the account again.")
+            return
+        self._pending_github_publish = (session.controller, profile)
+        self._github_publisher.create(token, dialog.repository_name, private=dialog.private)
+
+    @Slot(object)
+    def _github_publish_completed(self, value: object) -> None:
+        pending = self._pending_github_publish
+        self._pending_github_publish = None
+        if pending is None or not isinstance(value, PublishedGitHubRepository):
+            return
+        controller, profile = pending
+        remote_url = value.ssh_url if profile.clone_transport == "ssh" else value.clone_url
+        repository = controller.repository
+        if repository is not None:
+            self._github_bindings.bind(repository, profile.label)
+            self._home_remote_names[repository.resolve()] = value.full_name
+        controller.publish_created_github_repository(remote_url, value.full_name)
+
+    @Slot(str)
+    def _github_publish_failed(self, message: str) -> None:
+        self._pending_github_publish = None
+        QMessageBox.warning(self, "Could not publish to GitHub", message)
+
+    @Slot(object, str)
+    def _open_github_pull_request(self, repository_value: object, branch: str) -> None:
+        if not isinstance(repository_value, Path):
+            return
+        full_name = self._home_remote_names.get(repository_value.resolve(), "")
+        if not full_name:
+            return
+        encoded_branch = quote(branch, safe="")
+        QDesktopServices.openUrl(
+            QUrl(f"https://github.com/{full_name}/compare/{encoded_branch}?expand=1")
+        )
+
+    def _profile_has_token(self, profile: GitHubProfile) -> bool:
+        try:
+            return self._github_tokens.has_token(profile.login)
+        except TokenStoreError:
+            return False
+
+    def _show_home_github(self, repository: Path, remote_name: str) -> None:
+        profile_label = self._github_bindings.profile_label(repository)
+        if profile_label is None and remote_name:
+            owner = remote_name.partition("/")[0]
+            profile = next(
+                (
+                    item
+                    for item in self._github_profiles.profiles()
+                    if item.login.casefold() == owner.casefold()
+                ),
+                None,
+            )
+            profile_label = profile.label if profile is not None else ""
+        self.home.set_recent_github(repository, remote_name, profile_label or "")
+
+    @Slot(object, object)
+    def _bind_home_github_profile(self, repository_value: object, profile_value: object) -> None:
+        if not isinstance(repository_value, Path):
+            return
+        profile_label = profile_value if isinstance(profile_value, str) else None
+        self._github_bindings.bind(repository_value, profile_label)
+        self._show_home_github(
+            repository_value.resolve(), self._home_remote_names.get(repository_value.resolve(), "")
+        )
 
     @Slot()
     def _restart_application(self) -> None:
@@ -808,4 +966,5 @@ class AppShell(QMainWindow):
             session.shutdown()
         self._sessions.clear()
         self._workspace.save_open_repositories(repositories)
+        self._home_remotes.shutdown()
         super().closeEvent(event)

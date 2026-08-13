@@ -122,6 +122,8 @@ from mygitclient.workspace import (
 class MainWindow(QMainWindow):
     repository_tab_requested = Signal(object, bool)
     restart_requested = Signal()
+    github_publish_requested = Signal(object, str)
+    github_pull_request_requested = Signal(object, str)
 
     def __init__(
         self, settings: QSettings, theme: Theme, *, session_mode: bool = False
@@ -151,6 +153,7 @@ class MainWindow(QMainWindow):
         self._repository_activation = 0
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
+        self._github_repository = ""
         self._submodule_paths: dict[Path, str] = {}
         self._repository_operation: RepositoryOperation | None = None
         self._interactive_rebase_pending = False
@@ -193,6 +196,10 @@ class MainWindow(QMainWindow):
         self._restore_window_state()
         if not self._session_mode:
             self._restore_open_repositories()
+
+    @property
+    def repository(self) -> Path | None:
+        return self._repository
 
     def _build_ui(self) -> None:
         self._repositories_panel = RepositoriesPanel()
@@ -533,7 +540,18 @@ class MainWindow(QMainWindow):
         self._cancel_action.setMenu(self._operation_queue_menu)
         self._cancel_action.setEnabled(False)
         toolbar.addAction(self._cancel_action)
+        self._publish_github_action = QAction("Publish to GitHub…", self)
+        self._publish_github_action.setObjectName("publishGitHubAction")
+        self._publish_github_action.triggered.connect(self._publish_to_github_requested)
+        toolbar.addAction(self._publish_github_action)
+        self._open_pull_request_action = QAction("Open Pull Request", self)
+        self._open_pull_request_action.setObjectName("openPullRequestAction")
+        self._open_pull_request_action.triggered.connect(
+            self._open_pull_request_requested
+        )
+        toolbar.addAction(self._open_pull_request_action)
         self.addToolBar(toolbar)
+        self._update_github_actions()
 
         workspace_menu = self.menuBar().addMenu("&Workspace")
         save_workspace = QAction("Save Workspace…", self)
@@ -848,6 +866,8 @@ class MainWindow(QMainWindow):
             self._populate_repository_switcher()
         self._repository = repository
         self._repository_status = None
+        self._github_repository = ""
+        self._update_github_actions()
         self._repository_operation = None
         self._operation_banner.hide()
         self._commit_diff_visible = False
@@ -1565,6 +1585,45 @@ class MainWindow(QMainWindow):
             branch=value.name,
             set_upstream=True,
         )
+
+    def set_github_repository(self, full_name: str) -> None:
+        self._github_repository = full_name.strip()
+        self._update_github_actions()
+
+    def publish_created_github_repository(self, remote_url: str, full_name: str) -> None:
+        branch = self._current_branch_name()
+        if self._repository is None or not branch:
+            return
+        self._github_repository = full_name
+        self._update_github_actions()
+        self._status_label.setText(f"Publishing {full_name}…")
+        self._set_network_busy("Push")
+        self._git.request_publish_repository(self._repository, remote_url, branch)
+
+    @Slot()
+    def _publish_to_github_requested(self) -> None:
+        branch = self._current_branch_name()
+        if self._repository is not None and branch:
+            self.github_publish_requested.emit(self._repository, branch)
+
+    @Slot()
+    def _open_pull_request_requested(self) -> None:
+        branch = self._current_branch_name()
+        if self._repository is not None and branch and self._github_repository:
+            self.github_pull_request_requested.emit(self._repository, branch)
+
+    def _current_branch_name(self) -> str:
+        if self._repository_status is None:
+            return ""
+        branch = self._repository_status.branch.head or ""
+        return "" if branch in {"HEAD", "(detached)"} else branch
+
+    def _update_github_actions(self) -> None:
+        ready = self._repository is not None and bool(self._current_branch_name())
+        self._publish_github_action.setVisible(not bool(self._github_repository))
+        self._publish_github_action.setEnabled(ready and not self._github_repository)
+        self._open_pull_request_action.setVisible(bool(self._github_repository))
+        self._open_pull_request_action.setEnabled(ready and bool(self._github_repository))
 
     @Slot(object)
     def _rename_branch(self, value: object) -> None:
@@ -2469,6 +2528,7 @@ class MainWindow(QMainWindow):
             else None
         )
         self._repository_status = status_value
+        self._update_github_actions()
         if previous_head is not None and previous_head != status_value.branch.head:
             self._diff_view.reset()
             self._history_panel.clear_commits()

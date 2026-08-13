@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -22,6 +23,7 @@ class HomePanel(QWidget):
     choose_repository_requested = Signal()
     open_repository_requested = Signal(object)
     remove_recent_repository_requested = Signal(object)
+    bind_github_profile_requested = Signal(object, object)
     open_workspace_requested = Signal(str)
     clone_repository_requested = Signal(str)
     add_github_profile_requested = Signal()
@@ -120,7 +122,7 @@ class HomePanel(QWidget):
         layout.addWidget(QLabel("Recent repositories"))
         self.recent_tree = QTreeWidget()
         self.recent_tree.setObjectName("homeRecentRepositories")
-        self.recent_tree.setHeaderLabels(["Repository", "Location"])
+        self.recent_tree.setHeaderLabels(["Repository", "Location", "GitHub"])
         self.recent_tree.setRootIsDecorated(False)
         self.recent_tree.setAlternatingRowColors(True)
         self.recent_tree.itemDoubleClicked.connect(self._recent_activated)
@@ -133,6 +135,10 @@ class HomePanel(QWidget):
         self.remove_recent_action.setEnabled(False)
         self.remove_recent_action.triggered.connect(self._remove_recent_repository)
         self.recent_tree.addAction(self.remove_recent_action)
+        self.github_binding_menu = QMenu("GitHub account", self.recent_tree)
+        self.github_binding_menu.setEnabled(False)
+        self.recent_tree.addAction(self.github_binding_menu.menuAction())
+        self._github_profiles: tuple[GitHubProfile, ...] = ()
         layout.addWidget(self.recent_tree, 2)
 
         layout.addWidget(QLabel("Workspaces"))
@@ -150,16 +156,35 @@ class HomePanel(QWidget):
     def set_recent(self, repositories: tuple[Path, ...]) -> None:
         self.recent_tree.clear()
         for repository in repositories:
-            item = QTreeWidgetItem([repository.name, str(repository.parent)])
+            item = QTreeWidgetItem([repository.name, str(repository.parent), "Detecting…"])
             item.setData(0, Qt.ItemDataRole.UserRole, repository)
             item.setToolTip(0, str(repository))
             self.recent_tree.addTopLevelItem(item)
         self.recent_tree.setVisible(bool(repositories))
         self._recent_selection_changed()
 
+    def set_recent_github(self, repository: Path, remote: str, profile: str) -> None:
+        target = repository.resolve()
+        for index in range(self.recent_tree.topLevelItemCount()):
+            item = self.recent_tree.topLevelItem(index)
+            value = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+            if not isinstance(value, Path) or value.resolve() != target:
+                continue
+            assert item is not None
+            if not remote:
+                text = "Not a GitHub repository"
+            elif profile:
+                text = f"{remote} · {profile}"
+            else:
+                text = f"{remote} · no account"
+            item.setText(2, text)
+            item.setToolTip(2, text)
+            break
+
     def set_github_profiles(
         self, profiles: tuple[GitHubProfile, ...], connected_logins: frozenset[str] = frozenset()
     ) -> None:
+        self._github_profiles = profiles
         self.github_tree.clear()
         for profile in profiles:
             identity = profile.user_name
@@ -181,6 +206,7 @@ class HomePanel(QWidget):
             item.setData(0, Qt.ItemDataRole.UserRole, profile)
             self.github_tree.addTopLevelItem(item)
         self._github_selection_changed()
+        self._rebuild_github_binding_menu()
 
     def set_workspaces(self, names: tuple[str, ...]) -> None:
         self.workspace_tree.clear()
@@ -203,9 +229,27 @@ class HomePanel(QWidget):
         return repository if isinstance(repository, Path) else None
 
     def _recent_selection_changed(self) -> None:
-        self.remove_recent_action.setEnabled(
-            self._selected_recent_repository() is not None
-        )
+        selected = self._selected_recent_repository() is not None
+        self.remove_recent_action.setEnabled(selected)
+        self.github_binding_menu.setEnabled(selected)
+        self._rebuild_github_binding_menu()
+
+    def _rebuild_github_binding_menu(self) -> None:
+        self.github_binding_menu.clear()
+        automatic = self.github_binding_menu.addAction("Detect automatically")
+        automatic.triggered.connect(lambda: self._bind_github_profile(None))
+        if self._github_profiles:
+            self.github_binding_menu.addSeparator()
+        for profile in self._github_profiles:
+            action = self.github_binding_menu.addAction(profile.label)
+            action.triggered.connect(
+                lambda _checked=False, label=profile.label: self._bind_github_profile(label)
+            )
+
+    def _bind_github_profile(self, profile_label: str | None) -> None:
+        repository = self._selected_recent_repository()
+        if repository is not None:
+            self.bind_github_profile_requested.emit(repository, profile_label)
 
     def _remove_recent_repository(self) -> None:
         repository = self._selected_recent_repository()

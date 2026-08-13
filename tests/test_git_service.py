@@ -1493,6 +1493,40 @@ def test_fetch_and_push_with_upstream(qtbot: QtBot, tmp_path: Path) -> None:
         service.request_fetch(repository)
 
 
+def test_publish_repository_adds_origin_and_pushes_current_branch(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    remote = tmp_path / "published.git"
+    repository = tmp_path / "repository"
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    repository.mkdir()
+    _git(repository, "init", "--initial-branch=main")
+    _git(
+        repository,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "initial",
+    )
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_publish_repository(repository, str(remote), "main")
+
+    assert subprocess.check_output(
+        ["git", "remote", "get-url", "origin"], cwd=repository, text=True
+    ).strip() == str(remote)
+    assert subprocess.check_output(
+        ["git", "rev-parse", "--abbrev-ref", "main@{upstream}"],
+        cwd=repository,
+        text=True,
+    ).strip() == "origin/main"
+
+
 def test_sync_commands_can_recurse_into_submodules(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:

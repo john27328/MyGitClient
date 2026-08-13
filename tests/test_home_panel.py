@@ -21,6 +21,33 @@ def test_home_panel_opens_recent_repository(qtbot: QtBot, tmp_path: Path) -> Non
     assert requested == [repository]
 
 
+def test_home_panel_shows_github_remote_and_emits_profile_binding(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    panel = HomePanel()
+    qtbot.addWidget(panel)
+    repository = tmp_path / "repository"
+    profile = GitHubProfile("Work", "octocat")
+    panel.set_recent((repository,))
+    panel.set_github_profiles((profile,))
+    panel.set_recent_github(repository, "octocat/repository", "Work")
+    item = panel.recent_tree.topLevelItem(0)
+    assert item is not None
+    assert item.text(2) == "octocat/repository · Work"
+
+    requested: list[tuple[object, object]] = []
+    def record_binding(path: object, label: object) -> None:
+        requested.append((path, label))
+
+    panel.bind_github_profile_requested.connect(record_binding)
+    panel.recent_tree.setCurrentItem(item)
+    action = next(
+        action for action in panel.github_binding_menu.actions() if action.text() == "Work"
+    )
+    action.trigger()
+    assert requested == [(repository, "Work")]
+
+
 def test_home_panel_removes_selected_recent_repository(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
