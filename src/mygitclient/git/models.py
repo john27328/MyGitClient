@@ -88,6 +88,20 @@ class StashesSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class StashFilesSnapshot:
+    repository: Path
+    stash: StashInfo
+    files: tuple[CommitFileChange, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StashDiffSnapshot:
+    repository: Path
+    stash: StashInfo
+    diff: UnifiedDiff
+
+
+@dataclass(frozen=True, slots=True)
 class FileStatus:
     path: str
     index_status: str
@@ -315,9 +329,7 @@ class SideBySideRow:
     new: DiffLine | None
 
 
-def pair_changed_lines(
-    deleted: list[DiffLine], added: list[DiffLine]
-) -> tuple[SideBySideRow, ...]:
+def pair_changed_lines(deleted: list[DiffLine], added: list[DiffLine]) -> tuple[SideBySideRow, ...]:
     if not deleted:
         return tuple(SideBySideRow(None, line) for line in added)
     if not added:
@@ -342,9 +354,7 @@ def pair_changed_lines(
         old_text = old_line.text[1:].strip()
         for new_index, new_line in enumerate(added, start=1):
             new_text = new_line.text[1:].strip()
-            similarity = SequenceMatcher(
-                None, old_text, new_text, autojunk=False
-            ).ratio()
+            similarity = SequenceMatcher(None, old_text, new_text, autojunk=False).ratio()
             best = scores[old_index - 1][new_index]
             choice = "old"
             if scores[old_index][new_index - 1] > best:
@@ -437,9 +447,7 @@ class UnifiedDiff:
         for line in self.lines:
             old_number = str(line.old_line) if line.old_line is not None else ""
             new_number = str(line.new_line) if line.new_line is not None else ""
-            rendered.append(
-                f"{old_number:>{old_width}} {new_number:>{new_width}} │ {line.text}"
-            )
+            rendered.append(f"{old_number:>{old_width}} {new_number:>{new_width}} │ {line.text}")
         return "\n".join(rendered)
 
     @property

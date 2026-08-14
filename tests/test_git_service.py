@@ -28,7 +28,10 @@ from mygitclient.git.models import (
     RefComparisonSnapshot,
     RepositoryOperationSnapshot,
     RevertPreviewSnapshot,
+    StashDiffSnapshot,
     StashesSnapshot,
+    StashFilesSnapshot,
+    StashInfo,
     TagsSnapshot,
 )
 from mygitclient.git.operation_queue import GitOperationQueue
@@ -37,9 +40,7 @@ from mygitclient.git.service import GitService, detect_repository_operation
 
 
 def _git(repository: Path, *arguments: str) -> None:
-    subprocess.run(
-        ["git", *arguments], cwd=repository, check=True, capture_output=True
-    )
+    subprocess.run(["git", *arguments], cwd=repository, check=True, capture_output=True)
 
 
 def _configure_identity(repository: Path) -> None:
@@ -48,16 +49,21 @@ def _configure_identity(repository: Path) -> None:
 
 
 def _summary(repository: Path, revision: str) -> CommitSummary:
-    fields = subprocess.check_output(
-        [
-            "git",
-            "show",
-            "-s",
-            "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
-            revision,
-        ],
-        cwd=repository,
-    ).decode("utf-8").rstrip("\n").split("\0")
+    fields = (
+        subprocess.check_output(
+            [
+                "git",
+                "show",
+                "-s",
+                "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                revision,
+            ],
+            cwd=repository,
+        )
+        .decode("utf-8")
+        .rstrip("\n")
+        .split("\0")
+    )
     return CommitSummary(
         oid=fields[0],
         parent_oids=tuple(fields[1].split()),
@@ -114,9 +120,7 @@ def test_rebase_operation_progress_is_detected(tmp_path: Path) -> None:
     assert operation.remaining == ("next subject", "final subject")
 
 
-def test_merge_preview_lists_incoming_commits_and_files(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_merge_preview_lists_incoming_commits_and_files(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     base = tmp_path / "base.txt"
@@ -150,9 +154,7 @@ def test_merge_preview_lists_incoming_commits_and_files(
     assert incoming.exists()
 
 
-def test_merge_conflict_is_detected_and_can_be_aborted(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_merge_conflict_is_detected_and_can_be_aborted(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     identity = (
@@ -181,9 +183,10 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
     )
     assert merge.returncode != 0
     qtbot.waitUntil(
-        lambda: (operation := detect_repository_operation(tmp_path / ".git"))
-        is not None
-        and operation.kind == "merge",
+        lambda: (
+            (operation := detect_repository_operation(tmp_path / ".git")) is not None
+            and operation.kind == "merge"
+        ),
         timeout=5000,
     )
     service = GitService()
@@ -236,9 +239,7 @@ def test_merge_conflict_is_detected_and_can_be_aborted(
     assert staged.stdout.strip() == "tracked.txt"
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
-        service.request_repository_operation_action(
-            tmp_path, kind="merge", action="abort"
-        )
+        service.request_repository_operation_action(tmp_path, kind="merge", action="abort")
 
     assert not (tmp_path / ".git" / "MERGE_HEAD").exists()
     assert tracked.read_text(encoding="utf-8") == "main\n"
@@ -298,9 +299,7 @@ def test_history_can_be_limited_to_one_branch(qtbot: QtBot, tmp_path: Path) -> N
     assert [commit.subject for commit in page.commits] == ["main commit"]
 
     with qtbot.waitSignal(service.history_ready, timeout=5000):
-        service.request_history(
-            tmp_path, refs=("refs/heads/main", "refs/heads/feature")
-        )
+        service.request_history(tmp_path, refs=("refs/heads/main", "refs/heads/feature"))
 
     comparison_page = pages[-1]
     assert isinstance(comparison_page, CommitPage)
@@ -334,9 +333,7 @@ def test_branch_point_is_loaded_with_merge_base(qtbot: QtBot, tmp_path: Path) ->
     snapshots: list[object] = []
     service.branch_point_ready.connect(snapshots.append)
     with qtbot.waitSignal(service.branch_point_ready, timeout=5000):
-        service.request_branch_point(
-            tmp_path, "refs/heads/feature", "refs/heads/main"
-        )
+        service.request_branch_point(tmp_path, "refs/heads/feature", "refs/heads/main")
 
     assert len(snapshots) == 1
     snapshot = snapshots[0]
@@ -371,9 +368,7 @@ def test_refs_can_be_compared_by_file_and_diff(qtbot: QtBot, tmp_path: Path) -> 
 
     comparison = comparisons[-1]
     assert isinstance(comparison, RefComparisonSnapshot)
-    assert [(change.status, change.path) for change in comparison.files] == [
-        ("M", "tracked.txt")
-    ]
+    assert [(change.status, change.path) for change in comparison.files] == [("M", "tracked.txt")]
 
     with qtbot.waitSignal(service.comparison_diff_ready, timeout=5000):
         service.request_ref_comparison_diff(tmp_path, "main", "feature", "tracked.txt")
@@ -499,9 +494,7 @@ def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
         "-m",
         "initial",
     )
-    parent = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
-    ).strip()
+    parent = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
     tracked.write_text("after\n", encoding="utf-8")
     _git(
         tmp_path,
@@ -513,9 +506,7 @@ def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
         "-am",
         "update",
     )
-    commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
-    ).strip()
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
     service = GitService()
     file_results: list[object] = []
     diff_results: list[object] = []
@@ -525,9 +516,7 @@ def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
     with qtbot.waitSignal(service.commit_files_ready, timeout=5000):
         service.request_commit_files(tmp_path, commit)
     with qtbot.waitSignal(service.commit_diff_ready, timeout=5000):
-        service.request_commit_diff(
-            tmp_path, commit, "tracked.txt", parent_oid=parent
-        )
+        service.request_commit_diff(tmp_path, commit, "tracked.txt", parent_oid=parent)
 
     files = file_results[0]
     assert isinstance(files, CommitFilesSnapshot)
@@ -538,9 +527,7 @@ def test_commit_files_and_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
     assert "+after" in diff.diff.text
 
 
-def test_amend_preview_includes_message_body_and_full_diff(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_amend_preview_includes_message_body_and_full_diff(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("content\n", encoding="utf-8")
@@ -557,9 +544,7 @@ def test_amend_preview_includes_message_body_and_full_diff(
         "-m",
         "Initial description",
     )
-    commit = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
-    ).strip()
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
     service = GitService()
     results: list[object] = []
     service.amend_preview_ready.connect(results.append)
@@ -576,9 +561,7 @@ def test_amend_preview_includes_message_body_and_full_diff(
     assert "+content" in preview.diff.text
 
 
-def test_branches_can_be_loaded_checked_out_and_created(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_branches_can_be_loaded_checked_out_and_created(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("content\n", encoding="utf-8")
@@ -627,9 +610,7 @@ def test_branches_can_be_loaded_checked_out_and_created(
     assert "renamed-feature" not in branches
 
 
-def test_commit_can_be_checked_out_in_detached_head(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_commit_can_be_checked_out_in_detached_head(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     _git(tmp_path, "commit", "--allow-empty", "-m", "first")
@@ -651,9 +632,7 @@ def test_commit_can_be_checked_out_in_detached_head(
         service.request_checkout_commit(tmp_path, commit)
 
     assert (
-        subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
-        ).strip()
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
         == first_oid
     )
     detached = subprocess.run(
@@ -666,9 +645,7 @@ def test_commit_can_be_checked_out_in_detached_head(
     assert detached.returncode == 1
 
 
-def test_incoming_commits_can_be_loaded_without_pull(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_incoming_commits_can_be_loaded_without_pull(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     _git(tmp_path, "commit", "--allow-empty", "-m", "base")
@@ -743,9 +720,7 @@ def test_tags_can_be_loaded_created_and_deleted(qtbot: QtBot, tmp_path: Path) ->
         service.request_create_tag(tmp_path, "new-tag", "HEAD", "New release")
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_delete_tag(tmp_path, "new-tag")
-    tags = subprocess.check_output(
-        ["git", "tag", "--list"], cwd=tmp_path, text=True
-    ).splitlines()
+    tags = subprocess.check_output(["git", "tag", "--list"], cwd=tmp_path, text=True).splitlines()
     assert "new-tag" not in tags
 
 
@@ -790,9 +765,7 @@ def test_remote_branch_can_be_deleted(qtbot: QtBot, tmp_path: Path) -> None:
     _git(repository, "branch", "feature")
     _git(repository, "push", "origin", "main", "feature")
     service = GitService()
-    branch = BranchInfo(
-        "refs/remotes/origin/feature", "origin/feature", "2" * 40, True
-    )
+    branch = BranchInfo("refs/remotes/origin/feature", "origin/feature", "2" * 40, True)
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_delete_remote_branch(repository, branch)
@@ -827,13 +800,13 @@ def test_branch_can_be_created_from_selected_ref(qtbot: QtBot, tmp_path: Path) -
         service.request_create_branch_from(tmp_path, "new-from-source", source)
 
     assert (
-        subprocess.check_output(["git", "branch", "--show-current"], cwd=tmp_path, text=True)
-        .strip()
+        subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=tmp_path, text=True
+        ).strip()
         == "new-from-source"
     )
     assert (
-        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True)
-        .strip()
+        subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
         == source_oid
     )
 
@@ -862,8 +835,9 @@ def test_worktree_can_be_created_from_selected_branch(qtbot: QtBot, tmp_path: Pa
 
     assert worktree.is_dir()
     assert (
-        subprocess.check_output(["git", "branch", "--show-current"], cwd=worktree, text=True)
-        .strip()
+        subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=worktree, text=True
+        ).strip()
         == "feature"
     )
 
@@ -890,24 +864,18 @@ def test_selected_files_can_be_stashed(qtbot: QtBot, tmp_path: Path) -> None:
     service = GitService()
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
-        service.request_stash_files(
-            tmp_path, (FileStatus("first.txt", ".", "M"),)
-        )
+        service.request_stash_files(tmp_path, (FileStatus("first.txt", ".", "M"),))
 
     assert first.read_text(encoding="utf-8") == "before first\n"
     assert second.read_text(encoding="utf-8") == "changed second\n"
-    assert subprocess.check_output(
-        ["git", "stash", "list"], cwd=tmp_path, text=True
-    ).startswith("stash@{0}")
-
-
-def test_selected_files_can_be_staged_and_unstaged(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    _git(tmp_path, "init", "--initial-branch=main")
-    files = tuple(
-        FileStatus(path, ".", "M") for path in ("folder/first.txt", "folder/second.txt")
+    assert subprocess.check_output(["git", "stash", "list"], cwd=tmp_path, text=True).startswith(
+        "stash@{0}"
     )
+
+
+def test_selected_files_can_be_staged_and_unstaged(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    files = tuple(FileStatus(path, ".", "M") for path in ("folder/first.txt", "folder/second.txt"))
     (tmp_path / "folder").mkdir()
     for file in files:
         (tmp_path / file.path).write_text("before\n", encoding="utf-8")
@@ -934,9 +902,12 @@ def test_selected_files_can_be_staged_and_unstaged(
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_stage_files(tmp_path, files, staged=False, has_head=True)
-    assert subprocess.check_output(
-        ["git", "diff", "--cached", "--name-only"], cwd=tmp_path, text=True
-    ).strip() == ""
+    assert (
+        subprocess.check_output(
+            ["git", "diff", "--cached", "--name-only"], cwd=tmp_path, text=True
+        ).strip()
+        == ""
+    )
 
 
 def test_stashes_can_be_listed_applied_and_dropped(qtbot: QtBot, tmp_path: Path) -> None:
@@ -977,9 +948,60 @@ def test_stashes_can_be_listed_applied_and_dropped(qtbot: QtBot, tmp_path: Path)
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_stash_action(tmp_path, stash, action="drop")
-    assert subprocess.check_output(
-        ["git", "stash", "list"], cwd=tmp_path, text=True
-    ).strip() == ""
+    assert subprocess.check_output(["git", "stash", "list"], cwd=tmp_path, text=True).strip() == ""
+
+
+def test_stash_contents_and_file_diff_are_loaded(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-m", "initial")
+    tracked.write_text("after\n", encoding="utf-8")
+    _git(tmp_path, "stash", "push", "-m", "saved work")
+    stash = StashInfo("stash@{0}", _summary(tmp_path, "stash@{0}").oid, "saved work")
+    service = GitService()
+    file_results: list[object] = []
+    diff_results: list[object] = []
+    service.stash_files_ready.connect(file_results.append)
+    service.stash_diff_ready.connect(diff_results.append)
+
+    with qtbot.waitSignal(service.stash_files_ready, timeout=5000):
+        service.request_stash_contents(tmp_path, stash)
+    with qtbot.waitSignal(service.stash_diff_ready, timeout=5000):
+        service.request_stash_diff(tmp_path, stash, "tracked.txt")
+
+    files = file_results[0]
+    assert isinstance(files, StashFilesSnapshot)
+    assert [(change.status, change.path) for change in files.files] == [("M", "tracked.txt")]
+    diff = diff_results[0]
+    assert isinstance(diff, StashDiffSnapshot)
+    assert "-before" in diff.diff.text
+    assert "+after" in diff.diff.text
+
+
+def test_commit_file_can_be_restored_at_or_before_commit(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-m", "initial")
+    parent = _summary(tmp_path, "HEAD").oid
+    tracked.write_text("after\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-am", "update")
+    commit = _summary(tmp_path, "HEAD").oid
+    tracked.write_text("working\n", encoding="utf-8")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_restore_commit_file(tmp_path, commit, "tracked.txt")
+    assert tracked.read_text(encoding="utf-8") == "after\n"
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_restore_commit_file(tmp_path, parent, "tracked.txt")
+    assert tracked.read_text(encoding="utf-8") == "before\n"
 
 
 def test_checkout_autostash_restores_local_changes(qtbot: QtBot, tmp_path: Path) -> None:
@@ -1007,19 +1029,18 @@ def test_checkout_autostash_restores_local_changes(qtbot: QtBot, tmp_path: Path)
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_checkout(tmp_path, branch, autostash=True)
 
-    assert subprocess.check_output(
-        ["git", "branch", "--show-current"], cwd=tmp_path, text=True
-    ).strip() == "feature"
+    assert (
+        subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=tmp_path, text=True
+        ).strip()
+        == "feature"
+    )
     assert local.read_text(encoding="utf-8") == "local change\n"
     assert branch_file.read_text(encoding="utf-8") == "feature\n"
-    assert subprocess.check_output(
-        ["git", "stash", "list"], cwd=tmp_path, text=True
-    ).strip() == ""
+    assert subprocess.check_output(["git", "stash", "list"], cwd=tmp_path, text=True).strip() == ""
 
 
-def test_cherry_pick_range_preview_and_autostash(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_cherry_pick_range_preview_and_autostash(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     identity = (
@@ -1063,9 +1084,11 @@ def test_cherry_pick_range_preview_and_autostash(
         service.request_cherry_pick(tmp_path, commits, autostash=True)
 
     qtbot.waitUntil(
-        lambda: first.exists()
-        and second.exists()
-        and local.read_text(encoding="utf-8") == "local change\n",
+        lambda: (
+            first.exists()
+            and second.exists()
+            and local.read_text(encoding="utf-8") == "local change\n"
+        ),
         timeout=5000,
     )
     assert first.read_text(encoding="utf-8") == "first\n"
@@ -1075,9 +1098,7 @@ def test_cherry_pick_range_preview_and_autostash(
         ["git", "log", "-2", "--format=%s"], cwd=tmp_path, text=True
     ).splitlines()
     assert subjects == ["second", "first"]
-    assert subprocess.check_output(
-        ["git", "stash", "list"], cwd=tmp_path, text=True
-    ).strip() == ""
+    assert subprocess.check_output(["git", "stash", "list"], cwd=tmp_path, text=True).strip() == ""
 
 
 def test_cherry_pick_conflict_exposes_recovery_and_can_be_aborted(
@@ -1108,9 +1129,7 @@ def test_cherry_pick_conflict_exposes_recovery_and_can_be_aborted(
     service.operation_failed.connect(errors.append)
 
     with qtbot.waitSignal(service.operation_failed, timeout=5000):
-        service.request_cherry_pick(
-            tmp_path, (feature_commit,), autostash=False
-        )
+        service.request_cherry_pick(tmp_path, (feature_commit,), autostash=False)
 
     assert errors
     assert (tmp_path / ".git" / "CHERRY_PICK_HEAD").exists()
@@ -1119,17 +1138,13 @@ def test_cherry_pick_conflict_exposes_recovery_and_can_be_aborted(
     assert operation.kind == "cherry-pick"
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
-        service.request_repository_operation_action(
-            tmp_path, kind="cherry-pick", action="abort"
-        )
+        service.request_repository_operation_action(tmp_path, kind="cherry-pick", action="abort")
 
     assert not (tmp_path / ".git" / "CHERRY_PICK_HEAD").exists()
     assert tracked.read_text(encoding="utf-8") == "main\n"
 
 
-def test_revert_range_preview_and_reverse_commits(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_revert_range_preview_and_reverse_commits(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     identity = (
@@ -1182,9 +1197,7 @@ def test_revert_range_preview_and_reverse_commits(
     assert subjects == ['Revert "first"', 'Revert "second"']
 
 
-def test_rebase_preview_and_autostash_replays_current_branch(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_rebase_preview_and_autostash_replays_current_branch(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     identity = (
@@ -1231,33 +1244,35 @@ def test_rebase_preview_and_autostash_replays_current_branch(
     assert preview.base_oid == base_oid
     assert [commit.subject for commit in preview.commits] == ["feature"]
     assert preview.files == ("feature.txt",)
-    assert preview.head_oid == subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
-    ).strip()
+    assert (
+        preview.head_oid
+        == subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+    )
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_rebase(tmp_path, target, autostash=True)
 
     qtbot.waitUntil(
-        lambda: local.read_text(encoding="utf-8") == "local change\n"
-        and feature_file.exists()
-        and upstream_file.exists(),
+        lambda: (
+            local.read_text(encoding="utf-8") == "local change\n"
+            and feature_file.exists()
+            and upstream_file.exists()
+        ),
         timeout=5000,
     )
     assert local.read_text(encoding="utf-8") == "local change\n"
     assert feature_file.read_text(encoding="utf-8") == "feature\n"
     assert upstream_file.read_text(encoding="utf-8") == "upstream\n"
-    assert subprocess.check_output(
-        ["git", "merge-base", "HEAD", "main"], cwd=tmp_path, text=True
-    ).strip() == main_oid
-    assert subprocess.check_output(
-        ["git", "stash", "list"], cwd=tmp_path, text=True
-    ).strip() == ""
+    assert (
+        subprocess.check_output(
+            ["git", "merge-base", "HEAD", "main"], cwd=tmp_path, text=True
+        ).strip()
+        == main_oid
+    )
+    assert subprocess.check_output(["git", "stash", "list"], cwd=tmp_path, text=True).strip() == ""
 
 
-def test_interactive_rebase_reorders_and_rewords_commits(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_interactive_rebase_reorders_and_rewords_commits(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     tracked = tmp_path / "tracked.txt"
@@ -1307,9 +1322,7 @@ def test_interactive_rebase_reorders_and_rewords_commits(
     assert not (tmp_path / ".git" / "mygitclient-rebase-state").exists()
 
 
-def test_rebase_conflict_can_be_staged_and_continued(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_rebase_conflict_can_be_staged_and_continued(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     _configure_identity(tmp_path)
     identity = (
@@ -1350,12 +1363,14 @@ def test_rebase_conflict_can_be_staged_and_continued(
             staged=True,
         )
     qtbot.waitUntil(
-        lambda: subprocess.check_output(
-            ["git", "diff", "--cached", "--name-only"],
-            cwd=tmp_path,
-            text=True,
-        ).strip()
-        == "shared.txt",
+        lambda: (
+            subprocess.check_output(
+                ["git", "diff", "--cached", "--name-only"],
+                cwd=tmp_path,
+                text=True,
+            ).strip()
+            == "shared.txt"
+        ),
         timeout=5000,
     )
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
@@ -1367,9 +1382,12 @@ def test_rebase_conflict_can_be_staged_and_continued(
 
     assert detect_repository_operation(tmp_path / ".git") is None
     assert shared.read_text(encoding="utf-8") == "resolved\n"
-    assert subprocess.check_output(
-        ["git", "merge-base", "HEAD", "main"], cwd=tmp_path, text=True
-    ).strip() == main_oid
+    assert (
+        subprocess.check_output(
+            ["git", "merge-base", "HEAD", "main"], cwd=tmp_path, text=True
+        ).strip()
+        == main_oid
+    )
 
 
 def test_checkout_autostash_stops_when_attributes_rewrite_worktree(
@@ -1401,12 +1419,15 @@ def test_checkout_autostash_stops_when_attributes_rewrite_worktree(
         service.request_checkout(tmp_path, branch, autostash=True)
 
     assert "still contains changes after stashing" in errors[0]
-    assert subprocess.check_output(
-        ["git", "branch", "--show-current"], cwd=tmp_path, text=True
-    ).strip() == "main"
-    assert subprocess.check_output(
-        ["git", "stash", "list"], cwd=tmp_path, text=True
-    ).startswith("stash@{0}")
+    assert (
+        subprocess.check_output(
+            ["git", "branch", "--show-current"], cwd=tmp_path, text=True
+        ).strip()
+        == "main"
+    )
+    assert subprocess.check_output(["git", "stash", "list"], cwd=tmp_path, text=True).startswith(
+        "stash@{0}"
+    )
 
 
 def test_discard_succeeds_with_gitattributes_warning(qtbot: QtBot, tmp_path: Path) -> None:
@@ -1434,9 +1455,7 @@ def test_discard_succeeds_with_gitattributes_warning(qtbot: QtBot, tmp_path: Pat
     assert tracked.read_text(encoding="utf-8") == "before\n"
 
 
-def test_discard_files_batches_tracked_and_untracked_changes(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_discard_files_batches_tracked_and_untracked_changes(qtbot: QtBot, tmp_path: Path) -> None:
     _git(tmp_path, "init", "--initial-branch=main")
     tracked = tmp_path / "tracked.txt"
     untracked = tmp_path / "untracked.txt"
@@ -1480,9 +1499,7 @@ def test_pull_rebase_autostash_restores_changes(qtbot: QtBot, tmp_path: Path) ->
     seed = tmp_path / "seed"
     client = tmp_path / "client"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "clone", str(remote), str(seed)], check=True, capture_output=True
-    )
+    subprocess.run(["git", "clone", str(remote), str(seed)], check=True, capture_output=True)
     local = seed / "local.txt"
     remote_file = seed / "remote.txt"
     local.write_text("base\n", encoding="utf-8")
@@ -1496,9 +1513,7 @@ def test_pull_rebase_autostash_restores_changes(qtbot: QtBot, tmp_path: Path) ->
     )
     _git(seed, *identity, "commit", "-m", "initial")
     _git(seed, "push", "-u", "origin", "master")
-    subprocess.run(
-        ["git", "clone", str(remote), str(client)], check=True, capture_output=True
-    )
+    subprocess.run(["git", "clone", str(remote), str(client)], check=True, capture_output=True)
     remote_file.write_text("remote update\n", encoding="utf-8")
     _git(seed, *identity, "commit", "-am", "remote update")
     _git(seed, "push")
@@ -1519,9 +1534,7 @@ def test_reset_to_upstream_discards_local_history_and_tracked_changes(
     seed = tmp_path / "seed"
     client = tmp_path / "client"
     subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "clone", str(remote), str(seed)], check=True, capture_output=True
-    )
+    subprocess.run(["git", "clone", str(remote), str(seed)], check=True, capture_output=True)
     identity = (
         "-c",
         "user.name=MyGitClient Test",
@@ -1533,9 +1546,7 @@ def test_reset_to_upstream_discards_local_history_and_tracked_changes(
     _git(seed, "add", "tracked.txt")
     _git(seed, *identity, "commit", "-m", "initial")
     _git(seed, "push", "-u", "origin", "master")
-    subprocess.run(
-        ["git", "clone", str(remote), str(client)], check=True, capture_output=True
-    )
+    subprocess.run(["git", "clone", str(remote), str(client)], check=True, capture_output=True)
 
     tracked.write_text("remote\n", encoding="utf-8")
     _git(seed, *identity, "commit", "-am", "remote update")
@@ -1556,15 +1567,11 @@ def test_reset_to_upstream_discards_local_history_and_tracked_changes(
     assert mutations == ["reset-to-upstream"]
     assert client_file.read_text(encoding="utf-8") == "remote\n"
     assert (client / "untracked.txt").read_text(encoding="utf-8") == "keep me\n"
-    head = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=client, text=True
-    ).strip()
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=client, text=True).strip()
     upstream = subprocess.check_output(
         ["git", "rev-parse", "origin/master"], cwd=client, text=True
     ).strip()
-    status = subprocess.check_output(
-        ["git", "status", "--porcelain"], cwd=client, text=True
-    )
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=client, text=True)
     assert head == upstream
     assert status == "?? untracked.txt\n"
 
@@ -1588,11 +1595,14 @@ def test_fetch_and_push_with_upstream(qtbot: QtBot, tmp_path: Path) -> None:
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_push(repository, branch="main", set_upstream=True)
 
-    assert subprocess.check_output(
-        ["git", "rev-parse", "--abbrev-ref", "main@{upstream}"],
-        cwd=repository,
-        text=True,
-    ).strip() == "origin/main"
+    assert (
+        subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "main@{upstream}"],
+            cwd=repository,
+            text=True,
+        ).strip()
+        == "origin/main"
+    )
     local_oid = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=repository, text=True
     ).strip()
@@ -1632,11 +1642,14 @@ def test_publish_repository_adds_origin_and_pushes_current_branch(
     assert subprocess.check_output(
         ["git", "remote", "get-url", "origin"], cwd=repository, text=True
     ).strip() == str(remote)
-    assert subprocess.check_output(
-        ["git", "rev-parse", "--abbrev-ref", "main@{upstream}"],
-        cwd=repository,
-        text=True,
-    ).strip() == "origin/main"
+    assert (
+        subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "main@{upstream}"],
+            cwd=repository,
+            text=True,
+        ).strip()
+        == "origin/main"
+    )
 
 
 def test_sync_commands_can_recurse_into_submodules(

@@ -17,6 +17,8 @@ from mygitclient.git.models import (
     CommitSummary,
     IncomingCommitsSnapshot,
     RefComparisonSnapshot,
+    StashFilesSnapshot,
+    StashInfo,
     TagInfo,
     TagsSnapshot,
 )
@@ -74,9 +76,7 @@ def test_history_panel_prepends_incoming_commits_to_graph(qtbot: QtBot) -> None:
         upstream="origin/main",
         behind=1,
     )
-    remote = BranchInfo(
-        "refs/remotes/origin/main", "origin/main", incoming.oid, True
-    )
+    remote = BranchInfo("refs/remotes/origin/main", "origin/main", incoming.oid, True)
     panel.show_branches(BranchesSnapshot(Path("repository"), (branch, remote)))
     panel.show_page(CommitPage(Path("repository"), (local,), 0, False))
 
@@ -109,6 +109,29 @@ def test_history_panel_emits_load_more_request(qtbot: QtBot) -> None:
 
     with qtbot.waitSignal(panel.load_more_requested, timeout=1000):
         panel.load_more_button.click()
+
+
+def test_history_panel_shows_stash_files_and_selects_their_diff(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    repository = Path("repository")
+    stash = StashInfo("stash@{0}", "4" * 40, "On main: saved work")
+    change = CommitFileChange("M", "src/app.py")
+    selected: list[tuple[object, object]] = []
+
+    def record_selection(stash_value: object, file_value: object) -> None:
+        selected.append((stash_value, file_value))
+
+    panel.stash_file_selected.connect(record_selection)
+
+    panel.show_stash(stash)
+    panel.show_stash_files(StashFilesSnapshot(repository, stash, (change,)))
+    item = panel.files.topLevelItem(0)
+    assert item is not None
+    panel.files.setCurrentItem(item)
+
+    assert panel.details_label.text().startswith("On main: saved work")
+    assert selected == [(stash, change)]
 
 
 def test_history_panel_orders_selected_cherry_pick_commits_oldest_first(
@@ -188,9 +211,7 @@ def test_history_panel_labels_branch_remote_tag_and_branch_point(qtbot: QtBot) -
             repository,
             (
                 BranchInfo("refs/heads/main", "main", fork_oid, False),
-                BranchInfo(
-                    "refs/heads/feature", "feature", head_oid, False, current=True
-                ),
+                BranchInfo("refs/heads/feature", "feature", head_oid, False, current=True),
                 BranchInfo(
                     "refs/remotes/origin/feature",
                     "origin/feature",
@@ -200,13 +221,9 @@ def test_history_panel_labels_branch_remote_tag_and_branch_point(qtbot: QtBot) -
             ),
         )
     )
-    panel.show_tags(
-        TagsSnapshot(repository, (TagInfo("v1.0", head_oid, head_oid, False),))
-    )
+    panel.show_tags(TagsSnapshot(repository, (TagInfo("v1.0", head_oid, head_oid, False),)))
     panel.show_branch_point(
-        BranchPointSnapshot(
-            repository, "refs/heads/feature", "refs/heads/main", fork_oid
-        )
+        BranchPointSnapshot(repository, "refs/heads/feature", "refs/heads/main", fork_oid)
     )
     panel.show_page(
         CommitPage(

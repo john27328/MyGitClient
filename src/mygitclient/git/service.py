@@ -37,7 +37,9 @@ from mygitclient.git.models import (
     RepositoryOperationSnapshot,
     RepositoryStatusSnapshot,
     RevertPreviewSnapshot,
+    StashDiffSnapshot,
     StashesSnapshot,
+    StashFilesSnapshot,
     StashInfo,
     TagsSnapshot,
     UnifiedDiff,
@@ -49,6 +51,7 @@ from mygitclient.git.parsers import (
     parse_branches,
     parse_commit_files,
     parse_commit_log,
+    parse_path_diff,
     parse_stashes,
     parse_status_porcelain_v2,
     parse_tags,
@@ -165,6 +168,8 @@ class GitService(QObject):
     queue_changed = Signal(object)
     tags_ready = Signal(object)
     stashes_ready = Signal(object)
+    stash_files_ready = Signal(object)
+    stash_diff_ready = Signal(object)
 
     _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
@@ -180,17 +185,11 @@ class GitService(QObject):
         self._latest_diff_request: dict[tuple[Path, str, bool], int] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
         self._discard_batches: dict[GitRunner, _DiscardBatch] = {}
-        self._publish_repository_workflows: dict[
-            GitRunner, _PublishRepositoryWorkflow
-        ] = {}
-        self._reset_to_upstream_workflows: dict[
-            GitRunner, _ResetToUpstreamWorkflow
-        ] = {}
+        self._publish_repository_workflows: dict[GitRunner, _PublishRepositoryWorkflow] = {}
+        self._reset_to_upstream_workflows: dict[GitRunner, _ResetToUpstreamWorkflow] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
-        self._incoming_commit_requests: dict[
-            GitRunner, tuple[Path, str, str, int, int]
-        ] = {}
+        self._incoming_commit_requests: dict[GitRunner, tuple[Path, str, str, int, int]] = {}
         self._latest_incoming_commit_request: dict[tuple[Path, str], int] = {}
         self._branch_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_branch_request: dict[Path, int] = {}
@@ -200,21 +199,21 @@ class GitService(QObject):
         self._latest_tag_request: dict[Path, int] = {}
         self._stash_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_stash_request: dict[Path, int] = {}
+        self._stash_files_requests: dict[GitRunner, tuple[Path, StashInfo, int]] = {}
+        self._latest_stash_files_request: dict[Path, int] = {}
+        self._stash_diff_requests: dict[GitRunner, tuple[Path, StashInfo, str, int]] = {}
+        self._latest_stash_diff_request: dict[Path, int] = {}
         self._commit_files_requests: dict[GitRunner, tuple[Path, str, int]] = {}
         self._latest_commit_files_request: dict[Path, int] = {}
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_commit_diff_request: dict[Path, int] = {}
         self._comparison_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_comparison_request: dict[Path, int] = {}
-        self._comparison_diff_requests: dict[
-            GitRunner, tuple[Path, str, str, str, int]
-        ] = {}
+        self._comparison_diff_requests: dict[GitRunner, tuple[Path, str, str, str, int]] = {}
         self._latest_comparison_diff_request: dict[Path, int] = {}
         self._amend_preview_requests: dict[GitRunner, tuple[Path, str, int]] = {}
         self._latest_amend_preview_request: dict[Path, int] = {}
-        self._amend_diff_requests: dict[
-            GitRunner, tuple[Path, str, str | None, int]
-        ] = {}
+        self._amend_diff_requests: dict[GitRunner, tuple[Path, str, str | None, int]] = {}
         self._latest_amend_diff_request: dict[tuple[Path, str | None], int] = {}
         self._checkout_workflows: dict[GitRunner, _CheckoutWorkflow] = {}
         self._cherry_pick_preview_requests: dict[
@@ -288,9 +287,7 @@ class GitService(QObject):
         )
         return runner
 
-    def request_branch_point(
-        self, repository: Path, branch_ref: str, base_ref: str
-    ) -> GitRunner:
+    def request_branch_point(self, repository: Path, branch_ref: str, base_ref: str) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
@@ -333,9 +330,7 @@ class GitService(QObject):
         )
         return runner
 
-    def request_stash_action(
-        self, repository: Path, stash: StashInfo, *, action: str
-    ) -> GitRunner:
+    def request_stash_action(self, repository: Path, stash: StashInfo, *, action: str) -> GitRunner:
         if action not in {"apply", "pop", "drop"}:
             raise ValueError(f"Unsupported stash action: {action}")
         runner = GitRunner(parent=self)
@@ -356,14 +351,8 @@ class GitService(QObject):
     def request_create_tag(
         self, repository: Path, name: str, target: str, message: str = ""
     ) -> GitRunner:
-        arguments = (
-            ("tag", "-a", name, target, "-m", message)
-            if message
-            else ("tag", name, target)
-        )
-        return self._request_simple_mutation(
-            repository, arguments, "tags:changed", "create tag"
-        )
+        arguments = ("tag", "-a", name, target, "-m", message) if message else ("tag", name, target)
+        return self._request_simple_mutation(repository, arguments, "tags:changed", "create tag")
 
     def request_delete_tag(self, repository: Path, name: str) -> GitRunner:
         return self._request_simple_mutation(
@@ -409,24 +398,16 @@ class GitService(QObject):
                 ),
                 "stash changes before checkout",
             )
-        arguments = (
-            ("switch", "--track", branch.name)
-            if branch.remote
-            else ("switch", branch.name)
-        )
+        arguments = ("switch", "--track", branch.name) if branch.remote else ("switch", branch.name)
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = f"branch:{branch.name}"
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
-        self._operation_queue.enqueue(
-            runner, GitCommand(arguments, repository, "checkout branch")
-        )
+        self._operation_queue.enqueue(runner, GitCommand(arguments, repository, "checkout branch"))
         return runner
 
-    def request_checkout_commit(
-        self, repository: Path, commit: CommitSummary
-    ) -> GitRunner:
+    def request_checkout_commit(self, repository: Path, commit: CommitSummary) -> GitRunner:
         return self._request_simple_mutation(
             repository,
             ("switch", "--detach", commit.oid),
@@ -500,8 +481,7 @@ class GitService(QObject):
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
-            runner,
-            GitCommand(("branch", "-m", branch.name, new_name), repository, "rename branch")
+            runner, GitCommand(("branch", "-m", branch.name, new_name), repository, "rename branch")
         )
         return runner
 
@@ -520,9 +500,7 @@ class GitService(QObject):
         )
         return runner
 
-    def request_delete_remote_branch(
-        self, repository: Path, branch: BranchInfo
-    ) -> GitRunner:
+    def request_delete_remote_branch(self, repository: Path, branch: BranchInfo) -> GitRunner:
         remote, separator, branch_name = branch.name.partition("/")
         if not branch.remote or not separator or not remote or not branch_name:
             raise ValueError("Remote branch must include a remote and branch name")
@@ -817,9 +795,7 @@ class GitService(QObject):
         )
         return runner
 
-    def request_revert(
-        self, repository: Path, commits: tuple[CommitSummary, ...]
-    ) -> GitRunner:
+    def request_revert(self, repository: Path, commits: tuple[CommitSummary, ...]) -> GitRunner:
         if not commits:
             raise ValueError("At least one commit is required")
         if any(len(commit.parent_oids) > 1 for commit in commits):
@@ -839,9 +815,7 @@ class GitService(QObject):
         )
         return runner
 
-    def request_rebase_preview(
-        self, repository: Path, target: BranchInfo
-    ) -> GitRunner:
+    def request_rebase_preview(self, repository: Path, target: BranchInfo) -> GitRunner:
         if target.current:
             raise ValueError("Cannot rebase a branch onto itself")
         request_id = next(self._request_ids)
@@ -867,9 +841,7 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, workflow.repository, operation))
         return runner
 
-    def request_rebase(
-        self, repository: Path, target: BranchInfo, *, autostash: bool
-    ) -> GitRunner:
+    def request_rebase(self, repository: Path, target: BranchInfo, *, autostash: bool) -> GitRunner:
         if target.current:
             raise ValueError("Cannot rebase a branch onto itself")
         arguments = ["rebase"]
@@ -966,9 +938,7 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, workflow.repository, operation))
         return runner
 
-    def request_merge(
-        self, repository: Path, target: BranchInfo, *, autostash: bool
-    ) -> GitRunner:
+    def request_merge(self, repository: Path, target: BranchInfo, *, autostash: bool) -> GitRunner:
         arguments = ["merge", "--no-edit"]
         if autostash:
             arguments.append("--autostash")
@@ -983,11 +953,13 @@ class GitService(QObject):
         self._reflog_requests[runner] = repository
         runner.completed.connect(self._handle_reflog)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(GitCommand(
-            ("reflog", "-n", "100", "--date=iso", "--format=%h  %gd  %cd  %gs"),
-            repository,
-            "read reflog",
-        ))
+        runner.run(
+            GitCommand(
+                ("reflog", "-n", "100", "--date=iso", "--format=%h  %gd  %cd  %gs"),
+                repository,
+                "read reflog",
+            )
+        )
         return runner
 
     def request_amend_preview(self, repository: Path, commit_oid: str) -> GitRunner:
@@ -1420,18 +1392,14 @@ class GitService(QObject):
             ),
         )
 
-    def request_conflict_side(
-        self, repository: Path, file: FileStatus, *, side: str
-    ) -> GitRunner:
+    def request_conflict_side(self, repository: Path, file: FileStatus, *, side: str) -> GitRunner:
         if not file.unmerged:
             raise ValueError("Conflict sides are available only for unmerged files")
         if side not in {"ours", "theirs"}:
             raise ValueError(f"Unsupported conflict side: {side}")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
-        self._conflict_side_workflows[runner] = _ConflictSideWorkflow(
-            repository, file, side
-        )
+        self._conflict_side_workflows[runner] = _ConflictSideWorkflow(repository, file, side)
         runner.completed.connect(self._handle_conflict_side_checkout)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
@@ -1444,9 +1412,7 @@ class GitService(QObject):
         )
         return runner
 
-    def request_conflict_versions(
-        self, repository: Path, file: FileStatus
-    ) -> GitRunner:
+    def request_conflict_versions(self, repository: Path, file: FileStatus) -> GitRunner:
         if not file.unmerged:
             raise ValueError("Conflict versions are available only for unmerged files")
         request_id = next(self._request_ids)
@@ -1475,12 +1441,15 @@ class GitService(QObject):
             if workflow.stage == 0
             else ("show", f":{workflow.stage}:{workflow.file.path}")
         )
-        runner.run(GitCommand(
-            arguments,
-            workflow.repository,
-            "read conflict attributes" if workflow.stage == 0 else
-            f"read conflict stage {workflow.stage}",
-        ))
+        runner.run(
+            GitCommand(
+                arguments,
+                workflow.repository,
+                "read conflict attributes"
+                if workflow.stage == 0
+                else f"read conflict stage {workflow.stage}",
+            )
+        )
         return runner
 
     def request_mergetool(self, repository: Path, file: FileStatus) -> GitRunner:
@@ -1511,9 +1480,7 @@ class GitService(QObject):
             return None
         return self.request_stage(repository, file, staged=True)
 
-    def request_stage_all(
-        self, repository: Path, *, staged: bool, has_head: bool
-    ) -> GitRunner:
+    def request_stage_all(self, repository: Path, *, staged: bool, has_head: bool) -> GitRunner:
         if staged:
             arguments = ("add", "-A", "--", ".")
             operation = "stage all files"
@@ -1716,9 +1683,7 @@ class GitService(QObject):
             runners.append(runner)
         return tuple(runners)
 
-    def request_stash_files(
-        self, repository: Path, files: tuple[FileStatus, ...]
-    ) -> GitRunner:
+    def request_stash_files(self, repository: Path, files: tuple[FileStatus, ...]) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "stash"
@@ -1738,6 +1703,68 @@ class GitService(QObject):
                 ),
                 repository,
                 "stash selected files",
+            ),
+        )
+        return runner
+
+    def request_stash_contents(self, repository: Path, stash: StashInfo) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_stash_files_request[repository] = request_id
+        self._stash_files_requests[runner] = (repository, stash, request_id)
+        runner.completed.connect(self._handle_stash_files)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                ("stash", "show", "--name-status", "-z", "--include-untracked", stash.ref),
+                repository,
+                "read stash files",
+            )
+        )
+        return runner
+
+    def request_stash_diff(self, repository: Path, stash: StashInfo, path: str) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        self._latest_stash_diff_request[repository] = request_id
+        self._stash_diff_requests[runner] = (repository, stash, path, request_id)
+        runner.completed.connect(self._handle_stash_diff)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "stash",
+                    "show",
+                    "-p",
+                    "--include-untracked",
+                    "--no-ext-diff",
+                    "--no-color",
+                    stash.ref,
+                ),
+                repository,
+                "read stash diff",
+            )
+        )
+        return runner
+
+    def request_restore_commit_file(
+        self,
+        repository: Path,
+        revision: str | None,
+        path: str,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                ("restore", f"--source={revision or self._EMPTY_TREE}", "--worktree", "--", path),
+                repository,
+                "restore file from commit",
             )
         )
         return runner
@@ -1809,9 +1836,7 @@ class GitService(QObject):
     def _handle_repository_operation(self, result: object) -> None:
         runner = self.sender()
         if not isinstance(runner, GitRunner):
-            self.operation_failed.emit(
-                "Git returned an operation state from an unknown request"
-            )
+            self.operation_failed.emit("Git returned an operation state from an unknown request")
             return
         request = self._operation_state_requests.pop(runner, None)
         self._release_runner(runner)
@@ -1825,17 +1850,11 @@ class GitService(QObject):
         if result.cancelled:
             return
         if not result.succeeded:
-            self.operation_failed.emit(
-                result.error_text or "Could not read repository operation"
-            )
+            self.operation_failed.emit(result.error_text or "Could not read repository operation")
             return
-        git_dir = Path(
-            result.stdout.decode("utf-8", errors="surrogateescape").strip()
-        )
+        git_dir = Path(result.stdout.decode("utf-8", errors="surrogateescape").strip())
         operation = detect_repository_operation(git_dir)
-        self.repository_operation_ready.emit(
-            RepositoryOperationSnapshot(repository, operation)
-        )
+        self.repository_operation_ready.emit(RepositoryOperationSnapshot(repository, operation))
 
     @Slot(object)
     def _handle_repository_operation_action(self, result: object) -> None:
@@ -1861,9 +1880,7 @@ class GitService(QObject):
         if kind == "rebase" and (operation is None or action == "abort"):
             _remove_interactive_rebase_state(repository)
         if operation is None and repository in self._pending_cherry_pick_autostash:
-            workflow = _CherryPickWorkflow(
-                repository, (), "restore-stash", stashed=True
-            )
+            workflow = _CherryPickWorkflow(repository, (), "restore-stash", stashed=True)
             self._run_cherry_pick_workflow(
                 workflow,
                 ("stash", "pop", "--index"),
@@ -1907,9 +1924,7 @@ class GitService(QObject):
         self._reflog_requests.pop(runner, None)
         self._conflict_versions_workflows.pop(runner, None)
         if checkout is not None:
-            self.operation_failed.emit(
-                f"Could not {checkout.step} during checkout: {message}"
-            )
+            self.operation_failed.emit(f"Could not {checkout.step} during checkout: {message}")
             return
         if publish is not None:
             self.operation_failed.emit(f"Could not publish to GitHub: {message}")
@@ -2014,9 +2029,7 @@ class GitService(QObject):
     def _handle_incoming_commits(self, result: object) -> None:
         runner = self.sender()
         if not isinstance(runner, GitRunner):
-            self.operation_failed.emit(
-                "Git returned incoming commits from an unknown operation"
-            )
+            self.operation_failed.emit("Git returned incoming commits from an unknown operation")
             return
         request = self._incoming_commit_requests.pop(runner, None)
         self._release_runner(runner)
@@ -2074,17 +2087,13 @@ class GitService(QObject):
         except (ValueError, RuntimeError) as error:
             self.operation_failed.emit(str(error))
             return
-        self.comparison_ready.emit(
-            RefComparisonSnapshot(repository, base_ref, compare_ref, files)
-        )
+        self.comparison_ready.emit(RefComparisonSnapshot(repository, base_ref, compare_ref, files))
 
     @Slot(object)
     def _handle_ref_comparison_diff(self, result: object) -> None:
         runner = self.sender()
         if not isinstance(runner, GitRunner):
-            self.operation_failed.emit(
-                "Git returned comparison diff from an unknown operation"
-            )
+            self.operation_failed.emit("Git returned comparison diff from an unknown operation")
             return
         request = self._comparison_diff_requests.pop(runner, None)
         self._release_runner(runner)
@@ -2238,9 +2247,7 @@ class GitService(QObject):
         if workflow.step == "stash":
             if not result.succeeded:
                 self.operation_failed.emit(
-                    format_git_error(
-                        result.error_text, operation="stash local changes"
-                    )
+                    format_git_error(result.error_text, operation="stash local changes")
                 )
                 return
             workflow.stashed = b"No local changes to save" not in result.stdout
@@ -2254,9 +2261,7 @@ class GitService(QObject):
         if workflow.step == "verify-stash":
             if not result.succeeded:
                 self.operation_failed.emit(
-                    format_git_error(
-                        result.error_text, operation="verify automatic stash"
-                    )
+                    format_git_error(result.error_text, operation="verify automatic stash")
                 )
                 return
             if result.stdout:
@@ -2287,9 +2292,7 @@ class GitService(QObject):
                 )
             if workflow.stashed:
                 workflow.step = "restore"
-                self._run_checkout_workflow(
-                    workflow, ("stash", "pop"), "restore automatic stash"
-                )
+                self._run_checkout_workflow(workflow, ("stash", "pop"), "restore automatic stash")
                 return
             if workflow.pending_error is not None:
                 self.operation_failed.emit(workflow.pending_error)
@@ -2297,12 +2300,8 @@ class GitService(QObject):
                 self.mutation_ready.emit(f"branch:{workflow.branch.name}")
             return
         if not result.succeeded:
-            restore_error = format_git_error(
-                result.error_text, operation="restore automatic stash"
-            )
-            prefix = (
-                f"{workflow.pending_error}\n\n" if workflow.pending_error is not None else ""
-            )
+            restore_error = format_git_error(result.error_text, operation="restore automatic stash")
+            prefix = f"{workflow.pending_error}\n\n" if workflow.pending_error is not None else ""
             self.operation_failed.emit(
                 f"{prefix}The automatic stash was kept because it could not be restored:\n"
                 f"{restore_error}"
@@ -2335,9 +2334,7 @@ class GitService(QObject):
         if workflow.step == "stash":
             if not result.succeeded:
                 self.operation_failed.emit(
-                    format_git_error(
-                        result.error_text, operation="stash local changes"
-                    )
+                    format_git_error(result.error_text, operation="stash local changes")
                 )
                 return
             workflow.stashed = b"No local changes to save" not in result.stdout
@@ -2371,9 +2368,7 @@ class GitService(QObject):
             self.operation_failed.emit(
                 "Cherry-pick completed, but the automatic stash could not be restored. "
                 "It was kept in the stash list.\n\n"
-                + format_git_error(
-                    result.error_text, operation="restore automatic stash"
-                )
+                + format_git_error(result.error_text, operation="restore automatic stash")
             )
         else:
             self._pending_cherry_pick_autostash.discard(workflow.repository)
@@ -2398,9 +2393,7 @@ class GitService(QObject):
             self.operation_cancelled.emit()
             return
         if not result.succeeded:
-            self.operation_failed.emit(
-                result.error_text or "Could not preview cherry-pick"
-            )
+            self.operation_failed.emit(result.error_text or "Could not preview cherry-pick")
             return
         files = tuple(
             sorted(
@@ -2411,9 +2404,7 @@ class GitService(QObject):
                 }
             )
         )
-        self.cherry_pick_preview_ready.emit(
-            CherryPickPreviewSnapshot(repository, commits, files)
-        )
+        self.cherry_pick_preview_ready.emit(CherryPickPreviewSnapshot(repository, commits, files))
 
     @Slot(object)
     def _handle_revert_workflow(self, result: object) -> None:
@@ -2502,10 +2493,7 @@ class GitService(QObject):
         if workflow is None or not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected rebase preview")
             return
-        if (
-            self._latest_rebase_preview_request.get(workflow.repository)
-            != workflow.request_id
-        ):
+        if self._latest_rebase_preview_request.get(workflow.repository) != workflow.request_id:
             return
         if result.cancelled:
             self._latest_rebase_preview_request.pop(workflow.repository, None)
@@ -2513,9 +2501,7 @@ class GitService(QObject):
             return
         if not result.succeeded:
             self._latest_rebase_preview_request.pop(workflow.repository, None)
-            self.operation_failed.emit(
-                result.error_text or "Could not prepare rebase preview"
-            )
+            self.operation_failed.emit(result.error_text or "Could not prepare rebase preview")
             return
         if workflow.step == "head":
             workflow.head_oid = result.stdout.decode("ascii", errors="replace").strip()
@@ -2527,9 +2513,7 @@ class GitService(QObject):
             )
             return
         if workflow.step == "base":
-            workflow.base_oid = (
-                result.stdout.decode("ascii", errors="replace").strip()
-            )
+            workflow.base_oid = result.stdout.decode("ascii", errors="replace").strip()
             workflow.step = "commits"
             self._run_rebase_preview(
                 workflow,
@@ -2607,7 +2591,9 @@ class GitService(QObject):
             self._run_merge_preview(
                 workflow,
                 (
-                    "log", "--reverse", "--date=iso-strict",
+                    "log",
+                    "--reverse",
+                    "--date=iso-strict",
                     "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
                     f"HEAD..{workflow.target.full_name}",
                 ),
@@ -2624,14 +2610,22 @@ class GitService(QObject):
             )
             return
         self._latest_merge_preview_request.pop(workflow.repository, None)
-        files = tuple(sorted(
-            part.decode("utf-8", errors="surrogateescape")
-            for part in result.stdout.split(b"\0") if part
-        ))
-        self.merge_preview_ready.emit(MergePreviewSnapshot(
-            workflow.repository, workflow.target, workflow.base_oid,
-            workflow.commits, files,
-        ))
+        files = tuple(
+            sorted(
+                part.decode("utf-8", errors="surrogateescape")
+                for part in result.stdout.split(b"\0")
+                if part
+            )
+        )
+        self.merge_preview_ready.emit(
+            MergePreviewSnapshot(
+                workflow.repository,
+                workflow.target,
+                workflow.base_oid,
+                workflow.commits,
+                files,
+            )
+        )
 
     @Slot(object)
     def _handle_reflog(self, result: object) -> None:
@@ -2646,8 +2640,7 @@ class GitService(QObject):
             self.operation_failed.emit(result.error_text or "Could not read reflog")
             return
         entries = tuple(
-            line for line in result.stdout.decode("utf-8", errors="replace").splitlines()
-            if line
+            line for line in result.stdout.decode("utf-8", errors="replace").splitlines() if line
         )
         self.reflog_ready.emit(ReflogSnapshot(repository, entries))
 
@@ -2671,8 +2664,7 @@ class GitService(QObject):
             if result.succeeded:
                 fields = result.stdout.decode("utf-8", errors="surrogateescape").split("\0")
                 workflow.attributes = tuple(
-                    (fields[index + 1], fields[index + 2])
-                    for index in range(0, len(fields) - 2, 3)
+                    (fields[index + 1], fields[index + 2]) for index in range(0, len(fields) - 2, 3)
                 )
             workflow.stage = 1
             self._run_conflict_version(workflow)
@@ -2694,10 +2686,16 @@ class GitService(QObject):
             return
         self._latest_conflict_versions_request.pop(key, None)
         base, current, incoming = contents
-        self.conflict_versions_ready.emit(ConflictVersionsSnapshot(
-            workflow.repository, workflow.file.path, base, current, incoming,
-            workflow.attributes,
-        ))
+        self.conflict_versions_ready.emit(
+            ConflictVersionsSnapshot(
+                workflow.repository,
+                workflow.file.path,
+                base,
+                current,
+                incoming,
+                workflow.attributes,
+            )
+        )
 
     @Slot(object)
     def _handle_commit_files(self, result: object) -> None:
@@ -2726,6 +2724,62 @@ class GitService(QObject):
             self.operation_failed.emit(str(error))
             return
         self.commit_files_ready.emit(CommitFilesSnapshot(repository, commit_oid, files))
+
+    @Slot(object)
+    def _handle_stash_files(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned stash files from an unknown operation")
+            return
+        request = self._stash_files_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected stash file result")
+            return
+        repository, stash, request_id = request
+        if self._latest_stash_files_request.get(repository) != request_id:
+            return
+        self._latest_stash_files_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read stash files")
+            return
+        try:
+            files = parse_commit_files(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.stash_files_ready.emit(StashFilesSnapshot(repository, stash, files))
+
+    @Slot(object)
+    def _handle_stash_diff(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned a stash diff from an unknown operation")
+            return
+        request = self._stash_diff_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected stash diff result")
+            return
+        repository, stash, path, request_id = request
+        if self._latest_stash_diff_request.get(repository) != request_id:
+            return
+        self._latest_stash_diff_request.pop(repository, None)
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read stash diff")
+            return
+        try:
+            diff = parse_path_diff(result.stdout, path, staged=False)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.stash_diff_ready.emit(StashDiffSnapshot(repository, stash, diff))
 
     @Slot(object)
     def _handle_amend_preview(self, result: object) -> None:
@@ -2849,9 +2903,7 @@ class GitService(QObject):
             return
         if not result.succeeded:
             self.operation_failed.emit(
-                format_git_error(
-                    result.error_text, operation=result.command.operation
-                )
+                format_git_error(result.error_text, operation=result.command.operation)
             )
             return
         self.mutation_ready.emit(path)
@@ -2911,7 +2963,10 @@ def detect_repository_operation(git_dir: Path) -> RepositoryOperation | None:
         remaining = _read_operation_todo(git_dir / "sequencer" / "todo")
         total = len(remaining) or None
         return RepositoryOperation(
-            "cherry-pick", 1 if total else None, total, remaining[0] if remaining else None,
+            "cherry-pick",
+            1 if total else None,
+            total,
+            remaining[0] if remaining else None,
             remaining[1:] if remaining else (),
         )
     if (git_dir / "REVERT_HEAD").is_file():
@@ -2926,9 +2981,7 @@ def resolve_git_dir(repository: Path) -> Path:
     if dot_git.is_dir():
         return dot_git
     try:
-        marker = dot_git.read_text(
-            encoding="utf-8", errors="surrogateescape"
-        ).strip()
+        marker = dot_git.read_text(encoding="utf-8", errors="surrogateescape").strip()
     except OSError:
         return dot_git
     prefix = "gitdir:"

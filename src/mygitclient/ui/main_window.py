@@ -83,7 +83,9 @@ from mygitclient.git.models import (
     RepositoryStatus,
     RepositoryStatusSnapshot,
     RevertPreviewSnapshot,
+    StashDiffSnapshot,
     StashesSnapshot,
+    StashFilesSnapshot,
     StashInfo,
     TagInfo,
     TagsSnapshot,
@@ -129,9 +131,7 @@ class MainWindow(QMainWindow):
     github_repository_requested = Signal(object)
     github_pull_request_requested = Signal(object, str)
 
-    def __init__(
-        self, settings: QSettings, theme: Theme, *, session_mode: bool = False
-    ) -> None:
+    def __init__(self, settings: QSettings, theme: Theme, *, session_mode: bool = False) -> None:
         super().__init__()
         self._settings = settings
         self._theme = theme
@@ -225,9 +225,7 @@ class MainWindow(QMainWindow):
         self._reveal_file_action = self._changes_panel.reveal_action
         self._use_ours_action = self._changes_panel.use_ours_action
         self._use_theirs_action = self._changes_panel.use_theirs_action
-        self._conflict_actions_separator = (
-            self._changes_panel.conflict_actions_separator
-        )
+        self._conflict_actions_separator = self._changes_panel.conflict_actions_separator
         self._discard_action = self._changes_panel.discard_action
         self._stash_action = self._changes_panel.stash_action
         self._ignore_action = self._changes_panel.ignore_action
@@ -241,9 +239,7 @@ class MainWindow(QMainWindow):
         self._open_file_action.triggered.connect(self._open_selected_file)
         self._open_file_with_action.triggered.connect(self._open_selected_file_with)
         self._reveal_file_action.triggered.connect(self._reveal_selected_file)
-        self._use_ours_action.triggered.connect(
-            lambda: self._use_selected_conflict_side("ours")
-        )
+        self._use_ours_action.triggered.connect(lambda: self._use_selected_conflict_side("ours"))
         self._use_theirs_action.triggered.connect(
             lambda: self._use_selected_conflict_side("theirs")
         )
@@ -256,9 +252,7 @@ class MainWindow(QMainWindow):
         self._changes_panel.stash_requested.connect(self._stash_checked_changes)
         self._changes_panel.discard_requested.connect(self._discard_checked_changes)
         self._changes_panel.view_mode_changed.connect(self._changes_view_mode_changed)
-        self._changes_panel.presentation_mode_changed.connect(
-            self._changes_view_mode_changed
-        )
+        self._changes_panel.presentation_mode_changed.connect(self._changes_view_mode_changed)
         self._changes_panel.file_activated.connect(self._changed_file_activated)
         self._changes_panel.submodule_init_requested.connect(self._init_submodule)
         self._changes_panel.submodule_update_requested.connect(self._update_submodule)
@@ -277,18 +271,16 @@ class MainWindow(QMainWindow):
         self._history_panel = HistoryPanel(self._settings)
         self._history_panel.load_more_requested.connect(self._load_more_history)
         self._history_panel.commit_selected.connect(self._history_commit_selected)
-        self._history_panel.cherry_pick_requested.connect(
-            self._preview_cherry_pick
-        )
+        self._history_panel.cherry_pick_requested.connect(self._preview_cherry_pick)
         self._history_panel.revert_requested.connect(self._preview_revert)
-        self._history_panel.checkout_commit_requested.connect(
-            self._checkout_commit
-        )
+        self._history_panel.checkout_commit_requested.connect(self._checkout_commit)
         self._history_panel.focus_mode_changed.connect(self._history_focus_mode_changed)
         self._history_panel.file_selected.connect(self._history_file_selected)
-        self._history_panel.comparison_file_selected.connect(
-            self._history_comparison_file_selected
-        )
+        self._history_panel.stash_file_selected.connect(self._history_stash_file_selected)
+        self._history_panel.file_open_requested.connect(self._open_history_file)
+        self._history_panel.file_reveal_requested.connect(self._reveal_history_file)
+        self._history_panel.file_restore_requested.connect(self._restore_history_file)
+        self._history_panel.comparison_file_selected.connect(self._history_comparison_file_selected)
         refs_panel = self._history_panel.refs_panel
         refs_panel.refs_selected.connect(self._history_refs_selected)
         refs_panel.checkout_requested.connect(self._checkout_branch)
@@ -310,6 +302,7 @@ class MainWindow(QMainWindow):
         refs_panel.stash_apply_requested.connect(self._apply_stash)
         refs_panel.stash_pop_requested.connect(self._pop_stash)
         refs_panel.stash_drop_requested.connect(self._drop_stash)
+        refs_panel.stash_view_requested.connect(self._view_stash)
         refs_panel.repository_requested.connect(self._open_linked_repository)
 
         self._workspace_tabs = QTabWidget()
@@ -337,9 +330,7 @@ class MainWindow(QMainWindow):
         self._operation_continue.clicked.connect(
             lambda: self._run_repository_operation_action("continue")
         )
-        self._operation_skip.clicked.connect(
-            lambda: self._run_repository_operation_action("skip")
-        )
+        self._operation_skip.clicked.connect(lambda: self._run_repository_operation_action("skip"))
         self._operation_abort.clicked.connect(
             lambda: self._run_repository_operation_action("abort")
         )
@@ -359,9 +350,7 @@ class MainWindow(QMainWindow):
         self._conflict_editor = ConflictEditor()
         self._conflict_editor.save_requested.connect(self._save_conflict_result)
         self._conflict_editor.mergetool_requested.connect(self._launch_mergetool)
-        self._conflict_editor.binary_choice_requested.connect(
-            self._use_selected_conflict_side
-        )
+        self._conflict_editor.binary_choice_requested.connect(self._use_selected_conflict_side)
         self._diff_container = QStackedWidget()
         self._diff_container.setObjectName("diffContainer")
         self._diff_container.addWidget(self._diff_view)
@@ -389,16 +378,10 @@ class MainWindow(QMainWindow):
         self._diff_context_lines = 3
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
         self._wrap_button.toggled.connect(self._diff_wrap_changed)
-        self._whitespace_button.setChecked(
-            self._read_bool_setting("diff/showWhitespace")
-        )
+        self._whitespace_button.setChecked(self._read_bool_setting("diff/showWhitespace"))
         self._whitespace_button.toggled.connect(self._diff_whitespace_changed)
-        self._ignore_whitespace_button.setChecked(
-            self._read_bool_setting("diff/ignoreWhitespace")
-        )
-        self._ignore_whitespace_button.toggled.connect(
-            self._diff_ignore_whitespace_changed
-        )
+        self._ignore_whitespace_button.setChecked(self._read_bool_setting("diff/ignoreWhitespace"))
+        self._ignore_whitespace_button.toggled.connect(self._diff_ignore_whitespace_changed)
         self._apply_diff_wrap(self._wrap_button.isChecked())
         self._apply_diff_whitespace(self._whitespace_button.isChecked())
 
@@ -458,9 +441,7 @@ class MainWindow(QMainWindow):
         self._fetch_submodules_action = fetch_menu.addAction("Include submodules")
         self._fetch_submodules_action.setObjectName("fetchSubmodulesAction")
         self._fetch_submodules_action.setCheckable(True)
-        self._fetch_submodules_action.setChecked(
-            self._read_bool_setting("sync/fetchSubmodules")
-        )
+        self._fetch_submodules_action.setChecked(self._read_bool_setting("sync/fetchSubmodules"))
         self._fetch_submodules_action.triggered.connect(self._sync_options_changed)
         self._fetch_button = QToolButton()
         self._fetch_button.setObjectName("fetchButton")
@@ -476,18 +457,14 @@ class MainWindow(QMainWindow):
         self._pull_merge_action = pull_menu.addAction(load_icon("pull-merge.svg"), "Merge")
         self._pull_merge_action.setObjectName("pullMergeAction")
         self._pull_merge_action.setCheckable(True)
-        self._pull_rebase_action = pull_menu.addAction(
-            load_icon("pull-rebase.svg"), "Rebase"
-        )
+        self._pull_rebase_action = pull_menu.addAction(load_icon("pull-rebase.svg"), "Rebase")
         self._pull_rebase_action.setObjectName("pullRebaseAction")
         self._pull_rebase_action.setCheckable(True)
         pull_strategy_group = QActionGroup(self)
         pull_strategy_group.setExclusive(True)
         pull_strategy_group.addAction(self._pull_merge_action)
         pull_strategy_group.addAction(self._pull_rebase_action)
-        self._pull_rebase_action.setChecked(
-            self._read_bool_setting("sync/pullRebase")
-        )
+        self._pull_rebase_action.setChecked(self._read_bool_setting("sync/pullRebase"))
         self._pull_merge_action.setChecked(not self._pull_rebase_action.isChecked())
         pull_menu.addSeparator()
         self._pull_autostash_action = pull_menu.addAction(
@@ -495,15 +472,11 @@ class MainWindow(QMainWindow):
         )
         self._pull_autostash_action.setObjectName("pullAutostashAction")
         self._pull_autostash_action.setCheckable(True)
-        self._pull_autostash_action.setChecked(
-            self._read_bool_setting("sync/pullAutostash")
-        )
+        self._pull_autostash_action.setChecked(self._read_bool_setting("sync/pullAutostash"))
         self._pull_submodules_action = pull_menu.addAction("Include submodules")
         self._pull_submodules_action.setObjectName("pullSubmodulesAction")
         self._pull_submodules_action.setCheckable(True)
-        self._pull_submodules_action.setChecked(
-            self._read_bool_setting("sync/pullSubmodules")
-        )
+        self._pull_submodules_action.setChecked(self._read_bool_setting("sync/pullSubmodules"))
         pull_menu.addSeparator()
         self._reset_to_upstream_action = pull_menu.addAction(
             load_icon("remove.svg"), "Reset to upstream…"
@@ -541,9 +514,7 @@ class MainWindow(QMainWindow):
         self._push_submodules_action = push_menu.addAction("Include submodules")
         self._push_submodules_action.setObjectName("pushSubmodulesAction")
         self._push_submodules_action.setCheckable(True)
-        self._push_submodules_action.setChecked(
-            self._read_bool_setting("sync/pushSubmodules")
-        )
+        self._push_submodules_action.setChecked(self._read_bool_setting("sync/pushSubmodules"))
         self._push_submodules_action.triggered.connect(self._sync_options_changed)
         self._push_button = QToolButton()
         self._push_button.setObjectName("pushButton")
@@ -569,9 +540,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self._open_github_action)
         self._open_pull_request_action = QAction("Open Pull Request", self)
         self._open_pull_request_action.setObjectName("openPullRequestAction")
-        self._open_pull_request_action.triggered.connect(
-            self._open_pull_request_requested
-        )
+        self._open_pull_request_action.triggered.connect(self._open_pull_request_requested)
         toolbar.addAction(self._open_pull_request_action)
         self.addToolBar(toolbar)
         self._update_github_actions()
@@ -749,6 +718,8 @@ class MainWindow(QMainWindow):
         self._git.conflict_versions_ready.connect(self._show_conflict_versions)
         self._git.tags_ready.connect(self._show_tags)
         self._git.stashes_ready.connect(self._show_stashes)
+        self._git.stash_files_ready.connect(self._show_stash_files)
+        self._git.stash_diff_ready.connect(self._show_stash_diff)
         self._git.commit_files_ready.connect(self._show_commit_files)
         self._git.commit_diff_ready.connect(self._show_commit_diff)
         self._git.diff_ready.connect(self._show_diff)
@@ -756,9 +727,7 @@ class MainWindow(QMainWindow):
         self._git.operation_cancelled.connect(self._operation_cancelled)
         self._git.operation_failed.connect(self._show_git_error)
         self._git.queue_changed.connect(self._show_operation_queue)
-        self._workspace_discovery.linked_repositories_ready.connect(
-            self._linked_repositories_ready
-        )
+        self._workspace_discovery.linked_repositories_ready.connect(self._linked_repositories_ready)
         self._workspace_discovery.operation_failed.connect(self._show_git_error)
         self._repositories_panel.repository_activated.connect(self._open_recent_repository)
         self._repositories_panel.remove_requested.connect(self._remove_recent_repository)
@@ -863,11 +832,7 @@ class MainWindow(QMainWindow):
                 f"No Git repository was found in or above:\n{selected_path}",
             )
             return
-        if (
-            self._session_mode
-            and self._repository is not None
-            and repository != self._repository
-        ):
+        if self._session_mode and self._repository is not None and repository != self._repository:
             self.repository_tab_requested.emit(repository, remember)
             return
         if repository not in self._open_repositories:
@@ -921,9 +886,7 @@ class MainWindow(QMainWindow):
             lambda: self._request_activated_repository(repository, activation),
         )
 
-    def _request_activated_repository(
-        self, repository: Path, activation: int
-    ) -> None:
+    def _request_activated_repository(self, repository: Path, activation: int) -> None:
         if repository != self._repository or activation != self._repository_activation:
             return
         self._status_runner = self._git.request_status(repository)
@@ -960,10 +923,7 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def _history_focus_mode_changed(self, _focused: bool) -> None:
-        if (
-            self._workspace_tabs.currentIndex() == 1
-            and self._commit_diff_visible
-        ):
+        if self._workspace_tabs.currentIndex() == 1 and self._commit_diff_visible:
             self._apply_history_splitter_sizes()
 
     def _apply_history_splitter_sizes(self) -> None:
@@ -988,10 +948,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int)
     def _main_splitter_moved(self, _position: int, _index: int) -> None:
-        if (
-            self._workspace_tabs.currentIndex() != 1
-            or not self._commit_diff_visible
-        ):
+        if self._workspace_tabs.currentIndex() != 1 or not self._commit_diff_visible:
             return
         key = (
             "history/focusMainSplitterSizes"
@@ -1032,9 +989,7 @@ class MainWindow(QMainWindow):
         self._history_panel.clear_commits()
         self._history_panel.set_loading(True)
         self._status_label.setText(f"Loading history for {' + '.join(refs)}…")
-        self._history_runner = self._git.request_history(
-            self._repository, refs=self._history_refs
-        )
+        self._history_runner = self._git.request_history(self._repository, refs=self._history_refs)
         if len(refs) == 2:
             self._status_label.setText(f"Comparing {refs[0]} with {refs[1]}…")
             self._git.request_ref_comparison(self._repository, refs[0], refs[1])
@@ -1069,11 +1024,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _preview_cherry_pick(self, value: object) -> None:
-        if (
-            self._repository is None
-            or not isinstance(value, tuple)
-            or not value
-        ):
+        if self._repository is None or not isinstance(value, tuple) or not value:
             return
         raw_commits = cast(tuple[object, ...], value)
         if not all(isinstance(commit, CommitSummary) for commit in raw_commits):
@@ -1087,34 +1038,25 @@ class MainWindow(QMainWindow):
                 "from this action.",
             )
             return
-        self._status_label.setText(
-            f"Preparing cherry-pick of {len(commits)} commit(s)…"
-        )
+        self._status_label.setText(f"Preparing cherry-pick of {len(commits)} commit(s)…")
         self._git.request_cherry_pick_preview(self._repository, commits)
 
     @Slot(object)
     def _show_cherry_pick_preview(self, value: object) -> None:
-        if (
-            not isinstance(value, CherryPickPreviewSnapshot)
-            or value.repository != self._repository
-        ):
+        if not isinstance(value, CherryPickPreviewSnapshot) or value.repository != self._repository:
             return
         dirty = bool(self._repository_status and self._repository_status.files)
         dialog = QDialog(self)
         dialog.setObjectName("cherryPickPreviewDialog")
         dialog.setWindowTitle("Cherry-pick commits")
         layout = QVBoxLayout(dialog)
-        summary = QLabel(
-            f"Apply {len(value.commits)} commit(s) to the current branch?"
-        )
+        summary = QLabel(f"Apply {len(value.commits)} commit(s) to the current branch?")
         summary.setWordWrap(True)
         layout.addWidget(summary)
         preview = QPlainTextEdit()
         preview.setObjectName("cherryPickPreviewEdit")
         preview.setReadOnly(True)
-        commit_lines = [
-            f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits
-        ]
+        commit_lines = [f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits]
         file_lines = [f"  {path}" for path in value.files]
         preview.setPlainText(
             "Commits (oldest first):\n"
@@ -1136,8 +1078,7 @@ class MainWindow(QMainWindow):
             warning.setWordWrap(True)
             layout.addWidget(warning)
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel,
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=dialog,
         )
         ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
@@ -1152,9 +1093,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self._status_label.setText("Cherry-pick cancelled")
             return
-        self._status_label.setText(
-            f"Queueing cherry-pick of {len(value.commits)} commit(s)…"
-        )
+        self._status_label.setText(f"Queueing cherry-pick of {len(value.commits)} commit(s)…")
         self._git.request_cherry_pick(
             value.repository,
             value.commits,
@@ -1163,11 +1102,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _preview_revert(self, value: object) -> None:
-        if (
-            self._repository is None
-            or not isinstance(value, tuple)
-            or not value
-        ):
+        if self._repository is None or not isinstance(value, tuple) or not value:
             return
         raw_commits = cast(tuple[object, ...], value)
         if not all(isinstance(commit, CommitSummary) for commit in raw_commits):
@@ -1177,8 +1112,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "Revert unavailable",
-                "Merge commits need a mainline parent and cannot be reverted "
-                "from this action.",
+                "Merge commits need a mainline parent and cannot be reverted from this action.",
             )
             return
         if self._repository_status and self._repository_status.files:
@@ -1188,17 +1122,12 @@ class MainWindow(QMainWindow):
                 "Commit, stash, or discard local changes before reverting commits.",
             )
             return
-        self._status_label.setText(
-            f"Preparing revert of {len(commits)} commit(s)…"
-        )
+        self._status_label.setText(f"Preparing revert of {len(commits)} commit(s)…")
         self._git.request_revert_preview(self._repository, commits)
 
     @Slot(object)
     def _show_revert_preview(self, value: object) -> None:
-        if (
-            not isinstance(value, RevertPreviewSnapshot)
-            or value.repository != self._repository
-        ):
+        if not isinstance(value, RevertPreviewSnapshot) or value.repository != self._repository:
             return
         dialog = QDialog(self)
         dialog.setObjectName("revertPreviewDialog")
@@ -1213,9 +1142,7 @@ class MainWindow(QMainWindow):
         preview = QPlainTextEdit()
         preview.setObjectName("revertPreviewEdit")
         preview.setReadOnly(True)
-        commit_lines = [
-            f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits
-        ]
+        commit_lines = [f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits]
         file_lines = [f"  {path}" for path in value.files]
         preview.setPlainText(
             "Commits (revert order):\n"
@@ -1227,8 +1154,7 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(preview, 1)
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel,
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=dialog,
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Revert")
@@ -1239,9 +1165,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self._status_label.setText("Revert cancelled")
             return
-        self._status_label.setText(
-            f"Queueing revert of {len(value.commits)} commit(s)…"
-        )
+        self._status_label.setText(f"Queueing revert of {len(value.commits)} commit(s)…")
         self._git.request_revert(value.repository, value.commits)
 
     @Slot(object)
@@ -1249,11 +1173,7 @@ class MainWindow(QMainWindow):
         if not isinstance(value, CommitFilesSnapshot) or value.repository != self._repository:
             return
         status = self._repository_status
-        if (
-            self._amend.isChecked()
-            and status is not None
-            and status.branch.oid == value.commit_oid
-        ):
+        if self._amend.isChecked() and status is not None and status.branch.oid == value.commit_oid:
             self._amend_commit_files = value.files
             self._amend_files_loaded = True
             self._refresh_amend_tree_if_ready(value.repository)
@@ -1262,9 +1182,7 @@ class MainWindow(QMainWindow):
         if commit is None or commit.oid != value.commit_oid:
             return
         self._history_panel.show_files(value)
-        self._status_label.setText(
-            f"{len(value.files)} file(s) changed in {value.commit_oid[:8]}"
-        )
+        self._status_label.setText(f"{len(value.files)} file(s) changed in {value.commit_oid[:8]}")
 
     @Slot(object, object)
     def _history_file_selected(self, commit_value: object, file_value: object) -> None:
@@ -1275,9 +1193,7 @@ class MainWindow(QMainWindow):
             or not isinstance(file_value, CommitFileChange)
         ):
             return
-        self._status_label.setText(
-            f"Reading {file_value.path} from {commit_value.oid[:8]}…"
-        )
+        self._status_label.setText(f"Reading {file_value.path} from {commit_value.oid[:8]}…")
         self._git.request_commit_diff(
             self._repository,
             commit_value.oid,
@@ -1286,6 +1202,126 @@ class MainWindow(QMainWindow):
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
             context_lines=self._diff_context_lines,
         )
+
+    @Slot(object)
+    def _view_stash(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, StashInfo):
+            return
+        self._workspace_tabs.setCurrentIndex(1)
+        self._history_panel.show_stash(value)
+        self._diff_view.reset()
+        self._status_label.setText(f"Reading {value.ref}…")
+        self._git.request_stash_contents(self._repository, value)
+
+    @Slot(object)
+    def _show_stash_files(self, value: object) -> None:
+        if not isinstance(value, StashFilesSnapshot) or value.repository != self._repository:
+            return
+        self._history_panel.show_stash_files(value)
+        self._status_label.setText(f"{len(value.files)} file(s) in {value.stash.ref}")
+
+    @Slot(object, object)
+    def _history_stash_file_selected(self, stash_value: object, file_value: object) -> None:
+        if (
+            self._repository is None
+            or not isinstance(stash_value, StashInfo)
+            or not isinstance(file_value, CommitFileChange)
+        ):
+            return
+        self._status_label.setText(f"Reading {file_value.path} from {stash_value.ref}…")
+        self._git.request_stash_diff(self._repository, stash_value, file_value.path)
+
+    @Slot(object)
+    def _show_stash_diff(self, value: object) -> None:
+        if (
+            not isinstance(value, StashDiffSnapshot)
+            or value.repository != self._repository
+            or self._workspace_tabs.currentIndex() != 1
+        ):
+            return
+        blocker = QSignalBlocker(self._diff_version)
+        self._diff_version.clear()
+        self._diff_version.addItem(value.stash.ref, None)
+        del blocker
+        self._diff_view.refresh_version_selector()
+        self._diff_container.setCurrentWidget(self._diff_view)
+        self._diff_view.display_diff(
+            value.diff,
+            selection_key=None,
+            preserve_scroll=False,
+            whole_file_staged=False,
+        )
+        self._status_label.setText(f"Showing {value.diff.path} from {value.stash.ref}")
+
+    def _history_file_path(self, change: CommitFileChange) -> Path | None:
+        if self._repository is None:
+            return None
+        repository = self._repository.resolve()
+        path = (repository / change.path).resolve()
+        return path if path.is_relative_to(repository) else None
+
+    @Slot(object)
+    def _open_history_file(self, value: object) -> None:
+        if not isinstance(value, CommitFileChange):
+            return
+        path = self._history_file_path(value)
+        if path is None or not path.exists():
+            QMessageBox.information(
+                self,
+                "Open file",
+                "The file does not exist in the working tree.",
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "Open file", f"Could not open:\n{path}")
+
+    @Slot(object)
+    def _reveal_history_file(self, value: object) -> None:
+        if not isinstance(value, CommitFileChange):
+            return
+        path = self._history_file_path(value)
+        if path is None:
+            return
+        target = path if path.exists() else path.parent
+        if not target.exists():
+            return
+        folder = target.parent if target.is_file() else target
+        if sys.platform == "win32":
+            arguments = (
+                ["/select,", str(path)] if path.exists() and path.is_file() else [str(folder)]
+            )
+            started, _process_id = QProcess.startDetached("explorer.exe", arguments, str(folder))
+        else:
+            started = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        if not started:
+            QMessageBox.warning(self, "Show in File Manager", f"Could not show:\n{path}")
+
+    @Slot(object, object, bool)
+    def _restore_history_file(self, commit_value: object, file_value: object, before: bool) -> None:
+        if (
+            self._repository is None
+            or not isinstance(commit_value, CommitSummary)
+            or not isinstance(file_value, CommitFileChange)
+        ):
+            return
+        path = file_value.original_path if before and file_value.original_path else file_value.path
+        state = "before this commit" if before else "at this commit"
+        answer = QMessageBox.question(
+            self,
+            "Restore file",
+            f"Replace the working-tree version of {path} with its state {state}?\n\n"
+            "Uncommitted changes in this file will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        revision = (
+            (commit_value.parent_oids[0] if before and commit_value.parent_oids else None)
+            if before
+            else commit_value.oid
+        )
+        self._git.request_restore_commit_file(self._repository, revision, path)
 
     @Slot(str, str, object)
     def _history_comparison_file_selected(
@@ -1316,9 +1352,7 @@ class MainWindow(QMainWindow):
         ):
             return
         self._history_panel.show_comparison(value)
-        self._status_label.setText(
-            f"{len(value.files)} file(s) differ between the selected refs"
-        )
+        self._status_label.setText(f"{len(value.files)} file(s) differ between the selected refs")
 
     @Slot(object)
     def _show_ref_comparison_diff(self, value: object) -> None:
@@ -1331,9 +1365,7 @@ class MainWindow(QMainWindow):
             return
         blocker = QSignalBlocker(self._diff_version)
         self._diff_version.clear()
-        self._diff_version.addItem(
-            f"{value.base_ref}…{value.compare_ref}", None
-        )
+        self._diff_version.addItem(f"{value.base_ref}…{value.compare_ref}", None)
         del blocker
         self._diff_view.refresh_version_selector()
         self._diff_container.setCurrentWidget(self._diff_view)
@@ -1380,9 +1412,7 @@ class MainWindow(QMainWindow):
         self._diff_container.show()
         self._commit_diff_visible = True
         self._workspace_tab_changed(self._workspace_tabs.currentIndex())
-        self._status_label.setText(
-            f"Showing {value.diff.path} from {value.commit_oid[:8]}"
-        )
+        self._status_label.setText(f"Showing {value.diff.path} from {value.commit_oid[:8]}")
 
     @Slot(object)
     def _show_branches(self, value: object) -> None:
@@ -1408,16 +1438,11 @@ class MainWindow(QMainWindow):
             next((branch for branch in local if branch.name == "master"), None),
         )
         if base is not None and base.full_name != current.full_name:
-            self._git.request_branch_point(
-                value.repository, current.full_name, base.full_name
-            )
+            self._git.request_branch_point(value.repository, current.full_name, base.full_name)
 
     @Slot(object)
     def _show_incoming_commits(self, value: object) -> None:
-        if (
-            not isinstance(value, IncomingCommitsSnapshot)
-            or value.repository != self._repository
-        ):
+        if not isinstance(value, IncomingCommitsSnapshot) or value.repository != self._repository:
             return
         self._history_panel.show_incoming_commits(value)
 
@@ -1495,19 +1520,14 @@ class MainWindow(QMainWindow):
     def _drop_stash(self, value: object) -> None:
         self._run_stash_action(value, action="drop", confirm=True)
 
-    def _run_stash_action(
-        self, value: object, *, action: str, confirm: bool
-    ) -> None:
+    def _run_stash_action(self, value: object, *, action: str, confirm: bool) -> None:
         if self._repository is None or not isinstance(value, StashInfo):
             return
         if confirm:
-            detail = (
-                f"{action.title()} {value.ref}?\n\n{value.subject}\n\n"
-                + (
-                    "The stash will be removed after its changes are applied."
-                    if action == "pop"
-                    else "This permanently removes the stash without applying it."
-                )
+            detail = f"{action.title()} {value.ref}?\n\n{value.subject}\n\n" + (
+                "The stash will be removed after its changes are applied."
+                if action == "pop"
+                else "This permanently removes the stash without applying it."
             )
             answer = QMessageBox.question(self, f"{action.title()} stash", detail)
             if answer != QMessageBox.StandardButton.Yes:
@@ -1720,11 +1740,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _delete_remote_branch(self, value: object) -> None:
-        if (
-            self._repository is None
-            or not isinstance(value, BranchInfo)
-            or not value.remote
-        ):
+        if self._repository is None or not isinstance(value, BranchInfo) or not value.remote:
             return
         detail = (
             f"Delete remote branch '{value.name}'?\n\n"
@@ -1782,8 +1798,7 @@ class MainWindow(QMainWindow):
         force.setToolTip("Uses git branch -D. Commits unique to a branch can be lost.")
         layout.addWidget(force)
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel,
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=dialog,
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Delete selected")
@@ -1819,9 +1834,7 @@ class MainWindow(QMainWindow):
                 return
         self._status_label.setText(f"Queueing deletion of {len(selected)} branch(es)…")
         for branch in selected:
-            self._git.request_delete_branch(
-                self._repository, branch, force=force.isChecked()
-            )
+            self._git.request_delete_branch(self._repository, branch, force=force.isChecked())
 
     @Slot(object)
     def _preview_rebase(self, value: object) -> None:
@@ -1843,9 +1856,7 @@ class MainWindow(QMainWindow):
             return
         self._history_panel.refs_panel.setEnabled(False)
         self._interactive_rebase_pending = False
-        self._status_label.setText(
-            f"Preparing rebase of {current_branch} onto {value.name}…"
-        )
+        self._status_label.setText(f"Preparing rebase of {current_branch} onto {value.name}…")
         self._git.request_rebase_preview(self._repository, value)
 
     @Slot(object)
@@ -1885,8 +1896,10 @@ class MainWindow(QMainWindow):
         preview.setReadOnly(True)
         preview.setPlainText(
             "Incoming commits:\n"
-            + ("\n".join(f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits)
-               or "  No incoming commits")
+            + (
+                "\n".join(f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits)
+                or "  No incoming commits"
+            )
             + "\n\nChanged files:\n"
             + ("\n".join(f"  {path}" for path in value.files) or "  No changed files")
         )
@@ -1933,10 +1946,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _show_rebase_preview(self, value: object) -> None:
         self._history_panel.refs_panel.setEnabled(True)
-        if (
-            not isinstance(value, RebasePreviewSnapshot)
-            or value.repository != self._repository
-        ):
+        if not isinstance(value, RebasePreviewSnapshot) or value.repository != self._repository:
             return
         status = self._repository_status
         if status is None or status.branch.head is None:
@@ -1994,9 +2004,7 @@ class MainWindow(QMainWindow):
         preview.setReadOnly(True)
         preview.setPlainText(
             "Commits (replay order):\n"
-            + "\n".join(
-                f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits
-            )
+            + "\n".join(f"{commit.oid[:8]}  {commit.subject}" for commit in value.commits)
             + "\n\nChanged files:\n"
             + (
                 "\n".join(f"  {path}" for path in value.files)
@@ -2018,8 +2026,7 @@ class MainWindow(QMainWindow):
             warning.setWordWrap(True)
             layout.addWidget(warning)
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok
-            | QDialogButtonBox.StandardButton.Cancel,
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=dialog,
         )
         ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
@@ -2046,11 +2053,7 @@ class MainWindow(QMainWindow):
         if self._repository is None or not isinstance(value, BranchInfo):
             return
         if force:
-            tracking = (
-                "Its upstream branch no longer exists.\n\n"
-                if value.upstream_gone
-                else ""
-            )
+            tracking = "Its upstream branch no longer exists.\n\n" if value.upstream_gone else ""
             detail = tracking + (
                 f"Force-delete local branch '{value.name}'?\n\n"
                 "Commits that are not reachable from another branch may become difficult "
@@ -2134,23 +2137,17 @@ class MainWindow(QMainWindow):
     def _init_submodule_recursive(self, value: object) -> None:
         file = self._confirm_recursive_submodule_action(value, action="initialize")
         if file is not None and self._repository is not None:
-            self._git.request_submodule_init(
-                self._repository, file.path, recursive=True
-            )
+            self._git.request_submodule_init(self._repository, file.path, recursive=True)
 
     def _update_submodule_recursive(self, value: object) -> None:
         file = self._confirm_recursive_submodule_action(value, action="update")
         if file is not None and self._repository is not None:
-            self._git.request_submodule_update(
-                self._repository, file.path, recursive=True
-            )
+            self._git.request_submodule_update(self._repository, file.path, recursive=True)
 
     def _sync_submodule_recursive(self, value: object) -> None:
         file = self._confirm_recursive_submodule_action(value, action="sync")
         if file is not None and self._repository is not None:
-            self._git.request_submodule_sync(
-                self._repository, file.path, recursive=True
-            )
+            self._git.request_submodule_sync(self._repository, file.path, recursive=True)
 
     @Slot(object)
     def _open_linked_repository(self, value: object) -> None:
@@ -2276,35 +2273,21 @@ class MainWindow(QMainWindow):
     @Slot()
     def _pull_options_changed(self) -> None:
         self._settings.setValue("sync/pullRebase", self._pull_rebase_action.isChecked())
-        self._settings.setValue(
-            "sync/pullAutostash", self._pull_autostash_action.isChecked()
-        )
-        self._settings.setValue(
-            "sync/pullSubmodules", self._pull_submodules_action.isChecked()
-        )
+        self._settings.setValue("sync/pullAutostash", self._pull_autostash_action.isChecked())
+        self._settings.setValue("sync/pullSubmodules", self._pull_submodules_action.isChecked())
         self._update_pull_button()
 
     @Slot()
     def _sync_options_changed(self) -> None:
-        self._settings.setValue(
-            "sync/fetchSubmodules", self._fetch_submodules_action.isChecked()
-        )
-        self._settings.setValue(
-            "sync/pushSubmodules", self._push_submodules_action.isChecked()
-        )
+        self._settings.setValue("sync/fetchSubmodules", self._fetch_submodules_action.isChecked())
+        self._settings.setValue("sync/pushSubmodules", self._push_submodules_action.isChecked())
 
     def _update_pull_button(self) -> None:
         rebase = self._pull_rebase_action.isChecked()
         strategy = "Rebase" if rebase else "Merge"
-        self._pull_action.setIcon(
-            load_icon("pull-rebase.svg" if rebase else "pull-merge.svg")
-        )
+        self._pull_action.setIcon(load_icon("pull-rebase.svg" if rebase else "pull-merge.svg"))
         suffix = " · Stash" if self._pull_autostash_action.isChecked() else ""
-        behind = (
-            self._repository_status.branch.behind
-            if self._repository_status is not None
-            else 0
-        )
+        behind = self._repository_status.branch.behind if self._repository_status is not None else 0
         incoming = f" ↓{behind}" if behind else ""
         self._pull_action.setText(f"Pull{incoming} · {strategy}{suffix}")
 
@@ -2441,11 +2424,7 @@ class MainWindow(QMainWindow):
         self._operation_queue_menu.clear()
         for index, operation in enumerate(operations):
             self._known_queue_operations[operation.operation_id] = operation
-            prefix = (
-                "Running"
-                if index == 0 and value.active is not None
-                else "Queued"
-            )
+            prefix = "Running" if index == 0 and value.active is not None else "Queued"
             operation_menu = self._operation_queue_menu.addMenu(
                 load_icon(_queue_operation_icon(operation.operation)),
                 f"{prefix}: {operation.operation} — {operation.repository.name}",
@@ -2484,8 +2463,7 @@ class MainWindow(QMainWindow):
         total = self._queued_operation_count + 1
         self._cancel_action.setText(f"Queue {total} · {duration}")
         self._status_label.setText(
-            f"{operation.operation.title()} · {duration} · "
-            f"{self._queued_operation_count} queued"
+            f"{operation.operation.title()} · {duration} · {self._queued_operation_count} queued"
         )
 
     @Slot()
@@ -2564,13 +2542,10 @@ class MainWindow(QMainWindow):
         current = f" · {operation.current_subject}" if operation.current_subject else ""
         queued = f" · {len(operation.remaining)} remaining" if operation.remaining else ""
         self._operation_label.setText(
-            f"{name} in progress{progress}{current}{queued}. "
-            "Resolve conflicts, then continue."
+            f"{name} in progress{progress}{current}{queued}. Resolve conflicts, then continue."
         )
         self._operation_label.setToolTip(
-            "Remaining commits:\n" + "\n".join(operation.remaining)
-            if operation.remaining
-            else ""
+            "Remaining commits:\n" + "\n".join(operation.remaining) if operation.remaining else ""
         )
         self._operation_skip.setVisible(operation.kind != "merge")
         self._operation_banner.setEnabled(True)
@@ -2628,9 +2603,7 @@ class MainWindow(QMainWindow):
             if isinstance(selected_file, FileStatus):
                 selected_path = selected_file.path
         previous_head = (
-            self._repository_status.branch.head
-            if self._repository_status is not None
-            else None
+            self._repository_status.branch.head if self._repository_status is not None else None
         )
         self._repository_status = status_value
         self._update_github_actions()
@@ -2649,8 +2622,7 @@ class MainWindow(QMainWindow):
                 if change.path not in visible_paths:
                     files_to_show.append(FileStatus(change.path, ".", "."))
         rendered_files = [
-            (file, self._file_check_state(value.repository, file))
-            for file in files_to_show
+            (file, self._file_check_state(value.repository, file)) for file in files_to_show
         ]
         item_to_restore = self._changes_panel.show_files(
             rendered_files,
@@ -2667,9 +2639,7 @@ class MainWindow(QMainWindow):
                 if active_tree is self._changes_panel.unstaged_tree
                 else self._changes_panel.unstaged_tree
             )
-            opposite_item = self._changes_panel.find_file_item(
-                opposite_tree, selected_path
-            )
+            opposite_item = self._changes_panel.find_file_item(opposite_tree, selected_path)
             if opposite_item is not None:
                 self._changes_panel.set_active_tree(opposite_tree)
                 opposite_tree.setFocus()
@@ -2878,8 +2848,7 @@ class MainWindow(QMainWindow):
                 box.setWindowTitle("Rebase completed")
                 box.setText("The branch history was rewritten successfully.")
                 box.setInformativeText(
-                    "Previous HEAD (also available through reflog):\n"
-                    + self._rewrite_recovery_head
+                    "Previous HEAD (also available through reflog):\n" + self._rewrite_recovery_head
                 )
                 copy_button = box.addButton("Copy previous HEAD", QMessageBox.ButtonRole.ActionRole)
                 history_button = box.addButton("Open reflog", QMessageBox.ButtonRole.ActionRole)
@@ -3058,9 +3027,7 @@ class MainWindow(QMainWindow):
             return
         self._changes_container.setEnabled(False)
         self._status_label.setText("Creating commit…")
-        self._git.request_commit(
-            repository, message, description, amend=self._amend.isChecked()
-        )
+        self._git.request_commit(repository, message, description, amend=self._amend.isChecked())
 
     @Slot()
     def _selected_file_changed(self) -> None:
@@ -3184,9 +3151,7 @@ class MainWindow(QMainWindow):
         folder = existing_target.parent if existing_target.is_file() else existing_target
         if sys.platform == "win32":
             arguments = (
-                ["/select,", str(path)]
-                if path.exists() and not path.is_dir()
-                else [str(folder)]
+                ["/select,", str(path)] if path.exists() and not path.is_dir() else [str(folder)]
             )
             started, _process_id = QProcess.startDetached(
                 "explorer.exe",
@@ -3436,9 +3401,7 @@ class MainWindow(QMainWindow):
             return
         current_diff = self._diff_view.current_diff
         replacing_visible_diff = (
-            current_diff is None
-            or current_diff.path != file.path
-            or current_diff.staged != staged
+            current_diff is None or current_diff.path != file.path or current_diff.staged != staged
         )
         if not silent and replacing_visible_diff:
             self._diff.setPlainText("Loading diff…")
@@ -3568,6 +3531,7 @@ class MainWindow(QMainWindow):
             return
         self._settings.setValue("diff/viewMode", mode)
         self._diff_view.set_view_mode(mode)
+
     @Slot(object, int)
     def _apply_diff_hunk(self, diff_value: object, hunk_index: int) -> None:
         repository = self._repository
@@ -3576,9 +3540,7 @@ class MainWindow(QMainWindow):
         self._changes_container.setEnabled(False)
         action = "Unstaging" if diff_value.staged else "Staging"
         self._status_label.setText(f"{action} hunk in {diff_value.path}…")
-        self._git.request_hunk(
-            repository, diff_value, hunk_index, stage=not diff_value.staged
-        )
+        self._git.request_hunk(repository, diff_value, hunk_index, stage=not diff_value.staged)
 
     @Slot(bool)
     def _diff_wrap_changed(self, enabled: bool) -> None:

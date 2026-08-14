@@ -20,15 +20,11 @@ def test_refs_panel_groups_filters_and_selects_refs(qtbot: QtBot) -> None:
     qtbot.addWidget(panel)
     current = BranchInfo("refs/heads/main", "main", "1" * 40, False, current=True)
     feature = BranchInfo("refs/heads/feature", "feature", "2" * 40, False)
-    remote = BranchInfo(
-        "refs/remotes/origin/main", "origin/main", "1" * 40, True
-    )
+    remote = BranchInfo("refs/remotes/origin/main", "origin/main", "1" * 40, True)
     selected: list[object] = []
     panel.refs_selected.connect(selected.append)
 
-    panel.show_branches(
-        BranchesSnapshot(Path("repository"), (current, feature, remote))
-    )
+    panel.show_branches(BranchesSnapshot(Path("repository"), (current, feature, remote)))
     panel.show_tags(
         TagsSnapshot(
             Path("repository"),
@@ -42,7 +38,10 @@ def test_refs_panel_groups_filters_and_selects_refs(qtbot: QtBot) -> None:
     remotes = panel.tree.topLevelItem(1)
     tags = panel.tree.topLevelItem(2)
     assert remotes is not None and remotes.child(0).text(0) == "origin"
+    assert not remotes.isExpanded()
+    assert not remotes.child(0).isExpanded()
     assert tags is not None and tags.child(0).text(0) == "v1.0"
+    assert not tags.isExpanded()
 
     panel.filter_edit.setText("feature")
 
@@ -128,9 +127,7 @@ def test_refs_panel_marks_local_branch_sync_states(qtbot: QtBot) -> None:
         upstream_gone=True,
     )
 
-    panel.show_branches(
-        BranchesSnapshot(Path("repository"), (current, unpublished, gone))
-    )
+    panel.show_branches(BranchesSnapshot(Path("repository"), (current, unpublished, gone)))
 
     branches = panel.tree.topLevelItem(0)
     assert branches is not None
@@ -146,9 +143,7 @@ def test_refs_panel_marks_local_branch_sync_states(qtbot: QtBot) -> None:
 def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)
-    branch = BranchInfo(
-        "refs/remotes/origin/feature", "origin/feature", "2" * 40, True
-    )
+    branch = BranchInfo("refs/remotes/origin/feature", "origin/feature", "2" * 40, True)
     panel.show_branches(BranchesSnapshot(Path("repository"), (branch,)))
     remotes = panel.tree.topLevelItem(1)
     assert remotes is not None
@@ -176,12 +171,8 @@ def test_refs_panel_creates_publishes_and_compares_from_context(qtbot: QtBot) ->
         upstream="origin/feature",
     )
     unpublished = BranchInfo("refs/heads/draft", "draft", "3" * 40, False)
-    remote = BranchInfo(
-        "refs/remotes/origin/feature", "origin/feature", "2" * 40, True
-    )
-    panel.show_branches(
-        BranchesSnapshot(Path("repository"), (local, unpublished, remote))
-    )
+    remote = BranchInfo("refs/remotes/origin/feature", "origin/feature", "2" * 40, True)
+    panel.show_branches(BranchesSnapshot(Path("repository"), (local, unpublished, remote)))
     created: list[object] = []
     worktrees: list[object] = []
     published: list[object] = []
@@ -233,9 +224,7 @@ def test_cleanup_gone_branches_emits_only_safe_candidates(qtbot: QtBot) -> None:
         False,
         upstream="origin/live",
     )
-    panel.show_branches(
-        BranchesSnapshot(Path("repository"), (gone, current_gone, live))
-    )
+    panel.show_branches(BranchesSnapshot(Path("repository"), (gone, current_gone, live)))
     requested: list[object] = []
     panel.cleanup_gone_requested.connect(requested.append)
 
@@ -244,9 +233,7 @@ def test_cleanup_gone_branches_emits_only_safe_candidates(qtbot: QtBot) -> None:
     assert requested == [(gone,)]
 
 
-def test_refs_panel_shows_stashes_submodules_and_worktrees(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
+def test_refs_panel_shows_stashes_submodules_and_worktrees(qtbot: QtBot, tmp_path: Path) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)
     stash = StashInfo("stash@{0}", "4" * 40, "On main: saved work")
@@ -265,13 +252,16 @@ def test_refs_panel_shows_stashes_submodules_and_worktrees(
     applied: list[object] = []
     popped: list[object] = []
     dropped: list[object] = []
+    viewed: list[object] = []
     opened: list[object] = []
     panel.stash_apply_requested.connect(applied.append)
     panel.stash_pop_requested.connect(popped.append)
     panel.stash_drop_requested.connect(dropped.append)
+    panel.stash_view_requested.connect(viewed.append)
     panel.repository_requested.connect(opened.append)
 
     panel.tree.setCurrentItem(stashes.child(0))
+    panel.view_stash_action.trigger()
     panel.apply_stash_action.trigger()
     panel.pop_stash_action.trigger()
     panel.drop_stash_action.trigger()
@@ -282,6 +272,7 @@ def test_refs_panel_shows_stashes_submodules_and_worktrees(
     assert applied == [stash]
     assert popped == [stash]
     assert dropped == [stash]
+    assert viewed == [stash]
     assert opened == [submodule, worktree]
 
 

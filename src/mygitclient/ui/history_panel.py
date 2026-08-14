@@ -42,6 +42,8 @@ from mygitclient.git.models import (
     CommitSummary,
     IncomingCommitsSnapshot,
     RefComparisonSnapshot,
+    StashFilesSnapshot,
+    StashInfo,
     TagsSnapshot,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
@@ -77,8 +79,7 @@ class FilterHighlightDelegate(QStyledItemDelegate):
         )
         metrics = styled.fontMetrics
         baseline = (
-            text_rect.top()
-            + (text_rect.height() + metrics.ascent() - metrics.descent()) // 2
+            text_rect.top() + (text_rect.height() + metrics.ascent() - metrics.descent()) // 2
         )
         before = text[:start]
         match = text[start : start + len(query)]
@@ -154,6 +155,10 @@ class HistoryPanel(QWidget):
     cherry_pick_requested = Signal(object)
     revert_requested = Signal(object)
     checkout_commit_requested = Signal(object)
+    stash_file_selected = Signal(object, object)
+    file_open_requested = Signal(object)
+    file_reveal_requested = Signal(object)
+    file_restore_requested = Signal(object, object, bool)
 
     def __init__(
         self,
@@ -164,9 +169,7 @@ class HistoryPanel(QWidget):
         self._settings = settings
         self.tree = QTreeWidget()
         self.tree.setObjectName("historyTree")
-        self.tree.setHeaderLabels(
-            ["Graph", "Refs", "Description", "Author", "Date", "Commit"]
-        )
+        self.tree.setHeaderLabels(["Graph", "Refs", "Description", "Author", "Date", "Commit"])
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -227,7 +230,10 @@ class HistoryPanel(QWidget):
         self.files.setHeaderLabels(["Status", "File"])
         self.files.setColumnWidth(0, 80)
         self.files.currentItemChanged.connect(self._file_changed)
+        self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.files.customContextMenuRequested.connect(self._show_file_context_menu)
         self._comparison_refs: tuple[str, str] | None = None
+        self._selected_stash: StashInfo | None = None
         self._branch_labels: dict[str, list[tuple[str, str]]] = {}
         self._tag_labels: dict[str, list[tuple[str, str]]] = {}
         self._incoming_commits: dict[str, IncomingCommitsSnapshot] = {}
@@ -267,9 +273,7 @@ class HistoryPanel(QWidget):
 
     @property
     def history_offset(self) -> int:
-        incoming_oids = {
-            commit.oid for commit in self._incoming_for_selected_ref()
-        }
+        incoming_oids = {commit.oid for commit in self._incoming_for_selected_ref()}
         return sum(commit.oid not in incoming_oids for commit in self._commits())
 
     def reset(self) -> None:
@@ -277,6 +281,7 @@ class HistoryPanel(QWidget):
         self._tag_labels.clear()
         self._incoming_commits.clear()
         self._branch_point = None
+        self._selected_stash = None
         self.refs_panel.reset()
         self.clear_commits()
 
@@ -289,8 +294,7 @@ class HistoryPanel(QWidget):
                 not branch.remote
                 and branch.behind > 0
                 and branch.full_name in self._incoming_commits
-                and self._incoming_commits[branch.full_name].upstream_ref
-                == branch.upstream
+                and self._incoming_commits[branch.full_name].upstream_ref == branch.upstream
             )
         }
         self._incoming_commits = valid_incoming
@@ -307,9 +311,7 @@ class HistoryPanel(QWidget):
             return
         existing = self._commits()
         incoming_oids = {commit.oid for commit in snapshot.commits}
-        remaining = tuple(
-            commit for commit in existing if commit.oid not in incoming_oids
-        )
+        remaining = tuple(commit for commit in existing if commit.oid not in incoming_oids)
         combined = (*snapshot.commits, *remaining)
         self._replace_commits(combined)
 
@@ -330,6 +332,7 @@ class HistoryPanel(QWidget):
         self.files.clear()
         self.details_label.setText("Select a commit to view its details.")
         self._comparison_refs = None
+        self._selected_stash = None
         self.load_more_button.hide()
         self._update_filter_count()
 
@@ -406,9 +409,7 @@ class HistoryPanel(QWidget):
             return
         if self.refs_panel.isVisible():
             self._settings.setValue("history/splitterState", self.splitter.saveState())
-        self._settings.setValue(
-            "history/contentSplitterState", self.content_splitter.saveState()
-        )
+        self._settings.setValue("history/contentSplitterState", self.content_splitter.saveState())
 
     def _restore_layout(self) -> None:
         if self._settings is None:
@@ -420,9 +421,7 @@ class HistoryPanel(QWidget):
         if isinstance(content_state, QByteArray):
             self.content_splitter.restoreState(content_state)
         focused = self._settings.value("history/focusDiff", False)
-        self.focus_button.setChecked(
-            focused is True or focused == "true" or focused == 1
-        )
+        self.focus_button.setChecked(focused is True or focused == "true" or focused == 1)
 
     def show_files(self, snapshot: CommitFilesSnapshot) -> None:
         commit = self.selected_commit
@@ -437,8 +436,26 @@ class HistoryPanel(QWidget):
             self.files.addTopLevelItem(item)
         self.files.resizeColumnToContents(0)
 
+    def show_stash(self, stash: StashInfo) -> None:
+        self._selected_stash = stash
+        self._comparison_refs = None
+        self.tree.clearSelection()
+        self.files.clear()
+        self.details_label.setText(f"{stash.subject}\n\nStash: {stash.ref}\nCommit: {stash.oid}")
+
+    def show_stash_files(self, snapshot: StashFilesSnapshot) -> None:
+        if self._selected_stash != snapshot.stash:
+            return
+        self.files.clear()
+        for change in snapshot.files:
+            item = QTreeWidgetItem([change.status, change.path])
+            item.setData(0, Qt.ItemDataRole.UserRole, change)
+            self.files.addTopLevelItem(item)
+        self.files.resizeColumnToContents(0)
+
     def show_comparison(self, snapshot: RefComparisonSnapshot) -> None:
         self._comparison_refs = (snapshot.base_ref, snapshot.compare_ref)
+        self._selected_stash = None
         self.tree.clearSelection()
         self.files.clear()
         self.details_label.setText(
@@ -455,6 +472,7 @@ class HistoryPanel(QWidget):
 
     def clear_comparison(self) -> None:
         self._comparison_refs = None
+        self._selected_stash = None
         self.files.clear()
         self.details_label.setText("Select a commit to view its details.")
 
@@ -492,23 +510,15 @@ class HistoryPanel(QWidget):
         checkout_action.setEnabled(len(commits) == 1)
         menu.addSeparator()
         label = (
-            "Cherry-pick commit…"
-            if len(commits) == 1
-            else f"Cherry-pick {len(commits)} commits…"
+            "Cherry-pick commit…" if len(commits) == 1 else f"Cherry-pick {len(commits)} commits…"
         )
         action = menu.addAction(label)
         action.setObjectName("historyCherryPickAction")
         action.setEnabled(all(len(commit.parent_oids) <= 1 for commit in commits))
-        revert_label = (
-            "Revert commit…"
-            if len(commits) == 1
-            else f"Revert {len(commits)} commits…"
-        )
+        revert_label = "Revert commit…" if len(commits) == 1 else f"Revert {len(commits)} commits…"
         revert_action = menu.addAction(revert_label)
         revert_action.setObjectName("historyRevertAction")
-        revert_action.setEnabled(
-            all(len(commit.parent_oids) <= 1 for commit in commits)
-        )
+        revert_action.setEnabled(all(len(commit.parent_oids) <= 1 for commit in commits))
         menu.addSeparator()
         author = commits[0]
         author_menu = menu.addMenu(f"Author: {author.author_name}")
@@ -526,9 +536,7 @@ class HistoryPanel(QWidget):
             self.revert_requested.emit(tuple(reversed(commits)))
         elif chosen is color_action:
             initial = self._author_color(author) or self.palette().highlight().color()
-            color = QColorDialog.getColor(
-                initial, self, f"Color for {author.author_name}"
-            )
+            color = QColorDialog.getColor(initial, self, f"Color for {author.author_name}")
             if color.isValid():
                 self._set_author_color(author, color)
         elif chosen is clear_color_action:
@@ -544,6 +552,7 @@ class HistoryPanel(QWidget):
         if not isinstance(commit, CommitSummary):
             return
         self._comparison_refs = None
+        self._selected_stash = None
         parents = ", ".join(parent[:8] for parent in commit.parent_oids) or "None (root)"
         self.details_label.setText(
             f"{commit.subject}\n\n"
@@ -568,9 +577,41 @@ class HistoryPanel(QWidget):
             base_ref, compare_ref = self._comparison_refs
             self.comparison_file_selected.emit(base_ref, compare_ref, change)
             return
+        if self._selected_stash is not None:
+            self.stash_file_selected.emit(self._selected_stash, change)
+            return
         commit = self.selected_commit
         if commit is not None:
             self.file_selected.emit(commit, change)
+
+    @Slot(QPoint)
+    def _show_file_context_menu(self, position: QPoint) -> None:
+        item = self.files.itemAt(position)
+        if item is None:
+            return
+        self.files.setCurrentItem(item)
+        change = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(change, CommitFileChange):
+            return
+        menu = QMenu(self.files)
+        open_action = menu.addAction("Open")
+        reveal_action = menu.addAction("Show in File Manager")
+        restore_at = restore_before = None
+        commit = self.selected_commit
+        if commit is not None and self._comparison_refs is None:
+            menu.addSeparator()
+            restore_menu = menu.addMenu("Restore file to")
+            restore_at = restore_menu.addAction("State at commit…")
+            restore_before = restore_menu.addAction("State before commit…")
+        chosen = menu.exec(self.files.viewport().mapToGlobal(position))
+        if chosen is open_action:
+            self.file_open_requested.emit(change)
+        elif chosen is reveal_action:
+            self.file_reveal_requested.emit(change)
+        elif chosen is restore_at and commit is not None:
+            self.file_restore_requested.emit(commit, change, False)
+        elif chosen is restore_before and commit is not None:
+            self.file_restore_requested.emit(commit, change, True)
 
     def _append_commit(self, commit: CommitSummary) -> None:
         authored_at = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
@@ -695,9 +736,7 @@ class HistoryPanel(QWidget):
                 if parent not in lanes:
                     lanes.insert(lane, parent)
             parent_lanes = tuple(lanes.index(parent) for parent in commit.parent_oids)
-            item.setData(
-                0, GRAPH_ROLE, CommitGraphRow(before, tuple(lanes), lane, parent_lanes)
-            )
+            item.setData(0, GRAPH_ROLE, CommitGraphRow(before, tuple(lanes), lane, parent_lanes))
             widest = max(widest, len(before), len(lanes))
         width = max(60, widest * CommitGraphDelegate.lane_width + 16)
         self.tree.setColumnWidth(0, width)

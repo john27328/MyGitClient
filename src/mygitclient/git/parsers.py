@@ -94,9 +94,7 @@ def parse_stashes(repository: Path, output: bytes) -> StashesSnapshot:
         fields = raw_record.split(b"\x00")
         if len(fields) != 3:
             raise GitParseError("Malformed stash record")
-        ref, oid, subject = (
-            field.decode("utf-8", errors="surrogateescape") for field in fields
-        )
+        ref, oid, subject = (field.decode("utf-8", errors="surrogateescape") for field in fields)
         stashes.append(StashInfo(ref, oid, subject))
     return StashesSnapshot(repository, tuple(stashes))
 
@@ -152,9 +150,8 @@ def parse_commit_log(output: bytes) -> tuple[CommitSummary, ...]:
         )
     return tuple(commits)
 
-_HUNK_HEADER = re.compile(
-    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$"
-)
+
+_HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$")
 
 
 def parse_unified_diff(
@@ -255,6 +252,22 @@ def diff_paths(diff: UnifiedDiff) -> frozenset[str]:
     return frozenset(paths)
 
 
+def parse_path_diff(output: bytes, path: str, *, staged: bool) -> UnifiedDiff:
+    """Return one file section from a potentially multi-file unified diff."""
+    marker = b"diff --git "
+    starts: list[int] = []
+    start = output.find(marker)
+    while start >= 0:
+        starts.append(start)
+        start = output.find(marker, start + len(marker))
+    for position, start in enumerate(starts):
+        end = starts[position + 1] if position + 1 < len(starts) else len(output)
+        candidate = parse_unified_diff(output[start:end], path, staged=staged)
+        if path in diff_paths(candidate):
+            return candidate
+    return parse_unified_diff(b"", path, staged=staged)
+
+
 def _diff_header_path(value: str, prefix: str) -> str:
     path = value.split("\t", 1)[0]
     if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
@@ -308,9 +321,7 @@ def _next_line(value: int | None) -> int | None:
     return None if value is None else value + 1
 
 
-def _make_hunk(
-    values: tuple[int, int, int, int, str], lines: list[DiffLine]
-) -> DiffHunk:
+def _make_hunk(values: tuple[int, int, int, int, str], lines: list[DiffLine]) -> DiffHunk:
     old_start, old_count, new_start, new_count, header = values
     return DiffHunk(old_start, old_count, new_start, new_count, header, tuple(lines))
 

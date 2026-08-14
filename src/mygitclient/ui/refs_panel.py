@@ -51,6 +51,7 @@ class RefsPanel(QWidget):
     stash_apply_requested = Signal(object)
     stash_pop_requested = Signal(object)
     stash_drop_requested = Signal(object)
+    stash_view_requested = Signal(object)
     repository_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -117,14 +118,10 @@ class RefsPanel(QWidget):
         self.remote_delete_action = self.context_menu.addAction("Delete remote branch…")
         self.remote_delete_action.setObjectName("deleteRemoteBranchAction")
         self.remote_delete_action.triggered.connect(self._delete_remote_selected)
-        self.cleanup_gone_action = self.context_menu.addAction(
-            "Clean up gone branches…"
-        )
+        self.cleanup_gone_action = self.context_menu.addAction("Clean up gone branches…")
         self.cleanup_gone_action.setObjectName("cleanupGoneBranchesAction")
         self.cleanup_gone_action.triggered.connect(self._cleanup_gone_branches)
-        self.rebase_action = self.context_menu.addAction(
-            "Rebase current branch onto this…"
-        )
+        self.rebase_action = self.context_menu.addAction("Rebase current branch onto this…")
         self.rebase_action.setObjectName("rebaseOntoBranchAction")
         self.rebase_action.triggered.connect(self._rebase_selected)
         self.interactive_rebase_action = self.context_menu.addAction(
@@ -143,6 +140,8 @@ class RefsPanel(QWidget):
         self.push_tag_action = self.context_menu.addAction("Push tag")
         self.push_tag_action.triggered.connect(self._push_tag_selected)
         self.context_menu.addSeparator()
+        self.view_stash_action = self.context_menu.addAction("View stash contents")
+        self.view_stash_action.triggered.connect(self._view_stash_selected)
         self.apply_stash_action = self.context_menu.addAction("Apply stash")
         self.apply_stash_action.triggered.connect(self._apply_stash_selected)
         self.pop_stash_action = self.context_menu.addAction("Pop stash")
@@ -181,9 +180,7 @@ class RefsPanel(QWidget):
         self._stashes = snapshot.stashes
         self._rebuild()
 
-    def show_linked_repositories(
-        self, repositories: tuple[LinkedRepository, ...]
-    ) -> None:
+    def show_linked_repositories(self, repositories: tuple[LinkedRepository, ...]) -> None:
         self._linked_repositories = repositories
         self._rebuild()
 
@@ -228,9 +225,7 @@ class RefsPanel(QWidget):
                 remote_root = remote_roots.get(remote_name)
                 if remote_root is None:
                     remote_root = QTreeWidgetItem([remote_name])
-                    remote_root.setFlags(
-                        remote_root.flags() & ~Qt.ItemFlag.ItemIsSelectable
-                    )
+                    remote_root.setFlags(remote_root.flags() & ~Qt.ItemFlag.ItemIsSelectable)
                     remotes_root.addChild(remote_root)
                     remote_roots[remote_name] = remote_root
                 item.setText(0, short_name or branch.name)
@@ -259,11 +254,7 @@ class RefsPanel(QWidget):
                 selected_item = item
         submodule_items: dict[Path, QTreeWidgetItem] = {}
         submodules = sorted(
-            (
-                linked
-                for linked in self._linked_repositories
-                if linked.kind == "submodule"
-            ),
+            (linked for linked in self._linked_repositories if linked.kind == "submodule"),
             key=lambda linked: (len(linked.path.parts), str(linked.path).casefold()),
         )
         for linked in submodules:
@@ -279,11 +270,7 @@ class RefsPanel(QWidget):
                 submodules_root.addChild(item)
             submodule_items[linked.path] = item
         worktrees = sorted(
-            (
-                linked
-                for linked in self._linked_repositories
-                if linked.kind == "worktree"
-            ),
+            (linked for linked in self._linked_repositories if linked.kind == "worktree"),
             key=lambda linked: str(linked.path).casefold(),
         )
         for linked in worktrees:
@@ -291,17 +278,12 @@ class RefsPanel(QWidget):
             item.setData(0, Qt.ItemDataRole.UserRole, linked)
             item.setToolTip(0, f"Git worktree\n{linked.path}")
             worktrees_root.addChild(item)
-        for root in (
-            local_root,
-            remotes_root,
-            tags_root,
-            stashes_root,
-            submodules_root,
-            worktrees_root,
-        ):
+        for root in (local_root, stashes_root, submodules_root, worktrees_root):
             root.setExpanded(True)
+        remotes_root.setExpanded(False)
+        tags_root.setExpanded(False)
         for remote_root in remote_roots.values():
-            remote_root.setExpanded(True)
+            remote_root.setExpanded(False)
         selected_item = selected_item or current_item
         if selected_item is not None:
             self.tree.setCurrentItem(selected_item)
@@ -428,11 +410,7 @@ class RefsPanel(QWidget):
         if not isinstance(item_value, QTreeWidgetItem):
             return
         item = item_value
-        root_label = (
-            item.text(0)
-            if item.data(0, Qt.ItemDataRole.UserRole) is None
-            else ""
-        )
+        root_label = item.text(0) if item.data(0, Qt.ItemDataRole.UserRole) is None else ""
         self.tree.setCurrentItem(item)
         value = self._selected_value()
         branch = value if isinstance(value, BranchInfo) else None
@@ -476,6 +454,7 @@ class RefsPanel(QWidget):
         self.apply_stash_action.setVisible(stash is not None)
         self.pop_stash_action.setVisible(stash is not None)
         self.drop_stash_action.setVisible(stash is not None)
+        self.view_stash_action.setVisible(stash is not None)
         self.open_repository_action.setVisible(linked is not None)
         if value is not None or root_label in {"Branches", "Tags"}:
             self.context_menu.exec(self.tree.viewport().mapToGlobal(position))
@@ -485,8 +464,16 @@ class RefsPanel(QWidget):
         value = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(value, LinkedRepository):
             self.repository_requested.emit(value)
+        elif isinstance(value, StashInfo):
+            self.stash_view_requested.emit(value)
         elif isinstance(value, BranchInfo) and not value.current:
             self.checkout_requested.emit(value)
+
+    @Slot()
+    def _view_stash_selected(self) -> None:
+        stash = self._selected_value()
+        if isinstance(stash, StashInfo):
+            self.stash_view_requested.emit(stash)
 
     @Slot()
     def _checkout_selected(self) -> None:
