@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal, Slot
 
 from mygitclient.git.conflicts import parse_conflict_blocks
+from mygitclient.git.credentials import github_extraheader_arguments
 from mygitclient.git.errors import format_git_error
 from mygitclient.git.models import (
     AmendDiffSnapshot,
@@ -547,8 +548,10 @@ class GitService(QObject):
         rebase: bool,
         autostash: bool,
         recurse_submodules: bool = False,
+        token: str | None = None,
     ) -> GitRunner:
-        arguments = ["pull", "--progress", "--rebase" if rebase else "--no-rebase"]
+        arguments = list(github_extraheader_arguments(token)) if token else []
+        arguments += ["pull", "--progress", "--rebase" if rebase else "--no-rebase"]
         if autostash:
             arguments.append("--autostash")
         if recurse_submodules:
@@ -564,10 +567,15 @@ class GitService(QObject):
         return runner
 
     def request_reset_to_upstream(
-        self, repository: Path, *, recurse_submodules: bool = False
+        self,
+        repository: Path,
+        *,
+        recurse_submodules: bool = False,
+        token: str | None = None,
     ) -> GitRunner:
         workflow = _ResetToUpstreamWorkflow(repository, recurse_submodules)
-        arguments = ["fetch", "--progress", "--prune"]
+        arguments = list(github_extraheader_arguments(token)) if token else []
+        arguments += ["fetch", "--progress", "--prune"]
         if recurse_submodules:
             arguments.append("--recurse-submodules")
         return self._run_reset_to_upstream_workflow(
@@ -593,9 +601,14 @@ class GitService(QObject):
         return runner
 
     def request_fetch(
-        self, repository: Path, *, recurse_submodules: bool = False
+        self,
+        repository: Path,
+        *,
+        recurse_submodules: bool = False,
+        token: str | None = None,
     ) -> GitRunner:
-        arguments = ["fetch", "--progress", "--prune"]
+        arguments = list(github_extraheader_arguments(token)) if token else []
+        arguments += ["fetch", "--progress", "--prune"]
         if recurse_submodules:
             arguments.append("--recurse-submodules")
         runner = GitRunner(parent=self)
@@ -617,8 +630,10 @@ class GitService(QObject):
         set_upstream: bool,
         force_with_lease: bool = False,
         recurse_submodules: bool = False,
+        token: str | None = None,
     ) -> GitRunner:
-        arguments = ["push", "--progress"]
+        arguments = list(github_extraheader_arguments(token)) if token else []
+        arguments += ["push", "--progress"]
         if force_with_lease:
             arguments.append("--force-with-lease")
         if recurse_submodules:

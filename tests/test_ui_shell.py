@@ -498,7 +498,7 @@ def test_fetch_submodules_option_is_saved_and_used_for_current_repository(
     requested: list[tuple[Path, bool]] = []
 
     def record_fetch(
-        repository: Path, *, recurse_submodules: bool = False
+        repository: Path, *, recurse_submodules: bool = False, token: str | None = None
     ) -> None:
         requested.append((repository, recurse_submodules))
 

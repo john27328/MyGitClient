@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
 from urllib.parse import urlencode
 
 from PySide6.QtCore import QByteArray, QObject, QTimer, QUrl, Signal, Slot
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+
+from mygitclient.github.oauth_http import OAuthHttpError, json_request, reply_payload
 
 _DEVICE_CODE_URL = QUrl("https://github.com/login/device/code")
 _ACCESS_TOKEN_URL = QUrl("https://github.com/login/oauth/access_token")
@@ -72,7 +72,7 @@ class GitHubDeviceFlow(QObject):
         self._authorization = None
 
     def _post(self, url: QUrl, payload: bytes, handler: Callable[[], None]) -> None:
-        request = _json_request(url)
+        request = json_request(url)
         request.setHeader(
             QNetworkRequest.KnownHeaders.ContentTypeHeader,
             "application/x-www-form-urlencoded",
@@ -87,9 +87,9 @@ class GitHubDeviceFlow(QObject):
         if reply is None:
             return
         try:
-            payload = _reply_payload(reply)
+            payload = reply_payload(reply)
             authorization = parse_device_authorization(payload)
-        except DeviceFlowError as error:
+        except OAuthHttpError as error:
             self._fail(str(error))
             return
         finally:
@@ -122,9 +122,9 @@ class GitHubDeviceFlow(QObject):
         if reply is None:
             return
         try:
-            payload = _reply_payload(reply)
+            payload = reply_payload(reply)
             token, error, interval = parse_token_response(payload)
-        except DeviceFlowError as parse_error:
+        except OAuthHttpError as parse_error:
             self._fail(str(parse_error))
             return
         finally:
@@ -147,7 +147,7 @@ class GitHubDeviceFlow(QObject):
             self._fail(f"GitHub authorization failed: {error or 'unknown response'}")
 
     def _request_user(self, token: str) -> None:
-        request = _json_request(_USER_URL)
+        request = json_request(_USER_URL)
         request.setRawHeader(b"Authorization", QByteArray(f"Bearer {token}".encode("ascii")))
         reply = self._network.get(request)
         reply.setProperty("oauthToken", token)
@@ -161,11 +161,11 @@ class GitHubDeviceFlow(QObject):
             return
         token = reply.property("oauthToken")
         try:
-            payload = _reply_payload(reply)
+            payload = reply_payload(reply)
             login = payload.get("login")
             if not isinstance(login, str) or not login.strip():
                 raise DeviceFlowError("GitHub did not return the authorized account login.")
-        except DeviceFlowError as error:
+        except OAuthHttpError as error:
             self._fail(str(error))
             return
         finally:
@@ -193,7 +193,7 @@ class GitHubDeviceFlow(QObject):
             self.failed.emit(message)
 
 
-class DeviceFlowError(RuntimeError):
+class DeviceFlowError(OAuthHttpError):
     pass
 
 
@@ -227,36 +227,6 @@ def parse_token_response(
         error if isinstance(error, str) and error else None,
         interval if isinstance(interval, int) else None,
     )
-
-
-def _json_request(url: QUrl) -> QNetworkRequest:
-    request = QNetworkRequest(url)
-    request.setRawHeader(b"Accept", b"application/json")
-    request.setRawHeader(b"User-Agent", b"MyGitClient")
-    return request
-
-
-def _reply_payload(reply: QNetworkReply) -> dict[str, object]:
-    raw = bytes(reply.readAll().data())
-    if reply.error() != QNetworkReply.NetworkError.NoError:
-        detail = reply.errorString()
-        try:
-            decoded = cast("object", json.loads(raw.decode("utf-8")))
-            if isinstance(decoded, dict):
-                error_payload = cast("dict[str, object]", decoded)
-                message = error_payload.get("error_description") or error_payload.get("message")
-                if isinstance(message, str):
-                    detail = message
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            pass
-        raise DeviceFlowError(f"GitHub request failed: {detail}")
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise DeviceFlowError("GitHub returned an unreadable response.") from error
-    if not isinstance(value, dict):
-        raise DeviceFlowError("GitHub returned an unexpected response.")
-    return cast("dict[str, object]", value)
 
 
 def _required_string(payload: dict[str, object], key: str) -> str:

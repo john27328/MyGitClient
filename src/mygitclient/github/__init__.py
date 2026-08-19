@@ -1,4 +1,5 @@
 from mygitclient.github.bindings import GitHubRepositoryBindingStore
+from mygitclient.github.browser_flow import GitHubBrowserFlow
 from mygitclient.github.device_flow import (
     DeviceAuthorization,
     DeviceFlowResult,
@@ -21,6 +22,7 @@ from mygitclient.github.tokens import GitHubTokenStore, TokenStoreError
 __all__ = [
     "DeviceAuthorization",
     "DeviceFlowResult",
+    "GitHubBrowserFlow",
     "GitHubDeviceFlow",
     "GitHubRemote",
     "GitHubProfile",

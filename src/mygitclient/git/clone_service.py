@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from mygitclient.git.credentials import github_extraheader_arguments
 from mygitclient.git.errors import format_git_error
 from mygitclient.git.models import GitCommand, GitResult
 from mygitclient.git.operation_queue import sanitize_operation_output
@@ -24,7 +25,7 @@ class CloneService(QObject):
     def is_running(self) -> bool:
         return self._runner is not None
 
-    def clone(self, url: str, target: Path) -> bool:
+    def clone(self, url: str, target: Path, *, token: str | None = None) -> bool:
         if self._runner is not None:
             return False
         runner = GitRunner(parent=self)
@@ -32,9 +33,10 @@ class CloneService(QObject):
         runner.output_available.connect(self._output_available)
         runner.completed.connect(self._completed)
         runner.failed_to_start.connect(self._failed_to_start)
+        auth_arguments = github_extraheader_arguments(token) if token else ()
         runner.run(
             GitCommand(
-                ("clone", "--progress", "--", url, str(target)),
+                (*auth_arguments, "clone", "--progress", "--", url, str(target)),
                 target.parent,
                 "clone repository",
             )

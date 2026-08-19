@@ -92,6 +92,9 @@ from mygitclient.git.models import (
 from mygitclient.git.operation_queue import OperationQueueSnapshot, QueuedOperation
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
+from mygitclient.github.bindings import GitHubRepositoryBindingStore
+from mygitclient.github.profiles import GitHubProfileStore
+from mygitclient.github.tokens import GitHubTokenStore, TokenStoreError
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
 from mygitclient.ui.changes_panel import ChangesPanel
@@ -150,6 +153,9 @@ class MainWindow(QMainWindow):
         self._update_downloader.failed.connect(self._update_download_failed)
         self._update_downloader.cancelled.connect(self._update_download_cancelled)
         self._git = GitService(self)
+        self._github_profiles = GitHubProfileStore(settings)
+        self._github_bindings = GitHubRepositoryBindingStore(settings)
+        self._github_tokens = GitHubTokenStore()
         self._repository: Path | None = None
         self._repository_activation = 0
         self._open_repositories: list[Path] = []
@@ -1621,11 +1627,33 @@ class MainWindow(QMainWindow):
             self._repository,
             branch=value.name,
             set_upstream=True,
+            token=self._resolve_github_token(),
         )
 
     def set_github_repository(self, full_name: str) -> None:
         self._github_repository = full_name.strip()
         self._update_github_actions()
+
+    def _resolve_github_token(self) -> str | None:
+        """Look up the OAuth token for the GitHub account behind this repository's origin.
+
+        Lets pull/fetch/push authenticate over HTTPS without depending on the
+        system Git credential helper having its own, possibly stale, credentials.
+        """
+        if self._repository is None or not self._github_repository:
+            return None
+        owner = self._github_repository.partition("/")[0].casefold()
+        profiles = self._github_profiles.profiles()
+        label = self._github_bindings.profile_label(self._repository)
+        profile = next((item for item in profiles if item.label == label), None)
+        if profile is None:
+            profile = next((item for item in profiles if item.login.casefold() == owner), None)
+        if profile is None:
+            return None
+        try:
+            return self._github_tokens.token(profile.login)
+        except TokenStoreError:
+            return None
 
     def publish_created_github_repository(self, remote_url: str, full_name: str) -> None:
         branch = self._current_branch_name()
@@ -2212,6 +2240,7 @@ class MainWindow(QMainWindow):
             rebase=self._pull_rebase_action.isChecked(),
             autostash=self._pull_autostash_action.isChecked(),
             recurse_submodules=self._pull_submodules_action.isChecked(),
+            token=self._resolve_github_token(),
         )
 
     @Slot()
@@ -2239,7 +2268,9 @@ class MainWindow(QMainWindow):
         self._status_label.setText("Resetting current branch to upstream…")
         self._set_network_busy("Reset to upstream")
         self._git.request_reset_to_upstream(
-            self._repository, recurse_submodules=include_submodules
+            self._repository,
+            recurse_submodules=include_submodules,
+            token=self._resolve_github_token(),
         )
 
     @Slot()
@@ -2321,6 +2352,7 @@ class MainWindow(QMainWindow):
         self._git.request_fetch(
             self._repository,
             recurse_submodules=self._fetch_submodules_action.isChecked(),
+            token=self._resolve_github_token(),
         )
 
     @Slot()
@@ -2373,6 +2405,7 @@ class MainWindow(QMainWindow):
             set_upstream=set_upstream,
             force_with_lease=force_with_lease,
             recurse_submodules=self._push_submodules_action.isChecked(),
+            token=self._resolve_github_token(),
         )
 
     def _set_network_busy(self, operation: str | None) -> None:

@@ -34,6 +34,7 @@ from mygitclient.git.remotes import GitRemoteReader
 from mygitclient.github import (
     DeviceAuthorization,
     DeviceFlowResult,
+    GitHubBrowserFlow,
     GitHubDeviceFlow,
     GitHubProfile,
     GitHubProfileStore,
@@ -45,6 +46,7 @@ from mygitclient.github import (
     PublishedGitHubRepository,
     TokenStoreError,
     first_github_remote,
+    github_remote,
 )
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
@@ -99,12 +101,18 @@ class AppShell(QMainWindow):
         self._github_bindings = GitHubRepositoryBindingStore(settings)
         self._github_tokens = GitHubTokenStore()
         self._github_device_flow = GitHubDeviceFlow(self)
+        self._github_browser_flow = GitHubBrowserFlow(self)
         self._github_device_dialog: GitHubDeviceDialog | None = None
         self._github_device_profile: GitHubProfile | None = None
         self._github_device_add_new = False
         self._github_device_flow.code_received.connect(self._github_device_code_received)
         self._github_device_flow.completed.connect(self._github_device_completed)
         self._github_device_flow.failed.connect(self._github_device_failed)
+        self._github_browser_flow.authorization_url_ready.connect(
+            self._github_browser_authorization_ready
+        )
+        self._github_browser_flow.completed.connect(self._github_device_completed)
+        self._github_browser_flow.failed.connect(self._github_device_failed)
         self._github_repositories = GitHubRepositoryService(self)
         self._github_repositories_dialog: GitHubRepositoriesDialog | None = None
         self._github_repositories.completed.connect(self._github_repositories_completed)
@@ -277,8 +285,32 @@ class AppShell(QMainWindow):
         progress.canceled.connect(self._clone_service.cancel)
         self._clone_progress = progress
         progress.show()
-        if not self._clone_service.clone(url, target):
+        if not self._clone_service.clone(url, target, token=self._resolve_clone_token(url)):
             self._close_clone_progress()
+
+    def _resolve_clone_token(self, url: str) -> str | None:
+        """Match the clone URL's owner against a connected GitHub account's token.
+
+        Lets clone authenticate over HTTPS for private repos without depending on
+        the system Git credential helper already having valid, unexpired credentials.
+        """
+        remote = github_remote(url)
+        if remote is None:
+            return None
+        profile = next(
+            (
+                item
+                for item in self._github_profiles.profiles()
+                if item.login.casefold() == remote.owner.casefold()
+            ),
+            None,
+        )
+        if profile is None:
+            return None
+        try:
+            return self._github_tokens.token(profile.login)
+        except TokenStoreError:
+            return None
 
     @Slot(str)
     def _clone_progress_changed(self, message: str) -> None:
@@ -379,7 +411,9 @@ class AppShell(QMainWindow):
         self._github_device_add_new = profile is None
         dialog = GitHubDeviceDialog(profile.login if profile is not None else None, client_id, self)
         dialog.cancelled.connect(self._github_device_flow.cancel)
+        dialog.cancelled.connect(self._github_browser_flow.cancel)
         dialog.start_requested.connect(self._start_github_device_flow)
+        dialog.browser_start_requested.connect(self._start_github_browser_flow)
         dialog.finished.connect(self._github_device_dialog_finished)
         self._github_device_dialog = dialog
         dialog.show()
@@ -392,10 +426,24 @@ class AppShell(QMainWindow):
         self._settings.setValue("github/oauthClientId", clean_client_id)
         self._github_device_flow.start(clean_client_id)
 
+    @Slot(str, str)
+    def _start_github_browser_flow(self, client_id: str, client_secret: str) -> None:
+        clean_client_id = client_id.strip()
+        clean_client_secret = client_secret.strip()
+        if not clean_client_id or not clean_client_secret:
+            return
+        self._settings.setValue("github/oauthClientId", clean_client_id)
+        self._github_browser_flow.start(clean_client_id, clean_client_secret)
+
     @Slot(object)
     def _github_device_code_received(self, value: object) -> None:
         if isinstance(value, DeviceAuthorization) and self._github_device_dialog is not None:
             self._github_device_dialog.show_authorization(value)
+
+    @Slot(str)
+    def _github_browser_authorization_ready(self, url: str) -> None:
+        if self._github_device_dialog is not None:
+            self._github_device_dialog.show_browser_pending(url)
 
     @Slot(object)
     def _github_device_completed(self, value: object) -> None:
@@ -439,6 +487,7 @@ class AppShell(QMainWindow):
     @Slot(int)
     def _github_device_dialog_finished(self, _result: int) -> None:
         self._github_device_flow.cancel()
+        self._github_browser_flow.cancel()
         self._github_device_dialog = None
         self._github_device_profile = None
         self._github_device_add_new = False
