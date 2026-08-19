@@ -70,9 +70,9 @@ On macOS or Linux, activate the environment with `source .venv/bin/activate`.
 
 ## Development
 
-Active development happens on `develop`; `master` contains release-ready code. See
-[PLAN.md](PLAN.md) for the roadmap and [AGENTS.md](AGENTS.md) for architecture and
-contribution conventions.
+Active development happens on `develop`; `master` contains release-ready code. The roadmap
+is kept as a Kanban board in the maintainer's notes vault, outside this repository. See
+[AGENTS.md](AGENTS.md) for architecture and contribution conventions.
 
 ```powershell
 python -m pip install -e ".[dev]"

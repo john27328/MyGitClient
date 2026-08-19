@@ -4,10 +4,44 @@ These instructions apply to the entire repository.
 
 ## Start here
 
-1. Read `PLAN.md` before changing the product.
+1. Read the roadmap board before changing the product. It lives outside this repository,
+   in the user's notes vault — see `Roadmap board` below.
 2. Inspect `git status` and preserve unrelated user changes.
 3. Work in a small vertical slice that leaves the application runnable.
-4. Update `PLAN.md` when a listed item is completed or its scope changes.
+4. Move the matching card on the board when an item is completed or its scope changes.
+
+## Roadmap board
+
+The roadmap is not stored in this repository. It is an Obsidian Kanban board in the user's
+notes vault, one Markdown card per item.
+
+- Ask the user for the vault path when it is unknown, or locate it by searching for a
+  `Мой гит клиент.md` note containing a ```board``` block, or for cards tagged
+  `#git_client`. As of 2026-08-19 it was
+  `D:\GitHub\home\notes\10 Проекты\Мой гит клиент`, but do not assume that path still
+  holds — confirm it before relying on it.
+- Never recreate a plan file inside this repository. `PLAN.md` was migrated to the board
+  on 2026-08-19; its history stays in Git.
+
+Columns, in order:
+
+- `План` — raw, unprocessed AI-generated wishes. Anything an agent proposes lands here and
+  waits for the user to triage it. Do not start work from this column on your own.
+- `Бэклог` — triaged work that should actually be done.
+- `Базовые задачи` — a card grouping a whole area (mirrors PLAN.md's old `##` sections).
+- `В работе`, `Ревью`, `Готово` — the usual meanings.
+
+Card conventions, matching the sibling `Fingrad` board in the same vault:
+
+- `Статус` in the front matter is the column; `Порядок` is the position inside it.
+- A card grouping an area lives in the `Базовые задачи` column. Item cards point back to it
+  with `BaseTask: "[[…]]"` in the front matter; do not maintain a manual list of children on
+  the group card — every card's `## Заметки` ends with a `dataviewjs` block that queries
+  `BaseTask` and renders the children table automatically.
+- Put the full wording in `## Цель` and any detail in `## Заметки`; keep the file name a
+  short title.
+- New cards should come from `90 Служебное\шаблоны\Мой гит клиент\Карточка.md`, which
+  already has the `BaseTask` field and the `dataviewjs` block.
 
 ## Product and stack
 
@@ -102,5 +136,5 @@ were run successfully in the current working tree.
 - Keep Ruff clean and the line length at 100.
 - Use `apply_patch` for intentional source edits.
 - Do not commit, push, rewrite history, or publish unless the user asks.
-- Do not edit completed checklist items merely to make the plan look current; record
-  scope changes explicitly.
+- Do not move cards to `Готово` merely to make the board look current; record scope
+  changes explicitly on the card instead.
