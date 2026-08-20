@@ -794,6 +794,7 @@ def test_branches_tab_can_checkout_and_create_branch(
     feature = None
     for index in range(local.childCount()):
         child = local.child(index)
+        assert child is not None
         value = child.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(value, BranchInfo) and value.name == "feature":
             feature = child

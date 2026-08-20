@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QTreeWidgetItem
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
@@ -100,7 +102,7 @@ def test_history_panel_prepends_incoming_commits_to_graph(qtbot: QtBot) -> None:
     assert second.text(2) == "Local tip"
     branches = panel.refs_panel.tree.topLevelItem(0)
     assert branches is not None
-    assert branches.child(0).childCount() == 0
+    assert cast(QTreeWidgetItem, branches.child(0)).childCount() == 0
 
 
 def test_history_panel_emits_load_more_request(qtbot: QtBot) -> None:

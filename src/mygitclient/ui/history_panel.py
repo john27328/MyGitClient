@@ -442,7 +442,7 @@ class HistoryPanel(QWidget):
 
     @property
     def selected_commit(self) -> CommitSummary | None:
-        item = cast(QTreeWidgetItem | None, self.tree.currentItem())
+        item = self.tree.currentItem()
         if item is None:
             return None
         value = item.data(0, Qt.ItemDataRole.UserRole)

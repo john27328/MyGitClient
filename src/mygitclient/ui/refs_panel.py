@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 from PySide6.QtCore import QPoint, QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtGui import QBrush, QColor, QFont
@@ -389,6 +388,7 @@ class RefsPanel(QWidget):
         visible = False
         for index in range(parent.childCount()):
             child = parent.child(index)
+            assert child is not None
             descendant_visible = self._filter_children(child, query)
             matches = not query or query in child.text(0).casefold()
             child.setHidden(not matches and not descendant_visible)
@@ -397,7 +397,7 @@ class RefsPanel(QWidget):
         return visible
 
     def _selected_value(self) -> BranchInfo | TagInfo | StashInfo | LinkedRepository | None:
-        item = cast(QTreeWidgetItem | None, self.tree.currentItem())
+        item = self.tree.currentItem()
         if item is None:
             return None
         value = item.data(0, Qt.ItemDataRole.UserRole)

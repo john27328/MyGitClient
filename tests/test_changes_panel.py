@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction
@@ -224,8 +225,8 @@ def test_tree_mode_groups_files_and_folder_checkbox_selects_descendants(
 
     src.setCheckState(0, Qt.CheckState.Checked)
 
-    assert src.child(0).checkState(0) is Qt.CheckState.Checked
-    assert src.child(1).checkState(0) is Qt.CheckState.Checked
+    assert cast(QTreeWidgetItem, src.child(0)).checkState(0) is Qt.CheckState.Checked
+    assert cast(QTreeWidgetItem, src.child(1)).checkState(0) is Qt.CheckState.Checked
     assert panel.checked_files() == (first, second)
     assert panel.stage_button.isEnabled()
 
@@ -246,7 +247,7 @@ def test_tree_mode_compacts_directories_but_keeps_file_as_a_separate_leaf(
     assert folder is not None
     assert folder.text(0) == "src/package"
     assert folder.childCount() == 1
-    item = folder.child(0)
+    item = cast(QTreeWidgetItem, folder.child(0))
     assert item is selected
     assert item.text(0) == "only.py"
     assert item.childCount() == 0
@@ -280,8 +281,8 @@ def test_split_folder_checkbox_selects_files_without_applying_git(
 
     assert item_changed.count() == 1
     assert panel.checked_files() == (first, second)
-    assert root.child(0).checkState(0) is Qt.CheckState.Checked
-    assert root.child(1).checkState(0) is Qt.CheckState.Checked
+    assert cast(QTreeWidgetItem, root.child(0)).checkState(0) is Qt.CheckState.Checked
+    assert cast(QTreeWidgetItem, root.child(1)).checkState(0) is Qt.CheckState.Checked
 
 
 def test_status_refresh_preserves_changes_tree_scroll_position(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import cast
 
 from PySide6.QtCore import QRect, QSettings, QSignalBlocker, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
@@ -372,7 +371,7 @@ class ChangesPanel(QWidget):
     ) -> None:
         blocker = QSignalBlocker(tree)
         item.setCheckState(0, state)
-        parent = cast(QTreeWidgetItem | None, item.parent())
+        parent = item.parent()
         while parent is not None:
             self._refresh_folder_state(parent)
             parent = parent.parent()
@@ -472,7 +471,7 @@ class ChangesPanel(QWidget):
         checked = self.checked_files()
         if checked:
             return checked
-        item = cast(QTreeWidgetItem | None, self.active_tree().currentItem())
+        item = self.active_tree().currentItem()
         if item is None:
             return ()
         file = item.data(0, Qt.ItemDataRole.UserRole)
@@ -669,14 +668,20 @@ class ChangesPanel(QWidget):
     def _compact_folder_chain(self, item: QTreeWidgetItem) -> None:
         while item.data(0, _FOLDER_ROLE) is True and item.childCount() == 1:
             child = item.child(0)
+            assert child is not None
             if child.data(0, _FOLDER_ROLE) is not True:
                 break
             child = item.takeChild(0)
+            assert child is not None
             item.setText(0, f"{item.text(0)}/{child.text(0)}")
             while child.childCount():
-                item.addChild(child.takeChild(0))
+                grandchild = child.takeChild(0)
+                assert grandchild is not None
+                item.addChild(grandchild)
         for index in range(item.childCount()):
-            self._compact_folder_chain(item.child(index))
+            child = item.child(index)
+            assert child is not None
+            self._compact_folder_chain(child)
 
     def _find_file_item(
         self, tree: QTreeWidget, path: str | None
@@ -694,7 +699,9 @@ class ChangesPanel(QWidget):
             if isinstance(value, FileStatus) and value.path == path:
                 return item
             for index in range(item.childCount()):
-                pending.append(item.child(index))
+                child = item.child(index)
+                assert child is not None
+                pending.append(child)
         return None
 
     def find_file_item(
@@ -760,7 +767,11 @@ class ChangesPanel(QWidget):
             )
             item.setCheckState(0, state)
             return state
-        states = [self._sync_item_state(item.child(index)) for index in range(item.childCount())]
+        states: list[Qt.CheckState] = []
+        for index in range(item.childCount()):
+            child = item.child(index)
+            assert child is not None
+            states.append(self._sync_item_state(child))
         if states and all(state == Qt.CheckState.Checked for state in states):
             state = Qt.CheckState.Checked
         elif states and all(state == Qt.CheckState.Unchecked for state in states):
@@ -883,6 +894,7 @@ class ChangesPanel(QWidget):
         files: list[FileStatus] = []
         for index in range(root.childCount()):
             child = root.child(index)
+            assert child is not None
             value = child.data(0, Qt.ItemDataRole.UserRole)
             if isinstance(value, FileStatus) and not value.unmerged:
                 files.append(value)
@@ -895,6 +907,7 @@ class ChangesPanel(QWidget):
     ) -> None:
         for index in range(root.childCount()):
             child = root.child(index)
+            assert child is not None
             if child.flags() & Qt.ItemFlag.ItemIsUserCheckable:
                 child.setCheckState(0, state)
             self._set_descendant_state(child, state)
@@ -903,8 +916,9 @@ class ChangesPanel(QWidget):
         if item.data(0, _FOLDER_ROLE) is not True:
             return item.checkState(0)
         states = [
-            self._refresh_folder_state(item.child(index))
+            self._refresh_folder_state(child)
             for index in range(item.childCount())
+            if (child := item.child(index)) is not None
         ]
         if states and all(state == Qt.CheckState.Checked for state in states):
             state = Qt.CheckState.Checked

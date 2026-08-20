@@ -73,7 +73,8 @@ class InteractiveRebaseDialog(QDialog):
     def items(self) -> tuple[RebaseTodoItem, ...]:
         result: list[RebaseTodoItem] = []
         for index in range(self.tree.topLevelItemCount()):
-            item = cast(QTreeWidgetItem, self.tree.topLevelItem(index))
+            item = self.tree.topLevelItem(index)
+            assert item is not None
             action = self.tree.itemWidget(item, 0)
             assert isinstance(action, QComboBox)
             result.append(
@@ -102,13 +103,16 @@ class InteractiveRebaseDialog(QDialog):
 
     def _move(self, offset: int) -> None:
         current = self.tree.currentItem()
+        if current is None:
+            return
         index = self.tree.indexOfTopLevelItem(current)
         target = index + offset
         if target < 0 or target >= self.tree.topLevelItemCount():
             return
         action = self.tree.itemWidget(current, 0)
         action_name = action.currentText() if isinstance(action, QComboBox) else "pick"
-        item = cast(QTreeWidgetItem, self.tree.takeTopLevelItem(index))
+        item = self.tree.takeTopLevelItem(index)
+        assert item is not None
         self.tree.insertTopLevelItem(target, item)
         combo = QComboBox()
         combo.addItems(self._ACTIONS)

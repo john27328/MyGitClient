@@ -1,6 +1,7 @@
 from pathlib import Path
+from typing import cast
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QTreeWidgetItem
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
@@ -37,18 +38,18 @@ def test_refs_panel_groups_filters_and_selects_refs(qtbot: QtBot) -> None:
     assert selected == [("refs/heads/main",)]
     remotes = panel.tree.topLevelItem(1)
     tags = panel.tree.topLevelItem(2)
-    assert remotes is not None and remotes.child(0).text(0) == "origin"
+    assert remotes is not None and cast(QTreeWidgetItem, remotes.child(0)).text(0) == "origin"
     assert not remotes.isExpanded()
-    assert not remotes.child(0).isExpanded()
-    assert tags is not None and tags.child(0).text(0) == "v1.0"
+    assert not cast(QTreeWidgetItem, remotes.child(0)).isExpanded()
+    assert tags is not None and cast(QTreeWidgetItem, tags.child(0)).text(0) == "v1.0"
     assert not tags.isExpanded()
 
     panel.filter_edit.setText("feature")
 
     branches = panel.tree.topLevelItem(0)
     assert branches is not None
-    assert branches.child(0).isHidden()
-    assert not branches.child(1).isHidden()
+    assert cast(QTreeWidgetItem, branches.child(0)).isHidden()
+    assert not cast(QTreeWidgetItem, branches.child(1)).isHidden()
     assert remotes.isHidden()
     assert tags.isHidden()
 
@@ -70,7 +71,7 @@ def test_refs_panel_exposes_branch_context_actions(qtbot: QtBot) -> None:
     panel.show_branches(BranchesSnapshot(Path("repository"), (branch,)))
     branches = panel.tree.topLevelItem(0)
     assert branches is not None
-    panel.tree.setCurrentItem(branches.child(0))
+    panel.tree.setCurrentItem(cast(QTreeWidgetItem, branches.child(0)))
     deleted: list[object] = []
     forced: list[object] = []
     rebased: list[object] = []
@@ -98,8 +99,8 @@ def test_refs_panel_checks_out_branch_on_double_click(qtbot: QtBot) -> None:
     requested: list[object] = []
     panel.checkout_requested.connect(requested.append)
 
-    panel.tree.itemDoubleClicked.emit(branches.child(1), 0)
-    panel.tree.itemDoubleClicked.emit(branches.child(0), 0)
+    panel.tree.itemDoubleClicked.emit(cast(QTreeWidgetItem, branches.child(1)), 0)
+    panel.tree.itemDoubleClicked.emit(cast(QTreeWidgetItem, branches.child(0)), 0)
 
     assert requested == [feature]
 
@@ -131,13 +132,13 @@ def test_refs_panel_marks_local_branch_sync_states(qtbot: QtBot) -> None:
 
     branches = panel.tree.topLevelItem(0)
     assert branches is not None
-    assert branches.child(0).text(0) == "main  ✓ ↑2 ↓1"
-    assert "Upstream: origin/main" in branches.child(0).toolTip(0)
-    assert branches.child(0).font(0).bold()
-    assert branches.child(1).text(0) == "draft  ○"
-    assert "Not published" in branches.child(1).toolTip(0)
-    assert branches.child(2).text(0) == "old  ⚠"
-    assert "Upstream gone: origin/old" in branches.child(2).toolTip(0)
+    assert cast(QTreeWidgetItem, branches.child(0)).text(0) == "main  ✓ ↑2 ↓1"
+    assert "Upstream: origin/main" in cast(QTreeWidgetItem, branches.child(0)).toolTip(0)
+    assert cast(QTreeWidgetItem, branches.child(0)).font(0).bold()
+    assert cast(QTreeWidgetItem, branches.child(1)).text(0) == "draft  ○"
+    assert "Not published" in cast(QTreeWidgetItem, branches.child(1)).toolTip(0)
+    assert cast(QTreeWidgetItem, branches.child(2)).text(0) == "old  ⚠"
+    assert "Upstream gone: origin/old" in cast(QTreeWidgetItem, branches.child(2)).toolTip(0)
 
 
 def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None:
@@ -149,7 +150,7 @@ def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None
     assert remotes is not None
     origin = remotes.child(0)
     assert origin is not None
-    panel.tree.setCurrentItem(origin.child(0))
+    panel.tree.setCurrentItem(cast(QTreeWidgetItem, origin.child(0)))
     deleted: list[object] = []
     panel.remote_delete_requested.connect(deleted.append)
 
@@ -184,11 +185,11 @@ def test_refs_panel_creates_publishes_and_compares_from_context(qtbot: QtBot) ->
     branches = panel.tree.topLevelItem(0)
     assert branches is not None
 
-    panel.tree.setCurrentItem(branches.child(0))
+    panel.tree.setCurrentItem(cast(QTreeWidgetItem, branches.child(0)))
     panel.create_branch_from_action.trigger()
     panel.create_worktree_action.trigger()
     panel.compare_upstream_action.trigger()
-    panel.tree.setCurrentItem(branches.child(1))
+    panel.tree.setCurrentItem(cast(QTreeWidgetItem, branches.child(1)))
     panel.publish_branch_action.trigger()
 
     assert created == [local]
@@ -245,10 +246,13 @@ def test_refs_panel_shows_stashes_submodules_and_worktrees(qtbot: QtBot, tmp_pat
     stashes = panel.tree.topLevelItem(3)
     submodules = panel.tree.topLevelItem(4)
     worktrees = panel.tree.topLevelItem(5)
-    assert stashes is not None and "saved work" in stashes.child(0).text(0)
-    assert submodules is not None and submodules.child(0).text(0) == "library"
-    assert worktrees is not None and worktrees.child(0).text(0) == "feature-worktree"
-    assert "Git worktree" in worktrees.child(0).toolTip(0)
+    assert stashes is not None
+    assert "saved work" in cast(QTreeWidgetItem, stashes.child(0)).text(0)
+    assert submodules is not None
+    assert cast(QTreeWidgetItem, submodules.child(0)).text(0) == "library"
+    assert worktrees is not None
+    assert cast(QTreeWidgetItem, worktrees.child(0)).text(0) == "feature-worktree"
+    assert "Git worktree" in cast(QTreeWidgetItem, worktrees.child(0)).toolTip(0)
     applied: list[object] = []
     popped: list[object] = []
     dropped: list[object] = []
@@ -260,14 +264,14 @@ def test_refs_panel_shows_stashes_submodules_and_worktrees(qtbot: QtBot, tmp_pat
     panel.stash_view_requested.connect(viewed.append)
     panel.repository_requested.connect(opened.append)
 
-    panel.tree.setCurrentItem(stashes.child(0))
+    panel.tree.setCurrentItem(cast(QTreeWidgetItem, stashes.child(0)))
     panel.view_stash_action.trigger()
     panel.apply_stash_action.trigger()
     panel.pop_stash_action.trigger()
     panel.drop_stash_action.trigger()
-    panel.tree.setCurrentItem(submodules.child(0))
+    panel.tree.setCurrentItem(cast(QTreeWidgetItem, submodules.child(0)))
     panel.open_repository_action.trigger()
-    panel.tree.itemDoubleClicked.emit(worktrees.child(0), 0)
+    panel.tree.itemDoubleClicked.emit(cast(QTreeWidgetItem, worktrees.child(0)), 0)
 
     assert applied == [stash]
     assert popped == [stash]
@@ -287,7 +291,7 @@ def test_refs_panel_nests_recursive_submodules(qtbot: QtBot, tmp_path: Path) -> 
     root = panel.tree.topLevelItem(4)
     assert root is not None
     assert root.childCount() == 1
-    parent_item = root.child(0)
+    parent_item = cast(QTreeWidgetItem, root.child(0))
     assert parent_item.text(0) == "library"
     assert parent_item.childCount() == 1
-    assert parent_item.child(0).text(0) == "codec"
+    assert cast(QTreeWidgetItem, parent_item.child(0)).text(0) == "codec"

@@ -1,6 +1,8 @@
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QTreeWidgetItem
 from pytestqt.qtbot import QtBot
 
 from mygitclient.ui.repositories_panel import RepositoriesPanel
@@ -98,7 +100,7 @@ def test_linked_repository_is_not_duplicated_at_top_level(
     immediate_parent = panel.tree.topLevelItem(0)
     assert immediate_parent is not None
     assert immediate_parent.childCount() == 1
-    assert immediate_parent.child(0).text(0) == "child (nested)"
+    assert cast(QTreeWidgetItem, immediate_parent.child(0)).text(0) == "child (nested)"
 
     panel.set_linked(parent, (LinkedRepository(child, "submodule"),))
 
@@ -113,7 +115,7 @@ def test_linked_repository_is_not_duplicated_at_top_level(
     assert popup_parent is not None
     assert popup_parent.text(0) == "parent"
     assert popup_parent.childCount() == 1
-    assert popup_parent.child(0).text(0) == "child (submodule)"
+    assert cast(QTreeWidgetItem, popup_parent.child(0)).text(0) == "child (submodule)"
     received: list[tuple[object, bool]] = []
 
     def capture_activation(path: object, remember: bool) -> None:

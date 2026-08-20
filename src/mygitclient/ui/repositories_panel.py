@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtGui import QAction
@@ -134,9 +133,10 @@ class RepositoriesPanel(QWidget):
                 self._remove_duplicate_top_level(linked.path, except_item=item)
                 existing = next(
                     (
-                        item.child(index)
+                        child
                         for index in range(item.childCount())
-                        if item.child(index).data(0, Qt.ItemDataRole.UserRole)
+                        if (child := item.child(index)) is not None
+                        and child.data(0, Qt.ItemDataRole.UserRole)
                         == linked.path
                     ),
                     None,
@@ -206,11 +206,13 @@ class RepositoriesPanel(QWidget):
         popup_item.setData(
             0,
             Qt.ItemDataRole.UserRole + 1,
-            cast(QTreeWidgetItem | None, item.parent()) is None,
+            item.parent() is None,
         )
         parent.addChild(popup_item)
         for index in range(item.childCount()):
-            self._add_repository_tree_item(popup_item, item.child(index))
+            child = item.child(index)
+            assert child is not None
+            self._add_repository_tree_item(popup_item, child)
 
     def _repository_items(self) -> list[QTreeWidgetItem]:
         pending = [
@@ -223,7 +225,11 @@ class RepositoriesPanel(QWidget):
             item = pending.pop(0)
             if isinstance(item.data(0, Qt.ItemDataRole.UserRole), Path):
                 result.append(item)
-            pending[0:0] = [item.child(index) for index in range(item.childCount())]
+            pending[0:0] = [
+                child
+                for index in range(item.childCount())
+                if (child := item.child(index)) is not None
+            ]
         return result
 
     def _find_item(self, repository: Path) -> QTreeWidgetItem | None:
@@ -236,7 +242,11 @@ class RepositoriesPanel(QWidget):
             item = pending.pop()
             if item.data(0, Qt.ItemDataRole.UserRole) == repository:
                 return item
-            pending.extend(item.child(index) for index in range(item.childCount()))
+            pending.extend(
+                child
+                for index in range(item.childCount())
+                if (child := item.child(index)) is not None
+            )
         return None
 
     def _remove_duplicate_top_level(
@@ -255,7 +265,7 @@ class RepositoriesPanel(QWidget):
     def _item_activated(self, item: QTreeWidgetItem, _column: int) -> None:
         repository = item.data(0, Qt.ItemDataRole.UserRole)
         if isinstance(repository, Path):
-            parent = cast(QTreeWidgetItem | None, item.parent())
+            parent = item.parent()
             self.repository_activated.emit(repository, parent is None)
 
     @Slot()

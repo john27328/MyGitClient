@@ -3554,7 +3554,7 @@ class MainWindow(QMainWindow):
         if self._workspace_tabs.currentIndex() != 1:
             self._request_diff(silent=False)
             return
-        item = cast(QTreeWidgetItem | None, self._history_panel.files.currentItem())
+        item = self._history_panel.files.currentItem()
         if item is None:
             return
         file = item.data(0, Qt.ItemDataRole.UserRole)
@@ -3573,7 +3573,7 @@ class MainWindow(QMainWindow):
         if self._workspace_tabs.currentIndex() != 1:
             self._request_diff(silent=False)
             return
-        item = cast(QTreeWidgetItem | None, self._history_panel.files.currentItem())
+        item = self._history_panel.files.currentItem()
         if item is None:
             return
         file = item.data(0, Qt.ItemDataRole.UserRole)
