@@ -233,6 +233,11 @@ class ChangesPanel(QWidget):
         self.stage_all.setObjectName("stageAllCheckBox")
         self.stage_all.setTristate(True)
         self.stage_all.stateChanged.connect(self._select_all_changed)
+        self.stage_summary = QLabel("✓ 0 · ✎ 0")
+        self.stage_summary.setObjectName("stageSummaryLabel")
+        self.stage_summary.setToolTip(
+            "Files in the Git index and all files with uncommitted changes"
+        )
 
         self.stage_button = QPushButton("Stage")
         self.stage_button.setObjectName("stageSelectedButton")
@@ -310,6 +315,7 @@ class ChangesPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         options = QHBoxLayout()
         options.addWidget(self.stage_all)
+        options.addWidget(self.stage_summary)
         options.addStretch(1)
         options.addWidget(self.presentation_mode)
         options.addWidget(self.view_mode)
@@ -393,6 +399,8 @@ class ChangesPanel(QWidget):
     ) -> QTreeWidgetItem | None:
         self._amend_mode = amend
         self._visible_files = {file.path: file for file, _state in files}
+        staged_count = sum(file.is_staged and not file.unmerged for file, _state in files)
+        self.stage_summary.setText(f"✓ {staged_count} · ✎ {len(files)}")
         self._selected_paths.intersection_update(self._visible_files)
         selected_files = [
             (

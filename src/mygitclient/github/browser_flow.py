@@ -115,18 +115,28 @@ class GitHubBrowserFlow(QObject):
         request_line = data.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
         parts = request_line.split(" ")
         path = parts[1] if len(parts) >= 2 else ""
-        self._respond(socket)
+        code, error = parse_callback_query(path, self._state)
+        self._respond(socket, success=error is None)
         if self._cancelled or not self._server.isListening():
             return
         self._server.close()
         self._timer.stop()
-        self._handle_callback(path)
+        if error is not None:
+            self._fail(error)
+            return
+        assert code is not None
+        self._exchange_code(code)
 
-    def _respond(self, socket: QTcpSocket) -> None:
+    def _respond(self, socket: QTcpSocket, *, success: bool) -> None:
         body = (
             b"<html><body style='font-family: sans-serif; text-align: center; "
             b"padding-top: 3em;'><h2>MyGitClient</h2>"
-            b"<p>Signed in. You can close this tab.</p></body></html>"
+            + (
+                b"<p>Signed in. You can close this tab.</p>"
+                if success
+                else b"<p>Sign-in was not completed. Return to MyGitClient and try again.</p>"
+            )
+            + b"</body></html>"
         )
         response = (
             b"HTTP/1.1 200 OK\r\n"
@@ -137,14 +147,6 @@ class GitHubBrowserFlow(QObject):
         socket.write(response)
         socket.flush()
         socket.disconnectFromHost()
-
-    def _handle_callback(self, path: str) -> None:
-        code, error = parse_callback_query(path, self._state)
-        if error is not None:
-            self._fail(error)
-            return
-        assert code is not None
-        self._exchange_code(code)
 
     def _exchange_code(self, code: str) -> None:
         payload = urlencode(

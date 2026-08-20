@@ -49,52 +49,7 @@ from mygitclient.git.models import (
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
 from mygitclient.ui.refs_panel import RefsPanel
 
-FILTER_HIGHLIGHT_ROLE = int(Qt.ItemDataRole.UserRole) + 3
-BADGES_ROLE = int(Qt.ItemDataRole.UserRole) + 4
-
-
-class FilterHighlightDelegate(QStyledItemDelegate):
-    def paint(
-        self,
-        painter: QPainter,
-        option: QStyleOptionViewItem,
-        index: QModelIndex | QPersistentModelIndex,
-    ) -> None:
-        query = index.data(FILTER_HIGHLIGHT_ROLE)
-        if not isinstance(query, str) or not query:
-            super().paint(painter, option, index)
-            return
-        styled = QStyleOptionViewItem(option)
-        self.initStyleOption(styled, index)
-        text = styled.text
-        start = text.casefold().find(query.casefold())
-        if start < 0:
-            super().paint(painter, option, index)
-            return
-        styled.text = ""
-        style = styled.widget.style()
-        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, styled, painter, styled.widget)
-        text_rect = style.subElementRect(
-            QStyle.SubElement.SE_ItemViewItemText, styled, styled.widget
-        )
-        metrics = styled.fontMetrics
-        baseline = (
-            text_rect.top() + (text_rect.height() + metrics.ascent() - metrics.descent()) // 2
-        )
-        before = text[:start]
-        match = text[start : start + len(query)]
-        x = text_rect.left()
-        match_x = x + metrics.horizontalAdvance(before)
-        match_width = metrics.horizontalAdvance(match)
-        painter.save()
-        painter.setClipRect(text_rect)
-        painter.fillRect(
-            match_x, text_rect.top(), match_width, text_rect.height(), QColor(255, 210, 70, 150)
-        )
-        painter.setFont(styled.font)
-        painter.setPen(styled.palette.color(styled.palette.ColorRole.Text))
-        painter.drawText(x, baseline, text)
-        painter.restore()
+BADGES_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 
 
 class RefBadgesDelegate(QStyledItemDelegate):
@@ -151,7 +106,6 @@ class HistoryPanel(QWidget):
     commit_selected = Signal(object)
     file_selected = Signal(object, object)
     comparison_file_selected = Signal(str, str, object)
-    focus_mode_changed = Signal(bool)
     cherry_pick_requested = Signal(object)
     revert_requested = Signal(object)
     checkout_commit_requested = Signal(object)
@@ -167,6 +121,7 @@ class HistoryPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._settings = settings
+        self._diff_preview_mode = False
         self.tree = QTreeWidget()
         self.tree.setObjectName("historyTree")
         self.tree.setHeaderLabels(["Graph", "Refs", "Description", "Author", "Date", "Commit"])
@@ -181,11 +136,12 @@ class HistoryPanel(QWidget):
         for column in (4, 5):
             self.tree.setColumnHidden(column, True)
         self.tree.header().setStretchLastSection(False)
+        self.tree.header().setSectionsMovable(True)
+        self.tree.header().setFirstSectionMovable(False)
         self.tree.header().setSectionResizeMode(2, self.tree.header().ResizeMode.Stretch)
+        self.tree.header().sectionMoved.connect(self._save_column_layout)
         self.tree.setItemDelegateForColumn(0, CommitGraphDelegate(self.tree))
         self.tree.setItemDelegateForColumn(1, RefBadgesDelegate(self.tree))
-        for column in (2, 3, 5):
-            self.tree.setItemDelegateForColumn(column, FilterHighlightDelegate(self.tree))
         self.tree.currentItemChanged.connect(self._commit_changed)
 
         self.filter_edit = QLineEdit()
@@ -195,11 +151,6 @@ class HistoryPanel(QWidget):
         self.filter_edit.textChanged.connect(self._apply_filter)
         self.filter_count = QLabel("0 commits")
         self.filter_count.setObjectName("historyFilterCount")
-        self.focus_button = QPushButton("Focus on diff")
-        self.focus_button.setObjectName("historyFocusDiffButton")
-        self.focus_button.setCheckable(True)
-        self.focus_button.setToolTip("Hide refs and give more space to the diff")
-        self.focus_button.toggled.connect(self._focus_mode_toggled)
         clear_shortcut = QShortcut(QKeySequence.StandardKey.Cancel, self.filter_edit)
         clear_shortcut.activated.connect(self.filter_edit.clear)
 
@@ -214,7 +165,6 @@ class HistoryPanel(QWidget):
         filter_layout = QHBoxLayout()
         filter_layout.addWidget(self.filter_edit, 1)
         filter_layout.addWidget(self.filter_count)
-        filter_layout.addWidget(self.focus_button)
         history_layout.addLayout(filter_layout)
         history_layout.addWidget(self.tree)
         history_layout.addWidget(self.load_more_button)
@@ -388,20 +338,28 @@ class HistoryPanel(QWidget):
     def set_expanded_layout(self, expanded: bool) -> None:
         header = self.tree.header()
         header.setStretchLastSection(False)
-        mode = header.ResizeMode.Stretch if expanded else header.ResizeMode.Interactive
+        mode = (
+            header.ResizeMode.Stretch
+            if expanded or self._diff_preview_mode
+            else header.ResizeMode.Interactive
+        )
         header.setSectionResizeMode(2, mode)
 
     @property
-    def focus_mode(self) -> bool:
-        return self.focus_button.isChecked()
+    def diff_preview_mode(self) -> bool:
+        return self._diff_preview_mode
 
-    @Slot(bool)
-    def _focus_mode_toggled(self, focused: bool) -> None:
-        self.refs_panel.setVisible(not focused)
-        self.focus_button.setText("Show navigation" if focused else "Focus on diff")
-        if self._settings is not None:
-            self._settings.setValue("history/focusDiff", focused)
-        self.focus_mode_changed.emit(focused)
+    def set_diff_preview_mode(self, active: bool) -> None:
+        if self._diff_preview_mode == active:
+            return
+        self._diff_preview_mode = active
+        self.refs_panel.setVisible(not active)
+        self.details_label.setVisible(not active)
+        for column in range(self.tree.columnCount()):
+            self.tree.setColumnHidden(column, active or column in (4, 5))
+        if active:
+            self.tree.setColumnHidden(2, False)
+            self.tree.header().setSectionResizeMode(2, self.tree.header().ResizeMode.Stretch)
 
     @Slot(int, int)
     def _save_splitter_states(self, _position: int, _index: int) -> None:
@@ -411,17 +369,23 @@ class HistoryPanel(QWidget):
             self._settings.setValue("history/splitterState", self.splitter.saveState())
         self._settings.setValue("history/contentSplitterState", self.content_splitter.saveState())
 
+    @Slot(int, int, int)
+    def _save_column_layout(self, _logical: int, _old_visual: int, _new_visual: int) -> None:
+        if self._settings is not None:
+            self._settings.setValue("history/columnsState", self.tree.header().saveState())
+
     def _restore_layout(self) -> None:
         if self._settings is None:
             return
         splitter_state = self._settings.value("history/splitterState")
         content_state = self._settings.value("history/contentSplitterState")
+        columns_state = self._settings.value("history/columnsState")
         if isinstance(splitter_state, QByteArray):
             self.splitter.restoreState(splitter_state)
         if isinstance(content_state, QByteArray):
             self.content_splitter.restoreState(content_state)
-        focused = self._settings.value("history/focusDiff", False)
-        self.focus_button.setChecked(focused is True or focused == "true" or focused == 1)
+        if isinstance(columns_state, QByteArray):
+            self.tree.header().restoreState(columns_state)
 
     def show_files(self, snapshot: CommitFilesSnapshot) -> None:
         commit = self.selected_commit
@@ -698,10 +662,6 @@ class HistoryPanel(QWidget):
                 (item.text(1), commit.subject, commit.author_name, commit.author_email, commit.oid)
             ).casefold()
             item.setHidden(bool(query) and query not in searchable)
-            for column in (2, 3, 5):
-                visible_text = item.text(column)
-                highlighted = query if query and query in visible_text.casefold() else None
-                item.setData(column, FILTER_HIGHLIGHT_ROLE, highlighted)
         self._update_filter_count()
 
     def _update_filter_count(self) -> None:

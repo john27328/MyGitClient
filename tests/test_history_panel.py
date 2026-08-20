@@ -23,7 +23,7 @@ from mygitclient.git.models import (
     TagsSnapshot,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphRow
-from mygitclient.ui.history_panel import BADGES_ROLE, FILTER_HIGHLIGHT_ROLE, HistoryPanel
+from mygitclient.ui.history_panel import BADGES_ROLE, HistoryPanel
 
 
 def _commit(oid: str, subject: str, *parents: str) -> CommitSummary:
@@ -168,17 +168,46 @@ def test_history_layout_stacks_commit_details_and_can_focus_diff(
     assert panel.tree.isColumnHidden(4)
     assert panel.tree.isColumnHidden(5)
 
-    with qtbot.waitSignal(panel.focus_mode_changed, timeout=1000):
-        panel.focus_button.click()
+def test_history_panel_diff_preview_mode_keeps_files_and_shows_only_commit_messages(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "compact-history.ini"), QSettings.Format.IniFormat)
+    panel = HistoryPanel(settings)
+    qtbot.addWidget(panel)
 
-    assert panel.focus_mode
+    panel.set_diff_preview_mode(True)
+
+    assert panel.diff_preview_mode
     assert panel.refs_panel.isHidden()
-    assert settings.value("history/focusDiff", type=bool) is True
+    assert not panel.details.isHidden()
+    assert panel.details_label.isHidden()
+    assert not panel.files.isHidden()
+    assert not panel.tree.isColumnHidden(2)
+    assert panel.tree.isColumnHidden(0)
+    assert panel.tree.isColumnHidden(1)
+    assert panel.tree.isColumnHidden(3)
+    assert panel.tree.isColumnHidden(4)
+    assert panel.tree.isColumnHidden(5)
+    panel.set_diff_preview_mode(False)
+    assert not panel.diff_preview_mode
+    assert not panel.refs_panel.isHidden()
+    assert not panel.details_label.isHidden()
+
+
+def test_history_panel_persists_moved_commit_columns(qtbot: QtBot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "history-columns.ini"), QSettings.Format.IniFormat)
+    panel = HistoryPanel(settings)
+    qtbot.addWidget(panel)
+    header = panel.tree.header()
+
+    header.moveSection(header.visualIndex(3), 1)
+
+    assert header.visualIndex(3) == 1
+    assert settings.value("history/columnsState") is not None
 
     restored = HistoryPanel(settings)
     qtbot.addWidget(restored)
-    assert restored.focus_mode
-    assert restored.refs_panel.isHidden()
+    assert restored.tree.header().visualIndex(3) == 1
 
 
 def test_history_panel_persists_author_color(qtbot: QtBot, tmp_path: Path) -> None:
@@ -271,16 +300,14 @@ def test_history_panel_filters_loaded_commits(qtbot: QtBot) -> None:
     assert not second.isHidden()
     assert panel.filter_count.text() == "1 of 2 commits"
     assert panel.tree.isColumnHidden(0)
-    assert second.data(2, FILTER_HIGHLIGHT_ROLE) == "checkout"
+    assert panel.tree.itemDelegateForColumn(2) is None
 
     panel.filter_edit.setText("author@example.invalid")
     assert not first.isHidden()
     assert not second.isHidden()
-    assert first.data(3, FILTER_HIGHLIGHT_ROLE) is None
 
     panel.filter_edit.clear()
     assert not panel.tree.isColumnHidden(0)
-    assert second.data(2, FILTER_HIGHLIGHT_ROLE) is None
 
 
 def test_history_panel_shows_commit_details_and_emits_file_selection(

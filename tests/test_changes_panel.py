@@ -8,6 +8,7 @@ from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QLabel,
     QPlainTextEdit,
     QPushButton,
     QTreeWidget,
@@ -25,6 +26,7 @@ def test_changes_panel_owns_tree_and_commit_widgets(qtbot: QtBot) -> None:
 
     assert panel.findChild(QTreeWidget, "changesTree") is panel.tree
     assert panel.findChild(QCheckBox, "stageAllCheckBox") is panel.stage_all
+    assert panel.findChild(QLabel, "stageSummaryLabel") is panel.stage_summary
     assert panel.findChild(QComboBox, "changesViewModeCombo") is panel.view_mode
     assert (
         panel.findChild(QComboBox, "changesPresentationModeCombo")
@@ -121,6 +123,21 @@ def test_current_file_is_action_target_when_no_checkbox_is_selected(
     assert panel.stash_action.isEnabled()
     assert panel.discard_action.isEnabled()
     assert not panel.unstage_action.isEnabled()
+
+
+def test_stage_summary_counts_index_and_uncommitted_files(qtbot: QtBot) -> None:
+    panel = ChangesPanel()
+    qtbot.addWidget(panel)
+    panel.show_files(
+        [
+            (FileStatus("staged.py", "M", "."), Qt.CheckState.Unchecked),
+            (FileStatus("partial.py", "M", "M"), Qt.CheckState.Unchecked),
+            (FileStatus("unstaged.py", ".", "M"), Qt.CheckState.Unchecked),
+        ],
+        None,
+    )
+
+    assert panel.stage_summary.text() == "✓ 2 · ✎ 3"
 
 
 def test_submodule_is_labelled_shows_sync_and_activates(qtbot: QtBot) -> None:

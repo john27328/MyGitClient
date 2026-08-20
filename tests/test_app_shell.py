@@ -43,6 +43,12 @@ class _TestAppShell(AppShell):
     def has_github_token(self, login: str) -> bool:
         return self._github_tokens.has_token(login)
 
+    def clone_token(self, url: str) -> str | None:
+        return self._resolve_clone_token(url)
+
+    def save_github_token(self, login: str, token: str) -> None:
+        self._github_tokens.save(login, token)
+
 
 def _make_repository(path: Path) -> None:
     path.mkdir()
@@ -198,4 +204,19 @@ def test_connecting_known_github_login_reuses_existing_profile(
 
     assert shell.github_profiles == (profile,)
     assert shell.has_github_token("octocat")
+    shell.close()
+
+
+def test_clone_uses_saved_token_only_for_github_https(qtbot: QtBot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "github-clone.ini"), QSettings.Format.IniFormat)
+    shell = _TestAppShell(settings, Theme.SYSTEM)
+    qtbot.addWidget(shell)
+    shell.use_memory_github_tokens()
+    profile = GitHubProfile("Octocat", "octocat")
+    shell.save_github_profile(profile)
+    shell.save_github_token(profile.login, "saved-token")
+
+    assert shell.clone_token("https://github.com/octocat/private-repository.git") == "saved-token"
+    assert shell.clone_token("git@github.com:octocat/private-repository.git") is None
+    assert shell.clone_token("https://gitlab.com/octocat/private-repository.git") is None
     shell.close()

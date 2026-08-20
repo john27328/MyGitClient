@@ -11,7 +11,12 @@ from mygitclient.github.publisher import (
     PublishedGitHubRepository,
     parse_published_repository,
 )
-from mygitclient.github.remotes import GitHubRemote, first_github_remote, github_remote
+from mygitclient.github.remotes import (
+    GitHubRemote,
+    first_github_remote,
+    github_remote,
+    is_github_https_url,
+)
 from mygitclient.github.repositories import (
     GitHubRepository,
     GitHubRepositoryService,
@@ -36,6 +41,7 @@ __all__ = [
     "PublishedGitHubRepository",
     "first_github_remote",
     "github_remote",
+    "is_github_https_url",
     "parse_repositories",
     "parse_published_repository",
 ]

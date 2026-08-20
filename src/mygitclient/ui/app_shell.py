@@ -47,6 +47,7 @@ from mygitclient.github import (
     TokenStoreError,
     first_github_remote,
     github_remote,
+    is_github_https_url,
 )
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
@@ -295,7 +296,7 @@ class AppShell(QMainWindow):
         the system Git credential helper already having valid, unexpired credentials.
         """
         remote = github_remote(url)
-        if remote is None:
+        if remote is None or not is_github_https_url(url):
             return None
         profile = next(
             (
@@ -866,12 +867,13 @@ class AppShell(QMainWindow):
         remote = first_github_remote(urls)
         repository = repository_value.resolve()
         remote_name = remote.full_name if remote is not None else ""
+        remote_url = next((url for url in urls if github_remote(url) == remote), "")
         self._home_remote_urls[repository] = urls
         self._home_remote_names[repository] = remote_name
         self._show_home_github(repository, remote_name)
         session = self._sessions.get(repository)
         if session is not None:
-            session.controller.set_github_repository(remote_name)
+            session.controller.set_github_repository(remote_name, remote_url)
 
     @Slot(object, str)
     def _publish_repository_to_github(self, repository_value: object, _branch: str) -> None:

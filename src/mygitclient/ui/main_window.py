@@ -96,6 +96,7 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.github.bindings import GitHubRepositoryBindingStore
 from mygitclient.github.profiles import GitHubProfileStore
+from mygitclient.github.remotes import is_github_https_url
 from mygitclient.github.tokens import GitHubTokenStore, TokenStoreError
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
@@ -161,6 +162,7 @@ class MainWindow(QMainWindow):
         self._open_repositories: list[Path] = []
         self._repository_status: RepositoryStatus | None = None
         self._github_repository = ""
+        self._github_repository_uses_https = False
         self._submodule_paths: dict[Path, str] = {}
         self._repository_operation: RepositoryOperation | None = None
         self._interactive_rebase_pending = False
@@ -274,7 +276,6 @@ class MainWindow(QMainWindow):
         self._history_panel.cherry_pick_requested.connect(self._preview_cherry_pick)
         self._history_panel.revert_requested.connect(self._preview_revert)
         self._history_panel.checkout_commit_requested.connect(self._checkout_commit)
-        self._history_panel.focus_mode_changed.connect(self._history_focus_mode_changed)
         self._history_panel.file_selected.connect(self._history_file_selected)
         self._history_panel.stash_file_selected.connect(self._history_stash_file_selected)
         self._history_panel.file_open_requested.connect(self._open_history_file)
@@ -906,6 +907,7 @@ class MainWindow(QMainWindow):
         showing_history = index == 1
         show_diff = repository is not None and (not showing_history or commit_diff_visible)
         diff_container.setVisible(show_diff)
+        self._history_panel.set_diff_preview_mode(showing_history and commit_diff_visible)
         if showing_history:
             if commit_diff_visible:
                 self._apply_history_splitter_sizes()
@@ -921,17 +923,8 @@ class MainWindow(QMainWindow):
             self._history_panel.set_expanded_layout(False)
             self._restore_workspace_splitter_sizes()
 
-    @Slot(bool)
-    def _history_focus_mode_changed(self, _focused: bool) -> None:
-        if self._workspace_tabs.currentIndex() == 1 and self._commit_diff_visible:
-            self._apply_history_splitter_sizes()
-
     def _apply_history_splitter_sizes(self) -> None:
-        key = (
-            "history/focusMainSplitterSizes"
-            if self._history_panel.focus_mode
-            else "history/mainSplitterSizes"
-        )
+        key = "history/mainSplitterSizes"
         saved: object = self._settings.value(key)
         if isinstance(saved, list):
             items = cast(list[object], saved)
@@ -942,7 +935,7 @@ class MainWindow(QMainWindow):
                 self._splitter.setSizes(sizes)
                 return
         available = max(self._splitter.width(), 900)
-        history_width = 390 if self._history_panel.focus_mode else 650
+        history_width = 390 if self._history_panel.diff_preview_mode else 650
         diff_width = max(available - history_width, 500)
         self._splitter.setSizes([0, 0, history_width, diff_width])
 
@@ -950,12 +943,7 @@ class MainWindow(QMainWindow):
     def _main_splitter_moved(self, _position: int, _index: int) -> None:
         if self._workspace_tabs.currentIndex() != 1 or not self._commit_diff_visible:
             return
-        key = (
-            "history/focusMainSplitterSizes"
-            if self._history_panel.focus_mode
-            else "history/mainSplitterSizes"
-        )
-        self._settings.setValue(key, self._splitter.sizes())
+        self._settings.setValue("history/mainSplitterSizes", self._splitter.sizes())
 
     @Slot()
     def _load_more_history(self) -> None:
@@ -1016,9 +1004,6 @@ class MainWindow(QMainWindow):
             or not isinstance(value, CommitSummary)
         ):
             return
-        self._commit_diff_visible = False
-        self._diff_view.reset()
-        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
         self._status_label.setText(f"Reading files for {value.oid[:8]}…")
         self._git.request_commit_files(self._repository, value.oid)
 
@@ -1650,8 +1635,9 @@ class MainWindow(QMainWindow):
             token=self._resolve_github_token(),
         )
 
-    def set_github_repository(self, full_name: str) -> None:
+    def set_github_repository(self, full_name: str, remote_url: str = "") -> None:
         self._github_repository = full_name.strip()
+        self._github_repository_uses_https = is_github_https_url(remote_url)
         self._update_github_actions()
 
     def _resolve_github_token(self) -> str | None:
@@ -1660,7 +1646,11 @@ class MainWindow(QMainWindow):
         Lets pull/fetch/push authenticate over HTTPS without depending on the
         system Git credential helper having its own, possibly stale, credentials.
         """
-        if self._repository is None or not self._github_repository:
+        if (
+            self._repository is None
+            or not self._github_repository
+            or not self._github_repository_uses_https
+        ):
             return None
         owner = self._github_repository.partition("/")[0].casefold()
         profiles = self._github_profiles.profiles()

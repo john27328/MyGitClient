@@ -34,5 +34,13 @@ def github_remote(url: str) -> GitHubRemote | None:
     return GitHubRemote(owner, repository)
 
 
+def is_github_https_url(url: str) -> bool:
+    parsed = urlparse(url.strip())
+    return (
+        parsed.scheme.casefold() == "https"
+        and (parsed.hostname or "").casefold() == "github.com"
+    )
+
+
 def first_github_remote(urls: tuple[str, ...]) -> GitHubRemote | None:
     return next((remote for url in urls if (remote := github_remote(url)) is not None), None)

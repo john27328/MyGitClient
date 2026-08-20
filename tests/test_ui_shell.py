@@ -34,10 +34,36 @@ from mygitclient.git.models import (
     RepositoryStatus,
 )
 from mygitclient.git.service import GitService
+from mygitclient.github import GitHubProfile, GitHubTokenStore
 from mygitclient.theme import Theme
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.main_window import MainWindow, push_requires_rewrite, sync_action_labels
 from mygitclient.ui.refs_panel import RefsPanel
+
+
+class _MemoryTokenBackend:
+    def __init__(self) -> None:
+        self.values: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        return self.values.get((service, username))
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        self.values[(service, username)] = password
+
+    def delete_password(self, service: str, username: str) -> None:
+        self.values.pop((service, username), None)
+
+
+class _TestMainWindow(MainWindow):
+    def configure_github_token(self, repository: Path, profile: GitHubProfile, token: str) -> None:
+        self._github_profiles.save(profile)
+        self._github_tokens = GitHubTokenStore(_MemoryTokenBackend())
+        self._github_tokens.save(profile.login, token)
+        self._repository = repository
+
+    def github_token(self) -> str | None:
+        return self._resolve_github_token()
 
 
 def test_main_window_is_created(qapp: QApplication) -> None:
@@ -125,6 +151,24 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     )
     assert not refresh_action.icon().isNull()
 
+    window.close()
+
+
+def test_saved_github_token_is_resolved_only_for_https_remote(tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "github-token.ini"), QSettings.Format.IniFormat)
+    window = _TestMainWindow(settings, Theme.SYSTEM)
+    profile = GitHubProfile("Octocat", "octocat")
+    window.configure_github_token(tmp_path, profile, "saved-token")
+
+    window.set_github_repository(
+        "octocat/private-repository", "https://github.com/octocat/private-repository.git"
+    )
+    assert window.github_token() == "saved-token"
+
+    window.set_github_repository(
+        "octocat/private-repository", "git@github.com:octocat/private-repository.git"
+    )
+    assert window.github_token() is None
     window.close()
 
 
