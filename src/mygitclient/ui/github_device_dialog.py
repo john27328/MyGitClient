@@ -43,6 +43,7 @@ class GitHubDeviceDialog(QDialog):
         )
         self.instructions.setWordWrap(True)
         self.instructions.setTextFormat(Qt.TextFormat.RichText)
+        self.instructions.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.instructions)
 
         setup_actions = QHBoxLayout()
