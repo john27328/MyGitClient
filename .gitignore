@@ -4,3 +4,4 @@ artifacts/
 __pycache__/
 .pytest_cache/
 .test-tmp-session*/
+.venv/
