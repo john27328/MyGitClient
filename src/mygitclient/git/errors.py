@@ -24,6 +24,7 @@ class GitErrorCategory(StrEnum):
     CONFLICT = "conflict"
     MISSING_REFERENCE = "missing_reference"
     PERMISSION = "permission"
+    REMOTE_PERMISSION = "remote_permission"
     UNKNOWN = "unknown"
 
 
@@ -49,6 +50,21 @@ class GitErrorDetails:
                 + "\n".join(self.warnings)
             )
         return "\n\n".join(sections)
+
+
+_REMOTE_REFUSAL = re.compile(
+    r"(?i)permission to (?P<repository>\S+) denied to (?P<account>[^.\s]+)"
+)
+
+
+def _remote_refusal_summary(refusal: re.Match[str] | None, operation: str) -> str:
+    if refusal is None:
+        return f"GitHub refused to {operation} with the credentials Git used."
+    repository = refusal.group("repository").removesuffix(".git")
+    return (
+        f"GitHub refused to {operation}: the account Git signed in as "
+        f"({refusal.group('account')}) cannot write to {repository}."
+    )
 
 
 def analyze_git_error(message: str, *, operation: str) -> GitErrorDetails:
@@ -92,6 +108,16 @@ def analyze_git_error(message: str, *, operation: str) -> GitErrorDetails:
             GitErrorCategory.AUTHENTICATION,
             "Authentication failed.",
             "Check the remote URL and your system Git credential helper, then try again.",
+            warnings=warnings,
+            raw_message=message,
+        )
+    refusal = _REMOTE_REFUSAL.search(text)
+    if refusal is not None or "error: 403" in lowered:
+        return GitErrorDetails(
+            GitErrorCategory.REMOTE_PERMISSION,
+            _remote_refusal_summary(refusal, operation),
+            "Connect the GitHub account that can write to it on Home, or point your "
+            "system Git credential helper at that account.",
             warnings=warnings,
             raw_message=message,
         )
@@ -172,14 +198,18 @@ _CREDENTIAL_FAILURE_MARKERS = (
     "could not read password",
     "invalid username or password",
     "repository not found",
+    "denied to",
+    "error: 403",
 )
 
 
 def is_credential_failure(message: str) -> bool:
     """Whether a failed remote operation might succeed with different credentials.
 
-    GitHub answers requests it cannot authorize with ``Repository not found`` rather
-    than a permission error, so that wording counts as a credential failure too.
+    Covers more than a rejected password: GitHub answers a request it cannot authorize
+    with ``Repository not found``, and refuses a push by the wrong account with
+    ``Permission to <repository> denied to <account>`` and HTTP 403. Each of those can
+    succeed once the account that owns the repository is the one being used.
     """
     lowered = message.casefold()
     return any(marker in lowered for marker in _CREDENTIAL_FAILURE_MARKERS)

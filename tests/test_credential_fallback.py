@@ -43,10 +43,20 @@ def test_credential_failure_covers_github_not_found_and_auth_wording() -> None:
     assert is_credential_failure("remote: Invalid username or password.")
 
 
+def test_credential_failure_covers_a_push_refused_for_the_wrong_account() -> None:
+    # A public repository fetches fine for anyone, so only the push is refused.
+    assert is_credential_failure(
+        "remote: Permission to owner/project.git denied to other-account.\n"
+        "fatal: unable to access 'https://github.com/owner/project.git/': "
+        "The requested URL returned error: 403"
+    )
+
+
 def test_unrelated_failures_are_not_credential_failures() -> None:
     assert not is_credential_failure("fatal: could not resolve host: github.com")
     assert not is_credential_failure("error: failed to push some refs (non-fast-forward)")
     assert not is_credential_failure("CONFLICT (content): Merge conflict in a.txt")
+    assert not is_credential_failure("error: unable to unlink old file: Permission denied")
 
 
 def test_clone_does_not_send_the_stored_token_on_the_first_attempt(

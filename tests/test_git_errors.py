@@ -72,3 +72,38 @@ def test_git_errors_have_structured_categories_and_recovery() -> None:
     conflict = analyze_git_error(cases[0][0], operation="merge branches")
     assert conflict.recovery is not None
     assert "continue or abort" in conflict.recovery
+
+
+def test_push_refused_for_the_wrong_account_names_it() -> None:
+    message = (
+        "remote: Permission to john27328/MyGitClient.git denied to iraptev.\n"
+        "fatal: unable to access 'https://github.com/john27328/MyGitClient.git/': "
+        "The requested URL returned error: 403"
+    )
+
+    details = analyze_git_error(message, operation="push changes")
+
+    assert details.category is GitErrorCategory.REMOTE_PERMISSION
+    assert "iraptev" in details.summary
+    assert "john27328/MyGitClient" in details.summary
+    assert ".git" not in details.summary
+    assert details.recovery is not None and "credential helper" in details.recovery
+
+
+def test_a_bare_403_is_reported_as_a_remote_refusal() -> None:
+    details = analyze_git_error(
+        "fatal: unable to access 'https://github.com/x/y.git/': "
+        "The requested URL returned error: 403",
+        operation="push changes",
+    )
+
+    assert details.category is GitErrorCategory.REMOTE_PERMISSION
+    assert "push changes" in details.summary
+
+
+def test_a_local_file_permission_error_is_still_local() -> None:
+    details = analyze_git_error(
+        "error: unable to unlink old file: Permission denied", operation="checkout branch"
+    )
+
+    assert details.category is GitErrorCategory.PERMISSION
