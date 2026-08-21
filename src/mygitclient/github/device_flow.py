@@ -29,6 +29,23 @@ class DeviceAuthorization:
 class DeviceFlowResult:
     login: str
     token: str
+    refresh_token: str = ""
+    expires_in: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TokenResponse:
+    """The access-token half of an OAuth exchange, or the reason it is not ready.
+
+    OAuth Apps that expire user authorization tokens answer with a refresh token and
+    the access token's lifetime; apps that do not leave both empty.
+    """
+
+    access_token: str = ""
+    refresh_token: str = ""
+    expires_in: int = 0
+    error: str = ""
+    interval: int = 0
 
 
 class GitHubDeviceFlow(QObject):
@@ -45,6 +62,7 @@ class GitHubDeviceFlow(QObject):
         self._reply: QNetworkReply | None = None
         self._client_id = ""
         self._authorization: DeviceAuthorization | None = None
+        self._granted: TokenResponse | None = None
         self._deadline = 0.0
         self._cancelled = False
 
@@ -70,6 +88,7 @@ class GitHubDeviceFlow(QObject):
             self._reply.deleteLater()
             self._reply = None
         self._authorization = None
+        self._granted = None
 
     def _post(self, url: QUrl, payload: bytes, handler: Callable[[], None]) -> None:
         request = json_request(url)
@@ -123,18 +142,20 @@ class GitHubDeviceFlow(QObject):
             return
         try:
             payload = reply_payload(reply)
-            token, error, interval = parse_token_response(payload)
+            granted = parse_token_response(payload)
         except OAuthHttpError as parse_error:
             self._fail(str(parse_error))
             return
         finally:
             reply.deleteLater()
-        if token:
-            self._request_user(token)
+        if granted.access_token:
+            self._request_user(granted)
             return
         authorization = self._authorization
         if authorization is None:
             return
+        error = granted.error
+        interval = granted.interval
         if error == "authorization_pending":
             self._schedule_poll(interval or authorization.interval)
         elif error == "slow_down":
@@ -146,11 +167,13 @@ class GitHubDeviceFlow(QObject):
         else:
             self._fail(f"GitHub authorization failed: {error or 'unknown response'}")
 
-    def _request_user(self, token: str) -> None:
+    def _request_user(self, granted: TokenResponse) -> None:
         request = json_request(_USER_URL)
-        request.setRawHeader(b"Authorization", QByteArray(f"Bearer {token}".encode("ascii")))
+        request.setRawHeader(
+            b"Authorization", QByteArray(f"Bearer {granted.access_token}".encode("ascii"))
+        )
         reply = self._network.get(request)
-        reply.setProperty("oauthToken", token)
+        self._granted = granted
         self._reply = reply
         reply.finished.connect(self._user_finished)
 
@@ -159,7 +182,8 @@ class GitHubDeviceFlow(QObject):
         reply = self._take_reply()
         if reply is None:
             return
-        token = reply.property("oauthToken")
+        granted = self._granted
+        self._granted = None
         try:
             payload = reply_payload(reply)
             login = payload.get("login")
@@ -170,11 +194,15 @@ class GitHubDeviceFlow(QObject):
             return
         finally:
             reply.deleteLater()
-        if not isinstance(token, str):
+        if granted is None:
             self._fail("GitHub authorization token was lost before it could be saved.")
             return
         self._authorization = None
-        self.completed.emit(DeviceFlowResult(login.strip(), token))
+        self.completed.emit(
+            DeviceFlowResult(
+                login.strip(), granted.access_token, granted.refresh_token, granted.expires_in
+            )
+        )
 
     def _schedule_poll(self, seconds: int) -> None:
         self._timer.start(max(1, seconds) * 1000)
@@ -216,17 +244,24 @@ def parse_device_authorization(payload: dict[str, object]) -> DeviceAuthorizatio
     )
 
 
-def parse_token_response(
-    payload: dict[str, object],
-) -> tuple[str | None, str | None, int | None]:
-    token = payload.get("access_token")
-    error = payload.get("error")
-    interval = payload.get("interval")
-    return (
-        token if isinstance(token, str) and token else None,
-        error if isinstance(error, str) and error else None,
-        interval if isinstance(interval, int) else None,
+def parse_token_response(payload: dict[str, object]) -> TokenResponse:
+    return TokenResponse(
+        _optional_string(payload, "access_token"),
+        _optional_string(payload, "refresh_token"),
+        _optional_int(payload, "expires_in"),
+        _optional_string(payload, "error"),
+        _optional_int(payload, "interval"),
     )
+
+
+def _optional_string(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _optional_int(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    return value if isinstance(value, int) else 0
 
 
 def _required_string(payload: dict[str, object], key: str) -> str:

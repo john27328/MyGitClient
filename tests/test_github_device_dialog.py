@@ -35,6 +35,20 @@ def test_prefilling_client_id_enables_code_request_button(qapp: QApplication) ->
     dialog.close()
 
 
+def test_a_remembered_client_secret_is_prefilled_and_enables_browser_sign_in(
+    qapp: QApplication,
+) -> None:
+    dialog = GitHubDeviceDialog(
+        client_id="existing-client-id", client_secret="remembered-secret"
+    )
+
+    assert dialog.client_secret.text() == "remembered-secret"
+    assert dialog.browser_button.isEnabled()
+    assert dialog.request_button.isEnabled()
+
+    dialog.close()
+
+
 def test_show_authorization_locks_inputs_and_fills_code(qapp: QApplication) -> None:
     dialog = GitHubDeviceDialog(client_id="client-id")
 

@@ -31,13 +31,26 @@ def test_parse_device_authorization_surfaces_github_error() -> None:
 
 
 def test_parse_token_response_supports_pending_and_success() -> None:
-    assert parse_token_response({"error": "authorization_pending", "interval": 7}) == (
-        None,
-        "authorization_pending",
-        7,
+    pending = parse_token_response({"error": "authorization_pending", "interval": 7})
+    assert not pending.access_token
+    assert pending.error == "authorization_pending"
+    assert pending.interval == 7
+
+    granted = parse_token_response({"access_token": "github-token", "token_type": "bearer"})
+    assert granted.access_token == "github-token"
+    assert not granted.error
+
+
+def test_parse_token_response_keeps_renewal_fields() -> None:
+    granted = parse_token_response(
+        {
+            "access_token": "github-token",
+            "refresh_token": "renewal-token",
+            "expires_in": 28800,
+            "token_type": "bearer",
+        }
     )
-    assert parse_token_response({"access_token": "github-token", "token_type": "bearer"}) == (
-        "github-token",
-        None,
-        None,
-    )
+
+    assert granted.access_token == "github-token"
+    assert granted.refresh_token == "renewal-token"
+    assert granted.expires_in == 28800

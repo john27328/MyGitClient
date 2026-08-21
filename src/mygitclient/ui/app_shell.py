@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import cast
 from urllib.parse import quote
 
-from PySide6.QtCore import QProcess, QSettings, Qt, QUrl, Slot
+from PySide6.QtCore import QProcess, QSettings, Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QDesktopServices, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
@@ -42,12 +43,15 @@ from mygitclient.github import (
     GitHubRepositoryBindingStore,
     GitHubRepositoryPublisher,
     GitHubRepositoryService,
+    GitHubTokenRefresher,
     GitHubTokenStore,
     PublishedGitHubRepository,
+    StoredToken,
     TokenStoreError,
     first_github_remote,
     github_remote,
     is_github_https_url,
+    stored_token,
 )
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
@@ -118,6 +122,14 @@ class AppShell(QMainWindow):
         self._github_repositories_dialog: GitHubRepositoriesDialog | None = None
         self._github_repositories.completed.connect(self._github_repositories_completed)
         self._github_repositories.failed.connect(self._github_repositories_failed)
+        self._github_token_refresher = GitHubTokenRefresher(self)
+        self._github_token_refresher.refreshed.connect(self._github_token_refreshed)
+        self._github_token_refresher.failed.connect(self._github_token_refresh_failed)
+        # Access tokens from an OAuth App that expires them last eight hours, so sweep
+        # regularly rather than only at start-up: a long session would outlive them.
+        self._github_token_timer = QTimer(self)
+        self._github_token_timer.setInterval(30 * 60 * 1000)
+        self._github_token_timer.timeout.connect(self._renew_stale_github_tokens)
         self._github_publisher = GitHubRepositoryPublisher(self)
         self._github_publisher.completed.connect(self._github_publish_completed)
         self._github_publisher.failed.connect(self._github_publish_failed)
@@ -181,6 +193,8 @@ class AppShell(QMainWindow):
 
         self._build_global_menu()
         self._refresh_home()
+        self._github_token_timer.start()
+        QTimer.singleShot(0, self._renew_stale_github_tokens)
 
     def _build_global_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -407,10 +421,18 @@ class AppShell(QMainWindow):
 
     def _open_github_device_dialog(self, profile: GitHubProfile | None) -> None:
         client_id = str(self._settings.value("github/oauthClientId", "")).strip()
+        client_secret = ""
+        if client_id:
+            try:
+                client_secret = self._github_tokens.oauth_client_secret(client_id) or ""
+            except TokenStoreError:
+                client_secret = ""
         self._close_github_device_dialog()
         self._github_device_profile = profile
         self._github_device_add_new = profile is None
-        dialog = GitHubDeviceDialog(profile.login if profile is not None else None, client_id, self)
+        dialog = GitHubDeviceDialog(
+            profile.login if profile is not None else None, client_id, self, client_secret
+        )
         dialog.cancelled.connect(self._github_device_flow.cancel)
         dialog.cancelled.connect(self._github_browser_flow.cancel)
         dialog.start_requested.connect(self._start_github_device_flow)
@@ -434,6 +456,9 @@ class AppShell(QMainWindow):
         if not clean_client_id or not clean_client_secret:
             return
         self._settings.setValue("github/oauthClientId", clean_client_id)
+        # Keeping the secret lets tokens be renewed later, and saves retyping it.
+        with suppress(TokenStoreError, ValueError):
+            self._github_tokens.save_oauth_client_secret(clean_client_id, clean_client_secret)
         self._github_browser_flow.start(clean_client_id, clean_client_secret)
 
     @Slot(object)
@@ -460,7 +485,10 @@ class AppShell(QMainWindow):
         if profile is None:
             profile = self._profile_for_authorized_login(value.login)
         try:
-            self._github_tokens.save(profile.login, value.token)
+            self._github_tokens.save_credentials(
+                profile.login,
+                stored_token(value.token, value.refresh_token, value.expires_in),
+            )
             if add_new and profile not in self._github_profiles.profiles():
                 self._github_profiles.save(profile)
         except (TokenStoreError, ValueError) as error:
@@ -471,6 +499,47 @@ class AppShell(QMainWindow):
         self._github_device_add_new = False
         self._refresh_home()
         self.statusBar().showMessage(f"Connected GitHub account {profile.login}.", 5000)
+
+    @Slot()
+    def _renew_stale_github_tokens(self) -> None:
+        """Silently renew access tokens that are expired or close to it."""
+        client_id = str(self._settings.value("github/oauthClientId", "")).strip()
+        if not client_id:
+            return
+        try:
+            secret = self._github_tokens.oauth_client_secret(client_id) or ""
+        except TokenStoreError:
+            return
+        if not secret:
+            return
+        for profile in self._github_profiles.profiles():
+            try:
+                credentials = self._github_tokens.credentials(profile.login)
+            except TokenStoreError:
+                continue
+            if credentials is None or not credentials.can_refresh:
+                continue
+            if not credentials.is_stale():
+                continue
+            self._github_token_refresher.refresh(
+                profile.login, credentials.refresh_token, client_id, secret
+            )
+
+    @Slot(str, object)
+    def _github_token_refreshed(self, login: str, credentials: object) -> None:
+        if not isinstance(credentials, StoredToken):
+            return
+        try:
+            self._github_tokens.save_credentials(login, credentials)
+        except (TokenStoreError, ValueError):
+            return
+        self._refresh_home()
+
+    @Slot(str, str)
+    def _github_token_refresh_failed(self, login: str, message: str) -> None:
+        self.statusBar().showMessage(
+            f"Could not renew the GitHub sign-in for {login}: {message}", 8000
+        )
 
     def _profile_for_authorized_login(self, login: str) -> GitHubProfile:
         for profile in self._github_profiles.profiles():

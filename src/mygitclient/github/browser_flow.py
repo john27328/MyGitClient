@@ -13,7 +13,11 @@ from PySide6.QtNetwork import (
     QTcpSocket,
 )
 
-from mygitclient.github.device_flow import DeviceFlowResult
+from mygitclient.github.device_flow import (
+    DeviceFlowResult,
+    TokenResponse,
+    parse_token_response,
+)
 from mygitclient.github.oauth_http import OAuthHttpError, json_request, reply_payload
 
 _AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
@@ -47,6 +51,7 @@ class GitHubBrowserFlow(QObject):
         self._client_secret = ""
         self._redirect_uri = ""
         self._state = ""
+        self._granted: TokenResponse | None = None
         self._cancelled = False
         self._sockets: dict[QTcpSocket, bytes] = {}
 
@@ -87,6 +92,7 @@ class GitHubBrowserFlow(QObject):
             socket.abort()
             socket.deleteLater()
         self._sockets.clear()
+        self._granted = None
         if self._reply is not None:
             self._reply.abort()
             self._reply.deleteLater()
@@ -178,18 +184,20 @@ class GitHubBrowserFlow(QObject):
             return
         finally:
             reply.deleteLater()
-        token = payload.get("access_token")
-        if not isinstance(token, str) or not token:
+        granted = parse_token_response(payload)
+        if not granted.access_token:
             description = payload.get("error_description") or payload.get("error")
             self._fail(f"GitHub authorization failed: {description or 'unknown response'}")
             return
-        self._request_user(token)
+        self._request_user(granted)
 
-    def _request_user(self, token: str) -> None:
+    def _request_user(self, granted: TokenResponse) -> None:
         request = json_request(_USER_URL)
-        request.setRawHeader(b"Authorization", QByteArray(f"Bearer {token}".encode("ascii")))
+        request.setRawHeader(
+            b"Authorization", QByteArray(f"Bearer {granted.access_token}".encode("ascii"))
+        )
         reply = self._network.get(request)
-        reply.setProperty("oauthToken", token)
+        self._granted = granted
         self._reply = reply
         reply.finished.connect(self._user_finished)
 
@@ -198,7 +206,8 @@ class GitHubBrowserFlow(QObject):
         reply = self._take_reply()
         if reply is None:
             return
-        token = reply.property("oauthToken")
+        granted = self._granted
+        self._granted = None
         try:
             payload = reply_payload(reply)
             login = payload.get("login")
@@ -209,10 +218,14 @@ class GitHubBrowserFlow(QObject):
             return
         finally:
             reply.deleteLater()
-        if not isinstance(token, str):
+        if granted is None:
             self._fail("GitHub authorization token was lost before it could be saved.")
             return
-        self.completed.emit(DeviceFlowResult(login.strip(), token))
+        self.completed.emit(
+            DeviceFlowResult(
+                login.strip(), granted.access_token, granted.refresh_token, granted.expires_in
+            )
+        )
 
     def _take_reply(self) -> QNetworkReply | None:
         reply = self._reply

@@ -24,9 +24,14 @@ class GitHubDeviceDialog(QDialog):
     browser_start_requested = Signal(str, str)
 
     def __init__(
-        self, login: str | None = None, client_id: str = "", parent: QWidget | None = None
+        self,
+        login: str | None = None,
+        client_id: str = "",
+        parent: QWidget | None = None,
+        client_secret: str = "",
     ) -> None:
         super().__init__(parent)
+        self._initial_client_secret = client_secret
         self._verification_uri = "https://github.com/login/device"
         self.setObjectName("githubDeviceDialog")
         self.setWindowTitle("Connect GitHub account")
@@ -64,9 +69,9 @@ class GitHubDeviceDialog(QDialog):
         tabs.addTab(self._build_code_tab(), "Sign in with a code")
         layout.addWidget(tabs, 1)
 
-        self.request_button.setEnabled(bool(client_id.strip()))
         self.client_id.textChanged.connect(self._client_id_changed)
         self.client_secret.textChanged.connect(self._client_id_changed)
+        self._client_id_changed(client_id)
 
         self.status = QLabel("Enter the Client ID, then choose how to sign in.")
         self.status.setObjectName("githubDeviceStatus")
@@ -80,7 +85,7 @@ class GitHubDeviceDialog(QDialog):
     def _build_browser_tab(self) -> QWidget:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        self.client_secret = QLineEdit()
+        self.client_secret = QLineEdit(self._initial_client_secret)
         self.client_secret.setObjectName("githubOAuthClientSecret")
         self.client_secret.setPlaceholderText("OAuth App Client Secret")
         self.client_secret.setEchoMode(QLineEdit.EchoMode.Password)
