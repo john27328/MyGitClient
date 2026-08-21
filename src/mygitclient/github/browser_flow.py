@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from PySide6.QtCore import QByteArray, QObject, QTimer, QUrl, Signal, Slot
@@ -13,12 +14,13 @@ from PySide6.QtNetwork import (
     QTcpSocket,
 )
 
-from mygitclient.github.device_flow import (
-    DeviceFlowResult,
+from mygitclient.github.oauth_http import (
+    OAuthHttpError,
     TokenResponse,
+    json_request,
     parse_token_response,
+    reply_payload,
 )
-from mygitclient.github.oauth_http import OAuthHttpError, json_request, reply_payload
 
 _AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 _ACCESS_TOKEN_URL = QUrl("https://github.com/login/oauth/access_token")
@@ -26,12 +28,20 @@ _USER_URL = QUrl("https://api.github.com/user")
 _CALLBACK_TIMEOUT_MS = 5 * 60 * 1000
 
 
+@dataclass(frozen=True, slots=True)
+class SignInResult:
+    login: str
+    token: str
+    refresh_token: str = ""
+    expires_in: int = 0
+
+
 class GitHubBrowserFlow(QObject):
     """Authorization Code flow via a loopback (127.0.0.1-only) redirect listener.
 
-    Unlike device flow, GitHub's token exchange for this grant type requires a client
-    secret. Each user registers their own OAuth App, so the secret they provide never
-    leaves their machine and is stored the same way as the resulting access token.
+    GitHub's token exchange for this grant type requires the app's client secret. Each
+    user registers their own OAuth App, so the secret they provide never leaves their
+    machine and is stored the same way as the resulting access token.
     """
 
     authorization_url_ready = Signal(str)
@@ -222,7 +232,7 @@ class GitHubBrowserFlow(QObject):
             self._fail("GitHub authorization token was lost before it could be saved.")
             return
         self.completed.emit(
-            DeviceFlowResult(
+            SignInResult(
                 login.strip(), granted.access_token, granted.refresh_token, granted.expires_in
             )
         )

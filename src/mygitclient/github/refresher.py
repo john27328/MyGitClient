@@ -5,8 +5,12 @@ from urllib.parse import urlencode
 from PySide6.QtCore import QByteArray, QObject, QUrl, Signal, Slot
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
-from mygitclient.github.device_flow import parse_token_response
-from mygitclient.github.oauth_http import OAuthHttpError, json_request, reply_payload
+from mygitclient.github.oauth_http import (
+    OAuthHttpError,
+    json_request,
+    parse_token_response,
+    reply_payload,
+)
 from mygitclient.github.tokens import stored_token
 
 _ACCESS_TOKEN_URL = QUrl("https://github.com/login/oauth/access_token")

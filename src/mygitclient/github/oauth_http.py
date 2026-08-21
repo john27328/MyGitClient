@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import cast
 
 from PySide6.QtCore import QUrl
@@ -9,6 +10,39 @@ from PySide6.QtNetwork import QNetworkReply, QNetworkRequest
 
 class OAuthHttpError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class TokenResponse:
+    """The access-token half of an OAuth exchange, or the reason it is not ready.
+
+    OAuth Apps that expire user authorization tokens answer with a refresh token and
+    the access token's lifetime; apps that do not leave both empty.
+    """
+
+    access_token: str = ""
+    refresh_token: str = ""
+    expires_in: int = 0
+    error: str = ""
+
+
+def parse_token_response(payload: dict[str, object]) -> TokenResponse:
+    return TokenResponse(
+        optional_string(payload, "access_token"),
+        optional_string(payload, "refresh_token"),
+        optional_int(payload, "expires_in"),
+        optional_string(payload, "error"),
+    )
+
+
+def optional_string(payload: dict[str, object], key: str) -> str:
+    value = payload.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def optional_int(payload: dict[str, object], key: str) -> int:
+    value = payload.get(key)
+    return value if isinstance(value, int) else 0
 
 
 def json_request(url: QUrl) -> QNetworkRequest:

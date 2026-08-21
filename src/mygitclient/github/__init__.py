@@ -1,10 +1,5 @@
 from mygitclient.github.bindings import GitHubRepositoryBindingStore
-from mygitclient.github.browser_flow import GitHubBrowserFlow
-from mygitclient.github.device_flow import (
-    DeviceAuthorization,
-    DeviceFlowResult,
-    GitHubDeviceFlow,
-)
+from mygitclient.github.browser_flow import GitHubBrowserFlow, SignInResult
 from mygitclient.github.profiles import GitHubProfile, GitHubProfileStore
 from mygitclient.github.publisher import (
     GitHubRepositoryPublisher,
@@ -31,10 +26,7 @@ from mygitclient.github.tokens import (
 )
 
 __all__ = [
-    "DeviceAuthorization",
-    "DeviceFlowResult",
     "GitHubBrowserFlow",
-    "GitHubDeviceFlow",
     "GitHubRemote",
     "GitHubProfile",
     "GitHubProfileStore",
@@ -44,6 +36,7 @@ __all__ = [
     "GitHubRepositoryPublisher",
     "GitHubTokenRefresher",
     "GitHubTokenStore",
+    "SignInResult",
     "StoredToken",
     "TokenStoreError",
     "PublishedGitHubRepository",

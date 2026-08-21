@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QMenu, QToolBar
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.service import GitService
-from mygitclient.github import DeviceFlowResult, GitHubProfile, GitHubTokenStore
+from mygitclient.github import GitHubProfile, GitHubTokenStore, SignInResult
 from mygitclient.theme import Theme
 from mygitclient.ui.app_shell import AppShell, RepositorySessionTab
 
@@ -32,9 +32,9 @@ class _TestAppShell(AppShell):
     def save_github_profile(self, profile: GitHubProfile) -> None:
         self._github_profiles.save(profile)
 
-    def complete_new_github_connection(self, result: DeviceFlowResult) -> None:
-        self._github_device_add_new = True
-        self._github_device_completed(result)
+    def complete_new_github_connection(self, result: SignInResult) -> None:
+        self._github_sign_in_add_new = True
+        self._github_sign_in_completed(result)
 
     @property
     def github_profiles(self) -> tuple[GitHubProfile, ...]:
@@ -183,7 +183,7 @@ def test_connecting_new_github_account_creates_profile_from_authorized_login(
     qtbot.addWidget(shell)
     shell.use_memory_github_tokens()
 
-    shell.complete_new_github_connection(DeviceFlowResult("octocat", "secret-token"))
+    shell.complete_new_github_connection(SignInResult("octocat", "secret-token"))
 
     assert shell.github_profiles == (GitHubProfile("octocat", "octocat"),)
     assert shell.has_github_token("octocat")
@@ -200,7 +200,7 @@ def test_connecting_known_github_login_reuses_existing_profile(
     shell.save_github_profile(profile)
     shell.use_memory_github_tokens()
 
-    shell.complete_new_github_connection(DeviceFlowResult("OctoCat", "secret-token"))
+    shell.complete_new_github_connection(SignInResult("OctoCat", "secret-token"))
 
     assert shell.github_profiles == (profile,)
     assert shell.has_github_token("octocat")

@@ -33,10 +33,7 @@ from mygitclient.git.clone_service import (
 )
 from mygitclient.git.remotes import GitRemoteReader
 from mygitclient.github import (
-    DeviceAuthorization,
-    DeviceFlowResult,
     GitHubBrowserFlow,
-    GitHubDeviceFlow,
     GitHubProfile,
     GitHubProfileStore,
     GitHubRepository,
@@ -46,6 +43,7 @@ from mygitclient.github import (
     GitHubTokenRefresher,
     GitHubTokenStore,
     PublishedGitHubRepository,
+    SignInResult,
     StoredToken,
     TokenStoreError,
     first_github_remote,
@@ -55,10 +53,10 @@ from mygitclient.github import (
 )
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
-from mygitclient.ui.github_device_dialog import GitHubDeviceDialog
 from mygitclient.ui.github_profile_dialog import GitHubProfileDialog
 from mygitclient.ui.github_publish_dialog import GitHubPublishDialog
 from mygitclient.ui.github_repositories_dialog import GitHubRepositoriesDialog
+from mygitclient.ui.github_sign_in_dialog import GitHubSignInDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
 from mygitclient.updates import (
@@ -105,19 +103,15 @@ class AppShell(QMainWindow):
         self._github_profiles = GitHubProfileStore(settings)
         self._github_bindings = GitHubRepositoryBindingStore(settings)
         self._github_tokens = GitHubTokenStore()
-        self._github_device_flow = GitHubDeviceFlow(self)
         self._github_browser_flow = GitHubBrowserFlow(self)
-        self._github_device_dialog: GitHubDeviceDialog | None = None
-        self._github_device_profile: GitHubProfile | None = None
-        self._github_device_add_new = False
-        self._github_device_flow.code_received.connect(self._github_device_code_received)
-        self._github_device_flow.completed.connect(self._github_device_completed)
-        self._github_device_flow.failed.connect(self._github_device_failed)
+        self._github_sign_in_dialog: GitHubSignInDialog | None = None
+        self._github_sign_in_profile: GitHubProfile | None = None
+        self._github_sign_in_add_new = False
         self._github_browser_flow.authorization_url_ready.connect(
             self._github_browser_authorization_ready
         )
-        self._github_browser_flow.completed.connect(self._github_device_completed)
-        self._github_browser_flow.failed.connect(self._github_device_failed)
+        self._github_browser_flow.completed.connect(self._github_sign_in_completed)
+        self._github_browser_flow.failed.connect(self._github_sign_in_failed)
         self._github_repositories = GitHubRepositoryService(self)
         self._github_repositories_dialog: GitHubRepositoriesDialog | None = None
         self._github_repositories.completed.connect(self._github_repositories_completed)
@@ -357,7 +351,7 @@ class AppShell(QMainWindow):
 
     @Slot()
     def _add_github_profile(self) -> None:
-        self._open_github_device_dialog(None)
+        self._open_github_sign_in_dialog(None)
 
     @Slot(object)
     def _edit_github_profile(self, value: object) -> None:
@@ -417,9 +411,9 @@ class AppShell(QMainWindow):
     def _connect_github(self, value: object) -> None:
         if not isinstance(value, GitHubProfile):
             return
-        self._open_github_device_dialog(value)
+        self._open_github_sign_in_dialog(value)
 
-    def _open_github_device_dialog(self, profile: GitHubProfile | None) -> None:
+    def _open_github_sign_in_dialog(self, profile: GitHubProfile | None) -> None:
         client_id = str(self._settings.value("github/oauthClientId", "")).strip()
         client_secret = ""
         if client_id:
@@ -427,27 +421,17 @@ class AppShell(QMainWindow):
                 client_secret = self._github_tokens.oauth_client_secret(client_id) or ""
             except TokenStoreError:
                 client_secret = ""
-        self._close_github_device_dialog()
-        self._github_device_profile = profile
-        self._github_device_add_new = profile is None
-        dialog = GitHubDeviceDialog(
+        self._close_github_sign_in_dialog()
+        self._github_sign_in_profile = profile
+        self._github_sign_in_add_new = profile is None
+        dialog = GitHubSignInDialog(
             profile.login if profile is not None else None, client_id, self, client_secret
         )
-        dialog.cancelled.connect(self._github_device_flow.cancel)
         dialog.cancelled.connect(self._github_browser_flow.cancel)
-        dialog.start_requested.connect(self._start_github_device_flow)
         dialog.browser_start_requested.connect(self._start_github_browser_flow)
-        dialog.finished.connect(self._github_device_dialog_finished)
-        self._github_device_dialog = dialog
+        dialog.finished.connect(self._github_sign_in_dialog_finished)
+        self._github_sign_in_dialog = dialog
         dialog.show()
-
-    @Slot(str)
-    def _start_github_device_flow(self, client_id: str) -> None:
-        clean_client_id = client_id.strip()
-        if not clean_client_id:
-            return
-        self._settings.setValue("github/oauthClientId", clean_client_id)
-        self._github_device_flow.start(clean_client_id)
 
     @Slot(str, str)
     def _start_github_browser_flow(self, client_id: str, client_secret: str) -> None:
@@ -461,24 +445,19 @@ class AppShell(QMainWindow):
             self._github_tokens.save_oauth_client_secret(clean_client_id, clean_client_secret)
         self._github_browser_flow.start(clean_client_id, clean_client_secret)
 
-    @Slot(object)
-    def _github_device_code_received(self, value: object) -> None:
-        if isinstance(value, DeviceAuthorization) and self._github_device_dialog is not None:
-            self._github_device_dialog.show_authorization(value)
-
     @Slot(str)
     def _github_browser_authorization_ready(self, url: str) -> None:
-        if self._github_device_dialog is not None:
-            self._github_device_dialog.show_browser_pending(url)
+        if self._github_sign_in_dialog is not None:
+            self._github_sign_in_dialog.show_browser_pending(url)
 
     @Slot(object)
-    def _github_device_completed(self, value: object) -> None:
-        profile = self._github_device_profile
-        add_new = self._github_device_add_new
-        if not isinstance(value, DeviceFlowResult) or (profile is None and not add_new):
+    def _github_sign_in_completed(self, value: object) -> None:
+        profile = self._github_sign_in_profile
+        add_new = self._github_sign_in_add_new
+        if not isinstance(value, SignInResult) or (profile is None and not add_new):
             return
         if profile is not None and value.login.casefold() != profile.login.casefold():
-            self._github_device_failed(
+            self._github_sign_in_failed(
                 f"GitHub authorized '{value.login}', but this profile expects '{profile.login}'."
             )
             return
@@ -492,11 +471,11 @@ class AppShell(QMainWindow):
             if add_new and profile not in self._github_profiles.profiles():
                 self._github_profiles.save(profile)
         except (TokenStoreError, ValueError) as error:
-            self._github_device_failed(str(error))
+            self._github_sign_in_failed(str(error))
             return
-        self._close_github_device_dialog()
-        self._github_device_profile = None
-        self._github_device_add_new = False
+        self._close_github_sign_in_dialog()
+        self._github_sign_in_profile = None
+        self._github_sign_in_add_new = False
         self._refresh_home()
         self.statusBar().showMessage(f"Connected GitHub account {profile.login}.", 5000)
 
@@ -548,24 +527,23 @@ class AppShell(QMainWindow):
         return GitHubProfile(label=login, login=login)
 
     @Slot(str)
-    def _github_device_failed(self, message: str) -> None:
-        if self._github_device_dialog is not None:
-            self._github_device_dialog.show_error(message)
+    def _github_sign_in_failed(self, message: str) -> None:
+        if self._github_sign_in_dialog is not None:
+            self._github_sign_in_dialog.show_error(message)
         else:
             QMessageBox.warning(self, "GitHub authorization", message)
 
     @Slot(int)
-    def _github_device_dialog_finished(self, _result: int) -> None:
-        self._github_device_flow.cancel()
+    def _github_sign_in_dialog_finished(self, _result: int) -> None:
         self._github_browser_flow.cancel()
-        self._github_device_dialog = None
-        self._github_device_profile = None
-        self._github_device_add_new = False
+        self._github_sign_in_dialog = None
+        self._github_sign_in_profile = None
+        self._github_sign_in_add_new = False
 
-    def _close_github_device_dialog(self) -> None:
-        if self._github_device_dialog is not None:
-            dialog = self._github_device_dialog
-            self._github_device_dialog = None
+    def _close_github_sign_in_dialog(self) -> None:
+        if self._github_sign_in_dialog is not None:
+            dialog = self._github_sign_in_dialog
+            self._github_sign_in_dialog = None
             dialog.close()
             dialog.deleteLater()
 
