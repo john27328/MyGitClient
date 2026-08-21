@@ -519,9 +519,12 @@ class DiffView(QWidget):
         self.git_state_badge.setToolTip(
             f"{tooltip} Gutter boxes select lines for the next action."
         )
-        self.git_state_badge.setVisible(bool(diff.lines))
-        self.file_header.setVisible(bool(diff.lines))
-        self.file_header_container.setVisible(bool(diff.lines))
+        # A selected file keeps its header and close button even with nothing to
+        # display (a binary file, a mode-only change): losing them here left the
+        # diff pane with no path and no way to close it once Git reported no lines.
+        self.git_state_badge.setVisible(True)
+        self.file_header.setVisible(True)
+        self.file_header_container.setVisible(True)
         self.diff.setPlainText(
             "\n".join(self._display_lines(diff)) or "No textual changes to display."
         )

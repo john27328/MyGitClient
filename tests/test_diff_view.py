@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 from pytestqt.qtbot import QtBot
 
+from mygitclient.git.models import UnifiedDiff
 from mygitclient.git.parsers import parse_unified_diff
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_view import DiffView, inline_change_ranges
@@ -104,6 +105,29 @@ def test_history_close_button_is_explicit_and_preserves_saved_selections(
     assert view.close_button.isHidden()
     view.close_button.click()
     assert requested == [True]
+
+
+def test_a_selected_file_with_no_textual_diff_still_shows_its_header_and_close_button(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "diff-empty.ini"), QSettings.Format.IniFormat)
+    view = DiffView(settings)
+    qtbot.addWidget(view)
+
+    view.display_diff(
+        UnifiedDiff(path="assets/logo.png", staged=False, lines=()),
+        selection_key=None,
+        preserve_scroll=False,
+        whole_file_staged=False,
+        interactive=False,
+    )
+    view.set_close_available(True)
+
+    assert not view.file_header.isHidden()
+    assert view.file_header.text() == "assets/logo.png"
+    assert not view.git_state_badge.isHidden()
+    assert not view.close_button.isHidden()
+    assert view.diff.toPlainText() == "No textual changes to display."
 
 
 def test_single_diff_source_is_a_label_and_two_sources_are_selectable(
