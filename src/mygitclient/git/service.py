@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from mygitclient.git.conflicts import parse_conflict_blocks
 from mygitclient.git.credentials import github_extraheader_arguments
-from mygitclient.git.errors import format_git_error
+from mygitclient.git.errors import format_git_error, is_credential_failure
 from mygitclient.git.models import (
     AmendDiffSnapshot,
     AmendPreview,
@@ -184,6 +184,7 @@ class GitService(QObject):
         self._diff_requests: dict[GitRunner, tuple[Path, str, bool, bool, int]] = {}
         self._latest_diff_request: dict[tuple[Path, str, bool], int] = {}
         self._mutation_requests: dict[GitRunner, str] = {}
+        self._credential_retry_tokens: dict[GitRunner, str] = {}
         self._discard_batches: dict[GitRunner, _DiscardBatch] = {}
         self._publish_repository_workflows: dict[GitRunner, _PublishRepositoryWorkflow] = {}
         self._reset_to_upstream_workflows: dict[GitRunner, _ResetToUpstreamWorkflow] = {}
@@ -528,8 +529,7 @@ class GitService(QObject):
         recurse_submodules: bool = False,
         token: str | None = None,
     ) -> GitRunner:
-        arguments = list(github_extraheader_arguments(token)) if token else []
-        arguments += ["pull", "--progress", "--rebase" if rebase else "--no-rebase"]
+        arguments = ["pull", "--progress", "--rebase" if rebase else "--no-rebase"]
         if autostash:
             arguments.append("--autostash")
         if recurse_submodules:
@@ -537,6 +537,7 @@ class GitService(QObject):
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "pull"
+        self._remember_credential_retry(runner, token)
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
@@ -552,13 +553,14 @@ class GitService(QObject):
         token: str | None = None,
     ) -> GitRunner:
         workflow = _ResetToUpstreamWorkflow(repository, recurse_submodules)
-        arguments = list(github_extraheader_arguments(token)) if token else []
-        arguments += ["fetch", "--progress", "--prune"]
+        arguments = ["fetch", "--progress", "--prune"]
         if recurse_submodules:
             arguments.append("--recurse-submodules")
-        return self._run_reset_to_upstream_workflow(
+        runner = self._run_reset_to_upstream_workflow(
             workflow, tuple(arguments), "fetch before resetting to upstream"
         )
+        self._remember_credential_retry(runner, token)
+        return runner
 
     def _run_reset_to_upstream_workflow(
         self,
@@ -585,13 +587,13 @@ class GitService(QObject):
         recurse_submodules: bool = False,
         token: str | None = None,
     ) -> GitRunner:
-        arguments = list(github_extraheader_arguments(token)) if token else []
-        arguments += ["fetch", "--progress", "--prune"]
+        arguments = ["fetch", "--progress", "--prune"]
         if recurse_submodules:
             arguments.append("--recurse-submodules")
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "fetch"
+        self._remember_credential_retry(runner, token)
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
@@ -610,8 +612,7 @@ class GitService(QObject):
         recurse_submodules: bool = False,
         token: str | None = None,
     ) -> GitRunner:
-        arguments = list(github_extraheader_arguments(token)) if token else []
-        arguments += ["push", "--progress"]
+        arguments = ["push", "--progress"]
         if force_with_lease:
             arguments.append("--force-with-lease")
         if recurse_submodules:
@@ -621,6 +622,7 @@ class GitService(QObject):
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "push"
+        self._remember_credential_retry(runner, token)
         runner.completed.connect(self._handle_mutation)
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
@@ -1801,6 +1803,24 @@ class GitService(QObject):
         self._runners.discard(runner)
         runner.deleteLater()
 
+    def _remember_credential_retry(self, runner: GitRunner, token: str | None) -> None:
+        """Hold a GitHub token back as a fallback for one remote command.
+
+        Remote commands run without it first so Git's own credential helper stays in
+        charge; a stored token that has since expired must not break credentials that
+        still work. Only if Git cannot authenticate is the token worth a second try.
+        """
+        if token:
+            self._credential_retry_tokens[runner] = token
+
+    def _authenticated_retry_command(self, command: GitCommand, token: str) -> GitCommand:
+        return GitCommand(
+            (*github_extraheader_arguments(token), *command.arguments),
+            command.working_directory,
+            command.operation,
+            command.environment,
+        )
+
     @Slot(object)
     def _handle_status(self, result: object) -> None:
         runner = self.sender()
@@ -1902,6 +1922,7 @@ class GitService(QObject):
         self._operation_state_requests.pop(runner, None)
         self._diff_requests.pop(runner, None)
         self._mutation_requests.pop(runner, None)
+        self._credential_retry_tokens.pop(runner, None)
         publish = self._publish_repository_workflows.pop(runner, None)
         reset_to_upstream = self._reset_to_upstream_workflows.pop(runner, None)
         self._operation_action_requests.pop(runner, None)
@@ -1972,6 +1993,7 @@ class GitService(QObject):
             self.operation_failed.emit("Git returned an unknown reset-to-upstream result")
             return
         workflow = self._reset_to_upstream_workflows.pop(runner, None)
+        retry_token = self._credential_retry_tokens.pop(runner, None)
         self._release_runner(runner)
         if workflow is None or not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected reset-to-upstream result")
@@ -1980,6 +2002,13 @@ class GitService(QObject):
             self.operation_cancelled.emit()
             return
         if not result.succeeded:
+            if retry_token is not None and is_credential_failure(result.error_text):
+                self._run_reset_to_upstream_workflow(
+                    workflow,
+                    self._authenticated_retry_command(result.command, retry_token).arguments,
+                    result.command.operation,
+                )
+                return
             self.operation_failed.emit(
                 format_git_error(result.error_text, operation=result.command.operation)
             )
@@ -2894,6 +2923,7 @@ class GitService(QObject):
             self.operation_failed.emit("Git returned a result from an unknown mutation")
             return
         path = self._mutation_requests.pop(runner, None)
+        retry_token = self._credential_retry_tokens.pop(runner, None)
         self._release_runner(runner)
         if path is None or not isinstance(result, GitResult):
             self.operation_failed.emit("Git returned an unexpected mutation result")
@@ -2902,11 +2932,32 @@ class GitService(QObject):
             self.operation_cancelled.emit()
             return
         if not result.succeeded:
+            if retry_token is not None and is_credential_failure(result.error_text):
+                self._retry_mutation_with_token(result.command, path, retry_token)
+                return
             self.operation_failed.emit(
                 format_git_error(result.error_text, operation=result.command.operation)
             )
             return
         self.mutation_ready.emit(path)
+
+    def _retry_mutation_with_token(
+        self, command: GitCommand, path: str, token: str
+    ) -> GitRunner:
+        """Run a remote command again with the stored GitHub token.
+
+        No retry token is registered for this runner, so a second failure is reported
+        instead of looping.
+        """
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = path
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner, self._authenticated_retry_command(command, token), continuation=True
+        )
+        return runner
 
     @Slot(object)
     def _handle_discard_batch(self, result: object) -> None:

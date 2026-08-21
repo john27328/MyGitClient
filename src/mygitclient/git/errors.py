@@ -164,3 +164,22 @@ def analyze_git_error(message: str, *, operation: str) -> GitErrorDetails:
 
 def format_git_error(message: str, *, operation: str) -> str:
     return analyze_git_error(message, operation=operation).display_message
+
+
+_CREDENTIAL_FAILURE_MARKERS = (
+    "authentication failed",
+    "could not read username",
+    "could not read password",
+    "invalid username or password",
+    "repository not found",
+)
+
+
+def is_credential_failure(message: str) -> bool:
+    """Whether a failed remote operation might succeed with different credentials.
+
+    GitHub answers requests it cannot authorize with ``Repository not found`` rather
+    than a permission error, so that wording counts as a credential failure too.
+    """
+    lowered = message.casefold()
+    return any(marker in lowered for marker in _CREDENTIAL_FAILURE_MARKERS)
