@@ -19,11 +19,11 @@ from PySide6.QtWidgets import (
 )
 from pytestqt.qtbot import QtBot
 
-from mygitclient.git.models import FileStatus
+from mygitclient.git.models import FileStatus, UnifiedDiff
 from mygitclient.theme import Theme
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_overview import DiffOverview
-from mygitclient.ui.main_window import TAB_DIFF, TAB_HISTORY, MainWindow
+from mygitclient.ui.main_window import TAB_DIFF, TAB_HISTORY, InlineDiffKey, MainWindow
 
 
 class DiffTabWindow(MainWindow):
@@ -46,6 +46,15 @@ class DiffTabWindow(MainWindow):
     def diff_container(self) -> QStackedWidget:
         return self._diff_container
 
+    def queue_inline_diff(self, key: InlineDiffKey) -> None:
+        self._inline_diff_inflight.add(key)
+
+    def deliver_inline_diff(self, key: InlineDiffKey, diff: UnifiedDiff) -> bool:
+        return self._deliver_inline_diff(key, diff)
+
+    def has_inline_diff(self, key: InlineDiffKey) -> bool:
+        return key in self._inline_diff_inflight
+
 
 def test_escape_returns_from_diff_tab_to_history_and_focuses_files(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
@@ -65,6 +74,25 @@ def test_escape_returns_from_diff_tab_to_history_and_focuses_files(
     assert tabs.currentIndex() == TAB_HISTORY
     assert history.currentItem() is commit_item
     assert files.hasFocus()
+    window.close()
+
+
+def test_inline_diff_does_not_consume_a_diff_from_another_commit(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "inline-diff-context.ini"), QSettings.Format.IniFormat)
+    window = DiffTabWindow(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
+    inline_key: InlineDiffKey = ("commit", "history-commit", "file.py")
+    window.queue_inline_diff(inline_key)
+
+    consumed = window.deliver_inline_diff(
+        ("commit", "diff-tab-commit", "file.py"),
+        UnifiedDiff(path="file.py", staged=False, lines=()),
+    )
+
+    assert not consumed
+    assert window.has_inline_diff(inline_key)
     window.close()
 
 

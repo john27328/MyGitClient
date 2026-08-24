@@ -42,6 +42,7 @@ def _commit(oid: str, subject: str, *parents: str) -> CommitSummary:
 def test_history_panel_renders_page_and_graph(qtbot: QtBot) -> None:
     panel = HistoryPanel()
     qtbot.addWidget(panel)
+    panel.show()
     page = CommitPage(
         Path("repository"),
         (
@@ -173,9 +174,12 @@ def test_history_layout_stacks_commit_details_and_can_focus_diff(
 def test_history_panel_expand_all_expands_every_file_row(qtbot: QtBot) -> None:
     panel = HistoryPanel()
     qtbot.addWidget(panel)
+    panel.show()
     commit = _commit("head", "Head commit", "root")
     panel.show_page(CommitPage(Path("repository"), (commit,), 0, False))
-    panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+    commit_item = panel.tree.topLevelItem(0)
+    assert commit_item is not None
+    panel.tree.setCurrentItem(commit_item)
     changes = (CommitFileChange("M", "a.py"), CommitFileChange("M", "b.py"))
     panel.show_files(CommitFilesSnapshot(Path("repository"), commit.oid, changes))
 
@@ -186,12 +190,16 @@ def test_history_panel_expand_all_expands_every_file_row(qtbot: QtBot) -> None:
     panel.file_diff_requested.connect(requested.append)
     panel.expand_all_button.click()
 
-    assert all(panel.files.topLevelItem(i).isExpanded() for i in range(2))
-    assert [change.path for change in requested] == ["a.py", "b.py"]
+    file_items = [panel.files.topLevelItem(i) for i in range(2)]
+    assert all(item is not None and item.isExpanded() for item in file_items)
+    requested_paths = [
+        change.path for change in requested if isinstance(change, CommitFileChange)
+    ]
+    assert requested_paths == ["a.py", "b.py"]
     assert panel.expand_all_button.text() == "Collapse All"
 
     panel.expand_all_button.click()
-    assert not any(panel.files.topLevelItem(i).isExpanded() for i in range(2))
+    assert not any(item is not None and item.isExpanded() for item in file_items)
     assert panel.expand_all_button.text() == "Expand All"
 
 
@@ -200,7 +208,9 @@ def test_history_panel_clicking_a_file_toggles_its_inline_diff(qtbot: QtBot) -> 
     qtbot.addWidget(panel)
     commit = _commit("head", "Head commit", "root")
     panel.show_page(CommitPage(Path("repository"), (commit,), 0, False))
-    panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+    commit_item = panel.tree.topLevelItem(0)
+    assert commit_item is not None
+    panel.tree.setCurrentItem(commit_item)
     change = CommitFileChange("M", "a.py")
     panel.show_files(CommitFilesSnapshot(Path("repository"), commit.oid, (change,)))
     item = panel.files.topLevelItem(0)

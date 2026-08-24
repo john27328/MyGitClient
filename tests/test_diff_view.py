@@ -46,7 +46,6 @@ def test_diff_view_owns_presentation_widgets(qtbot: QtBot, tmp_path: Path) -> No
     assert view.findChild(QLabel, "diffVersionLabel") is view.version_label
     assert view.findChild(QLabel, "diffFileHeader") is view.file_header
     assert view.findChild(QLabel, "diffGitStateBadge") is view.git_state_badge
-    assert view.findChild(QToolButton, "diffCloseButton") is view.close_button
     assert view.findChild(QPushButton, "diffStageButton") is view.stage_button
     assert view.findChild(QPushButton, "diffStashButton") is view.stash_button
     assert view.findChild(QPushButton, "diffUnstageButton") is view.unstage_button
@@ -91,23 +90,7 @@ def test_diff_editors_allow_text_selection(qtbot: QtBot, tmp_path: Path) -> None
         assert "selection-background-color" in editor.styleSheet()
 
 
-def test_history_close_button_is_explicit_and_preserves_saved_selections(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    settings = QSettings(str(tmp_path / "diff-close.ini"), QSettings.Format.IniFormat)
-    view = DiffView(settings)
-    qtbot.addWidget(view)
-    requested: list[bool] = []
-    view.close_requested.connect(lambda: requested.append(True))
-
-    assert view.close_button.isHidden()
-    view.set_close_available(True)
-    assert view.close_button.isHidden()
-    view.close_button.click()
-    assert requested == [True]
-
-
-def test_a_selected_file_with_no_textual_diff_still_shows_its_header_and_close_button(
+def test_a_selected_file_with_no_textual_diff_still_shows_its_header(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "diff-empty.ini"), QSettings.Format.IniFormat)
@@ -121,12 +104,9 @@ def test_a_selected_file_with_no_textual_diff_still_shows_its_header_and_close_b
         whole_file_staged=False,
         interactive=False,
     )
-    view.set_close_available(True)
-
     assert not view.file_header.isHidden()
     assert view.file_header.text() == "assets/logo.png"
     assert not view.git_state_badge.isHidden()
-    assert not view.close_button.isHidden()
     assert view.diff.toPlainText() == "No textual changes to display."
 
 

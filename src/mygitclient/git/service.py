@@ -203,15 +203,15 @@ class GitService(QObject):
         self._stash_files_requests: dict[GitRunner, tuple[Path, StashInfo, int]] = {}
         self._latest_stash_files_request: dict[Path, int] = {}
         self._stash_diff_requests: dict[GitRunner, tuple[Path, StashInfo, str, int]] = {}
-        self._latest_stash_diff_request: dict[tuple[Path, str], int] = {}
+        self._latest_stash_diff_request: dict[tuple[Path, str, str], int] = {}
         self._commit_files_requests: dict[GitRunner, tuple[Path, str, int]] = {}
         self._latest_commit_files_request: dict[Path, int] = {}
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
-        self._latest_commit_diff_request: dict[tuple[Path, str], int] = {}
+        self._latest_commit_diff_request: dict[tuple[Path, str, str], int] = {}
         self._comparison_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_comparison_request: dict[Path, int] = {}
         self._comparison_diff_requests: dict[GitRunner, tuple[Path, str, str, str, int]] = {}
-        self._latest_comparison_diff_request: dict[tuple[Path, str], int] = {}
+        self._latest_comparison_diff_request: dict[tuple[Path, str, str, str], int] = {}
         self._amend_preview_requests: dict[GitRunner, tuple[Path, str, int]] = {}
         self._latest_amend_preview_request: dict[Path, int] = {}
         self._amend_diff_requests: dict[GitRunner, tuple[Path, str, str | None, int]] = {}
@@ -1060,7 +1060,7 @@ class GitService(QObject):
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
-        self._latest_commit_diff_request[(repository, path)] = request_id
+        self._latest_commit_diff_request[(repository, commit_oid, path)] = request_id
         self._commit_diff_requests[runner] = (repository, commit_oid, path, request_id)
         runner.completed.connect(self._handle_commit_diff)
         runner.failed_to_start.connect(self._handle_start_error)
@@ -1193,7 +1193,7 @@ class GitService(QObject):
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
-        self._latest_comparison_diff_request[(repository, path)] = request_id
+        self._latest_comparison_diff_request[(repository, base_ref, compare_ref, path)] = request_id
         self._comparison_diff_requests[runner] = (
             repository,
             base_ref,
@@ -1730,7 +1730,7 @@ class GitService(QObject):
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
-        self._latest_stash_diff_request[(repository, path)] = request_id
+        self._latest_stash_diff_request[(repository, stash.oid, path)] = request_id
         self._stash_diff_requests[runner] = (repository, stash, path, request_id)
         runner.completed.connect(self._handle_stash_diff)
         runner.failed_to_start.connect(self._handle_start_error)
@@ -2130,7 +2130,7 @@ class GitService(QObject):
             self.operation_failed.emit("Git returned an unexpected comparison diff")
             return
         repository, base_ref, compare_ref, path, request_id = request
-        key = (repository, path)
+        key = (repository, base_ref, compare_ref, path)
         if self._latest_comparison_diff_request.get(key) != request_id:
             return
         self._latest_comparison_diff_request.pop(key, None)
@@ -2795,7 +2795,7 @@ class GitService(QObject):
             self.operation_failed.emit("Git returned an unexpected stash diff result")
             return
         repository, stash, path, request_id = request
-        key = (repository, path)
+        key = (repository, stash.oid, path)
         if self._latest_stash_diff_request.get(key) != request_id:
             return
         self._latest_stash_diff_request.pop(key, None)
@@ -2881,7 +2881,7 @@ class GitService(QObject):
             self.operation_failed.emit("Git returned an unexpected commit diff result")
             return
         repository, commit_oid, path, request_id = request
-        key = (repository, path)
+        key = (repository, commit_oid, path)
         if self._latest_commit_diff_request.get(key) != request_id:
             return
         self._latest_commit_diff_request.pop(key, None)

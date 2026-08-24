@@ -405,13 +405,17 @@ class HistoryPanel(QWidget):
         if item.childCount() == 0:
             return None
         child = item.child(0)
+        if child is None:
+            return None
         widget = self.files.itemWidget(child, 0)
         return widget if isinstance(widget, InlineDiffWidget) else None
 
     def _size_inline_row(self, item: QTreeWidgetItem, widget: InlineDiffWidget) -> None:
         if item.childCount() == 0:
             return
-        item.child(0).setSizeHint(0, QSize(widget.width(), widget.height()))
+        child = item.child(0)
+        if child is not None:
+            child.setSizeHint(0, QSize(widget.width(), widget.height()))
 
     @Slot(QTreeWidgetItem, int)
     def _file_clicked(self, item: QTreeWidgetItem, _column: int) -> None:

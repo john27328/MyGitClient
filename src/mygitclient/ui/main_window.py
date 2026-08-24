@@ -132,6 +132,9 @@ TAB_DIFF = 2
 INLINE_DIFF_CONCURRENCY = 4
 """How many inline diffs may be read at once before the rest wait their turn."""
 
+InlineDiffKey = tuple[str, str, str]
+"""The diff source, its revision identity, and the affected path."""
+
 
 class MainWindow(QMainWindow):
     repository_tab_requested = Signal(object, bool)
@@ -175,9 +178,9 @@ class MainWindow(QMainWindow):
         self._repository_operation: RepositoryOperation | None = None
         self._interactive_rebase_pending = False
         self._rewrite_recovery_head = ""
-        self._inline_diff_queue: list[CommitFileChange] = []
-        self._inline_diff_wanted: dict[str, CommitFileChange] = {}
-        self._inline_diff_inflight: set[str] = set()
+        self._inline_diff_queue: list[tuple[InlineDiffKey, CommitFileChange]] = []
+        self._inline_diff_wanted: dict[InlineDiffKey, CommitFileChange] = {}
+        self._inline_diff_inflight: set[InlineDiffKey] = set()
         self._pending_study_path = ""
         self._generated_commit_message = ""
         self._generated_commit_description = ""
@@ -1237,19 +1240,22 @@ class MainWindow(QMainWindow):
     def _history_file_diff_requested(self, value: object) -> None:
         if not isinstance(value, CommitFileChange) or self._repository is None:
             return
-        if value.path in self._inline_diff_wanted:
+        key = self._inline_diff_key(value)
+        if key is None or key in self._inline_diff_wanted:
             return
-        self._inline_diff_wanted[value.path] = value
-        self._inline_diff_queue.append(value)
+        self._inline_diff_wanted[key] = value
+        self._inline_diff_queue.append((key, value))
         self._pump_inline_diffs()
 
     @Slot(object)
     def _history_file_diff_cancelled(self, value: object) -> None:
         if not isinstance(value, CommitFileChange):
             return
-        self._inline_diff_wanted.pop(value.path, None)
+        for key in tuple(self._inline_diff_wanted):
+            if key[2] == value.path:
+                self._inline_diff_wanted.pop(key)
         self._inline_diff_queue = [
-            change for change in self._inline_diff_queue if change.path != value.path
+            (key, change) for key, change in self._inline_diff_queue if key[2] != value.path
         ]
 
     @Slot(int, int)
@@ -1264,23 +1270,35 @@ class MainWindow(QMainWindow):
         while (
             self._inline_diff_queue and len(self._inline_diff_inflight) < INLINE_DIFF_CONCURRENCY
         ):
-            change = self._inline_diff_queue.pop(0)
-            if change.path not in self._inline_diff_wanted:
+            key, change = self._inline_diff_queue.pop(0)
+            if key not in self._inline_diff_wanted:
                 continue
-            if not self._request_inline_diff(change):
-                self._inline_diff_wanted.pop(change.path, None)
+            if not self._request_inline_diff(key, change):
+                self._inline_diff_wanted.pop(key, None)
                 self._history_panel.inline_diff_failed(
                     change.path, f"No diff available for {change.path}."
                 )
                 continue
-            self._inline_diff_inflight.add(change.path)
+            self._inline_diff_inflight.add(key)
 
-    def _request_inline_diff(self, change: CommitFileChange) -> bool:
+    def _inline_diff_key(self, change: CommitFileChange) -> InlineDiffKey | None:
+        if len(self._history_refs) == 2:
+            return ("comparison", "\0".join(self._history_refs), change.path)
+        stash = self._history_panel.selected_stash
+        if stash is not None:
+            return ("stash", stash.oid, change.path)
+        commit = self._history_panel.selected_commit
+        if commit is not None:
+            return ("commit", commit.oid, change.path)
+        return None
+
+    def _request_inline_diff(self, key: InlineDiffKey, change: CommitFileChange) -> bool:
         repository = self._repository
         if repository is None:
             return False
-        if len(self._history_refs) == 2:
-            base_ref, compare_ref = self._history_refs
+        source, identity, _path = key
+        if source == "comparison":
+            base_ref, compare_ref = identity.split("\0", maxsplit=1)
             self._git.request_ref_comparison_diff(
                 repository,
                 base_ref,
@@ -1290,12 +1308,16 @@ class MainWindow(QMainWindow):
                 context_lines=self._diff_context_lines,
             )
             return True
-        stash = self._history_panel.selected_stash
-        if stash is not None:
+        if source == "stash":
+            stash = self._history_panel.selected_stash
+            if stash is None or stash.oid != identity:
+                return False
             self._git.request_stash_diff(repository, stash, change.path)
             return True
+        if source != "commit":
+            return False
         commit = self._history_panel.selected_commit
-        if commit is None:
+        if commit is None or commit.oid != identity:
             return False
         self._git.request_commit_diff(
             repository,
@@ -1307,13 +1329,13 @@ class MainWindow(QMainWindow):
         )
         return True
 
-    def _deliver_inline_diff(self, diff: UnifiedDiff) -> bool:
+    def _deliver_inline_diff(self, key: InlineDiffKey, diff: UnifiedDiff) -> bool:
         """Route a diff to its expanded history row; returns whether it was consumed."""
 
-        if diff.path not in self._inline_diff_inflight:
+        if key not in self._inline_diff_inflight:
             return False
-        self._inline_diff_inflight.discard(diff.path)
-        wanted = self._inline_diff_wanted.pop(diff.path, None)
+        self._inline_diff_inflight.discard(key)
+        wanted = self._inline_diff_wanted.pop(key, None)
         if wanted is not None:
             self._history_panel.show_inline_diff(diff.path, diff)
         self._pump_inline_diffs()
@@ -1395,7 +1417,7 @@ class MainWindow(QMainWindow):
     def _show_stash_diff(self, value: object) -> None:
         if not isinstance(value, StashDiffSnapshot) or value.repository != self._repository:
             return
-        if self._deliver_inline_diff(value.diff):
+        if self._deliver_inline_diff(("stash", value.stash.oid, value.diff.path), value.diff):
             return
         if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
@@ -1524,7 +1546,9 @@ class MainWindow(QMainWindow):
             or self._history_refs != (value.base_ref, value.compare_ref)
         ):
             return
-        if self._deliver_inline_diff(value.diff):
+        if self._deliver_inline_diff(
+            ("comparison", f"{value.base_ref}\0{value.compare_ref}", value.diff.path), value.diff
+        ):
             return
         if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
@@ -1548,7 +1572,7 @@ class MainWindow(QMainWindow):
     def _show_commit_diff(self, value: object) -> None:
         if not isinstance(value, CommitDiffSnapshot) or value.repository != self._repository:
             return
-        if self._deliver_inline_diff(value.diff):
+        if self._deliver_inline_diff(("commit", value.commit_oid, value.diff.path), value.diff):
             return
         if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return

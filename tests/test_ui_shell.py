@@ -670,7 +670,10 @@ def test_selected_commit_shows_details_files_and_diff(
     file_item.setExpanded(True)
 
     def inline_diff_text() -> str:
-        widget = files.itemWidget(file_item.child(0), 0)
+        child = file_item.child(0)
+        if child is None:
+            return ""
+        widget = files.itemWidget(child, 0)
         return widget.toPlainText() if isinstance(widget, QPlainTextEdit) else ""
 
     qtbot.waitUntil(lambda: "+after" in inline_diff_text(), timeout=5000)

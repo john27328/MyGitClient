@@ -138,6 +138,8 @@ class DiffStudyPanel(QWidget):
 
         for index in range(self.commits.topLevelItemCount()):
             item = self.commits.topLevelItem(index)
+            if item is None:
+                continue
             value = item.data(0, Qt.ItemDataRole.UserRole)
             if isinstance(value, CommitSummary) and value.oid == oid:
                 self.commits.setCurrentItem(item)
@@ -184,6 +186,8 @@ class DiffStudyPanel(QWidget):
     def select_file(self, path: str) -> bool:
         for index in range(self.files.topLevelItemCount()):
             item = self.files.topLevelItem(index)
+            if item is None:
+                continue
             change = item.data(0, Qt.ItemDataRole.UserRole)
             if isinstance(change, CommitFileChange) and change.path == path:
                 self.files.setCurrentItem(item)
@@ -194,7 +198,10 @@ class DiffStudyPanel(QWidget):
     def select_first_file(self) -> bool:
         if self.files.topLevelItemCount() == 0:
             return False
-        self.files.setCurrentItem(self.files.topLevelItem(0))
+        item = self.files.topLevelItem(0)
+        if item is None:
+            return False
+        self.files.setCurrentItem(item)
         return True
 
     def _populate(self, files: tuple[CommitFileChange, ...]) -> None:
