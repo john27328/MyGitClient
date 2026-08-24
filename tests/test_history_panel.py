@@ -170,30 +170,60 @@ def test_history_layout_stacks_commit_details_and_can_focus_diff(
     assert panel.tree.isColumnHidden(4)
     assert panel.tree.isColumnHidden(5)
 
-def test_history_panel_diff_preview_mode_keeps_files_and_shows_only_commit_messages(
-    qtbot: QtBot, tmp_path: Path
-) -> None:
-    settings = QSettings(str(tmp_path / "compact-history.ini"), QSettings.Format.IniFormat)
-    panel = HistoryPanel(settings)
+def test_history_panel_expand_all_expands_every_file_row(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
     qtbot.addWidget(panel)
+    commit = _commit("head", "Head commit", "root")
+    panel.show_page(CommitPage(Path("repository"), (commit,), 0, False))
+    panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+    changes = (CommitFileChange("M", "a.py"), CommitFileChange("M", "b.py"))
+    panel.show_files(CommitFilesSnapshot(Path("repository"), commit.oid, changes))
 
-    panel.set_diff_preview_mode(True)
+    assert panel.expand_all_button.isVisible()
+    assert panel.expand_all_button.text() == "Expand All"
 
-    assert panel.diff_preview_mode
-    assert panel.refs_panel.isHidden()
-    assert not panel.details.isHidden()
-    assert panel.details_label.isHidden()
-    assert not panel.files.isHidden()
-    assert not panel.tree.isColumnHidden(2)
-    assert panel.tree.isColumnHidden(0)
-    assert panel.tree.isColumnHidden(1)
-    assert panel.tree.isColumnHidden(3)
-    assert panel.tree.isColumnHidden(4)
-    assert panel.tree.isColumnHidden(5)
-    panel.set_diff_preview_mode(False)
-    assert not panel.diff_preview_mode
-    assert not panel.refs_panel.isHidden()
-    assert not panel.details_label.isHidden()
+    requested: list[object] = []
+    panel.file_diff_requested.connect(requested.append)
+    panel.expand_all_button.click()
+
+    assert all(panel.files.topLevelItem(i).isExpanded() for i in range(2))
+    assert [change.path for change in requested] == ["a.py", "b.py"]
+    assert panel.expand_all_button.text() == "Collapse All"
+
+    panel.expand_all_button.click()
+    assert not any(panel.files.topLevelItem(i).isExpanded() for i in range(2))
+    assert panel.expand_all_button.text() == "Expand All"
+
+
+def test_history_panel_clicking_a_file_toggles_its_inline_diff(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    commit = _commit("head", "Head commit", "root")
+    panel.show_page(CommitPage(Path("repository"), (commit,), 0, False))
+    panel.tree.setCurrentItem(panel.tree.topLevelItem(0))
+    change = CommitFileChange("M", "a.py")
+    panel.show_files(CommitFilesSnapshot(Path("repository"), commit.oid, (change,)))
+    item = panel.files.topLevelItem(0)
+    assert item is not None
+
+    requested: list[object] = []
+    panel.file_diff_requested.connect(requested.append)
+    panel.files.itemClicked.emit(item, 0)
+
+    assert item.isExpanded()
+    assert requested == [change]
+
+    from mygitclient.git.models import DiffLine, UnifiedDiff
+
+    diff = UnifiedDiff("a.py", False, (DiffLine("+new", "addition", None, 1),))
+    panel.show_inline_diff("a.py", diff)
+
+    cancelled: list[object] = []
+    panel.file_diff_cancelled.connect(cancelled.append)
+    panel.files.itemClicked.emit(item, 0)
+
+    assert not item.isExpanded()
+    assert item.childCount() == 0
 
 
 def test_history_panel_persists_moved_commit_columns(qtbot: QtBot, tmp_path: Path) -> None:

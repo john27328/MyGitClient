@@ -129,13 +129,6 @@ class DiffView(QWidget):
         self.git_state_badge = QLabel()
         self.git_state_badge.setObjectName("diffGitStateBadge")
         self.git_state_badge.hide()
-        self.close_button = QToolButton()
-        self.close_button.setObjectName("diffCloseButton")
-        self.close_button.setText("\u00d7")
-        self.close_button.setToolTip("Close diff (Esc)")
-        self.close_button.clicked.connect(self.close_requested)
-        self.close_button.hide()
-
         self.file_header_container = QWidget()
         self.file_header_container.setObjectName("diffFileHeaderContainer")
         file_header_layout = QHBoxLayout(self.file_header_container)
@@ -143,7 +136,6 @@ class DiffView(QWidget):
         file_header_layout.setSpacing(6)
         file_header_layout.addWidget(self.file_header, 1)
         file_header_layout.addWidget(self.git_state_badge)
-        file_header_layout.addWidget(self.close_button)
         self.file_header_container.hide()
 
         self.gutter = DiffGutter()
@@ -595,7 +587,6 @@ class DiffView(QWidget):
         self.git_state_badge.clear()
         self.git_state_badge.hide()
         self.file_header_container.hide()
-        self.close_button.hide()
         for button in (
             self.stage_button,
             self.stash_button,
@@ -615,9 +606,6 @@ class DiffView(QWidget):
         self.diff.setExtraSelections([])
         self.side_old.setExtraSelections([])
         self.side_new.setExtraSelections([])
-
-    def set_close_available(self, available: bool) -> None:
-        self.close_button.setVisible(available and self.current_diff is not None)
 
     def render_selection(self) -> None:
         diff = self.current_diff

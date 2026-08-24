@@ -103,6 +103,7 @@ from mygitclient.theme import Theme
 from mygitclient.ui.changes_panel import ChangesPanel
 from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.conflict_editor import ConflictEditor
+from mygitclient.ui.diff_study_panel import DiffStudyPanel
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.home_panel import HomePanel
@@ -123,6 +124,13 @@ from mygitclient.workspace import (
     WorkspaceManager,
     find_repository_root,
 )
+
+TAB_CHANGES = 0
+TAB_HISTORY = 1
+TAB_DIFF = 2
+
+INLINE_DIFF_CONCURRENCY = 4
+"""How many inline diffs may be read at once before the rest wait their turn."""
 
 
 class MainWindow(QMainWindow):
@@ -167,7 +175,10 @@ class MainWindow(QMainWindow):
         self._repository_operation: RepositoryOperation | None = None
         self._interactive_rebase_pending = False
         self._rewrite_recovery_head = ""
-        self._commit_diff_visible = False
+        self._inline_diff_queue: list[CommitFileChange] = []
+        self._inline_diff_wanted: dict[str, CommitFileChange] = {}
+        self._inline_diff_inflight: set[str] = set()
+        self._pending_study_path = ""
         self._generated_commit_message = ""
         self._generated_commit_description = ""
         self._pre_amend_message = ""
@@ -276,12 +287,12 @@ class MainWindow(QMainWindow):
         self._history_panel.cherry_pick_requested.connect(self._preview_cherry_pick)
         self._history_panel.revert_requested.connect(self._preview_revert)
         self._history_panel.checkout_commit_requested.connect(self._checkout_commit)
-        self._history_panel.file_selected.connect(self._history_file_selected)
-        self._history_panel.stash_file_selected.connect(self._history_stash_file_selected)
+        # Single-click selection in History only expands an inline diff (see
+        # file_diff_requested below) — it no longer drives the shared DiffView, so
+        # file_selected/stash_file_selected/comparison_file_selected go unwired here.
         self._history_panel.file_open_requested.connect(self._open_history_file)
         self._history_panel.file_reveal_requested.connect(self._reveal_history_file)
         self._history_panel.file_restore_requested.connect(self._restore_history_file)
-        self._history_panel.comparison_file_selected.connect(self._history_comparison_file_selected)
         refs_panel = self._history_panel.refs_panel
         refs_panel.refs_selected.connect(self._history_refs_selected)
         refs_panel.checkout_requested.connect(self._checkout_branch)
@@ -306,10 +317,26 @@ class MainWindow(QMainWindow):
         refs_panel.stash_view_requested.connect(self._view_stash)
         refs_panel.repository_requested.connect(self._open_linked_repository)
 
+        self._history_panel.file_diff_requested.connect(self._history_file_diff_requested)
+        self._history_panel.file_diff_cancelled.connect(self._history_file_diff_cancelled)
+        self._history_panel.expand_all_truncated.connect(self._history_expand_all_truncated)
+        self._history_panel.study_file_requested.connect(self._study_file)
+        self._history_panel.study_commit_requested.connect(self._study_commit)
+
+        self._diff_study_panel = DiffStudyPanel(self._settings)
+        self._diff_study_panel.load_more_requested.connect(self._load_more_history)
+        self._diff_study_panel.commit_selected.connect(self._history_commit_selected)
+        self._diff_study_panel.file_selected.connect(self._history_file_selected)
+        self._diff_study_panel.stash_file_selected.connect(self._history_stash_file_selected)
+        self._diff_study_panel.comparison_file_selected.connect(
+            self._history_comparison_file_selected
+        )
+
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
         self._workspace_tabs.addTab(self._changes_container, "Changes")
         self._workspace_tabs.addTab(self._history_panel, "History")
+        self._workspace_tabs.addTab(self._diff_study_panel, "Diff")
         self._workspace_tabs.setMinimumWidth(360)
         self._workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
         self._operation_banner = QFrame()
@@ -368,15 +395,15 @@ class MainWindow(QMainWindow):
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
         self._diff_view.selection_changed.connect(self._update_selection_actions)
         self._diff_view.context_requested.connect(self._diff_context_changed)
-        self._diff_view.close_requested.connect(self._close_history_diff)
+        self._diff_view.close_requested.connect(self._leave_diff_tab)
         self._diff_view.stage_requested.connect(self._stage_checked_changes)
         self._diff_view.stash_requested.connect(self._stash_checked_changes)
         self._diff_view.unstage_requested.connect(self._unstage_checked_changes)
         self._diff_view.discard_requested.connect(self._discard_checked_changes)
         self._close_diff_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        self._close_diff_shortcut.setObjectName("closeHistoryDiffShortcut")
-        self._close_diff_shortcut.activated.connect(self._close_history_diff)
-        self._diff_context_lines = 3
+        self._close_diff_shortcut.setObjectName("leaveDiffTabShortcut")
+        self._close_diff_shortcut.activated.connect(self._leave_diff_tab)
+        self._diff_context_lines = self._read_int_setting("diff/contextLines", 3)
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
         self._wrap_button.toggled.connect(self._diff_wrap_changed)
         self._whitespace_button.setChecked(self._read_bool_setting("diff/showWhitespace"))
@@ -409,6 +436,15 @@ class MainWindow(QMainWindow):
     def _read_bool_setting(self, key: str) -> bool:
         value = self._settings.value(key, False)
         return value is True or value == "true" or value == 1
+
+    def _read_int_setting(self, key: str, fallback: int) -> int:
+        value = self._settings.value(key, fallback)
+        if isinstance(value, (int, str)):
+            try:
+                return max(0, int(value))
+            except ValueError:
+                return fallback
+        return fallback
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -859,7 +895,7 @@ class MainWindow(QMainWindow):
         self._update_github_actions()
         self._repository_operation = None
         self._operation_banner.hide()
-        self._commit_diff_visible = False
+        self._reset_inline_diffs()
         self._workspace.set_last_repository(repository)
         self._repositories_panel.select_repository(repository)
         if remember:
@@ -870,6 +906,7 @@ class MainWindow(QMainWindow):
         self._changes.clear()
         self._history_repository = None
         self._history_panel.reset()
+        self._diff_study_panel.clear_commits()
         self._history_refs = ()
         self._diff_view.reset()
         self._conflict_editor.clear()
@@ -903,29 +940,23 @@ class MainWindow(QMainWindow):
         if diff_container is None:
             return
         repository = getattr(self, "_repository", None)
-        commit_diff_visible = getattr(self, "_commit_diff_visible", False)
-        showing_history = index == 1
-        show_diff = repository is not None and (not showing_history or commit_diff_visible)
-        diff_container.setVisible(show_diff)
-        self._history_panel.set_diff_preview_mode(showing_history and commit_diff_visible)
-        if showing_history:
-            if commit_diff_visible:
-                self._apply_history_splitter_sizes()
-                self._history_panel.set_expanded_layout(False)
-            else:
-                available = max(
-                    self._splitter.width() - self._repositories_panel.minimumWidth(), 600
-                )
-                self._splitter.setSizes([220, 0, available, 0])
-                self._history_panel.set_expanded_layout(True)
+        # History reads its diffs inline, so it is the one tab that gives the pane away.
+        diff_container.setVisible(repository is not None and index != TAB_HISTORY)
+        if repository is not None:
+            self._settings.setValue("workspace/activeTab", index)
+        if index == TAB_HISTORY:
+            available = max(self._splitter.width() - self._repositories_panel.minimumWidth(), 600)
+            self._splitter.setSizes([220, 0, available, 0])
+            self._history_panel.set_expanded_layout(True)
+        elif index == TAB_DIFF and repository is not None:
+            self._history_panel.set_expanded_layout(False)
+            self._apply_study_splitter_sizes()
         elif repository is not None:
-            self._commit_diff_visible = False
             self._history_panel.set_expanded_layout(False)
             self._restore_workspace_splitter_sizes()
 
-    def _apply_history_splitter_sizes(self) -> None:
-        key = "history/mainSplitterSizes"
-        saved: object = self._settings.value(key)
+    def _apply_study_splitter_sizes(self) -> None:
+        saved: object = self._settings.value("diff/studyMainSplitterSizes")
         if isinstance(saved, list):
             items = cast(list[object], saved)
             sizes = [item for item in items if isinstance(item, int)]
@@ -935,15 +966,15 @@ class MainWindow(QMainWindow):
                 self._splitter.setSizes(sizes)
                 return
         available = max(self._splitter.width(), 900)
-        history_width = 390 if self._history_panel.diff_preview_mode else 650
-        diff_width = max(available - history_width, 500)
-        self._splitter.setSizes([0, 0, history_width, diff_width])
+        study_width = 390
+        diff_width = max(available - study_width, 500)
+        self._splitter.setSizes([0, 0, study_width, diff_width])
 
     @Slot(int, int)
     def _main_splitter_moved(self, _position: int, _index: int) -> None:
-        if self._workspace_tabs.currentIndex() != 1 or not self._commit_diff_visible:
+        if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
-        self._settings.setValue("history/mainSplitterSizes", self._splitter.sizes())
+        self._settings.setValue("diff/studyMainSplitterSizes", self._splitter.sizes())
 
     @Slot()
     def _load_more_history(self) -> None:
@@ -983,6 +1014,7 @@ class MainWindow(QMainWindow):
             self._git.request_ref_comparison(self._repository, refs[0], refs[1])
         else:
             self._history_panel.clear_comparison()
+            self._diff_study_panel.clear_comparison()
 
     @Slot(object)
     def _show_history(self, value: object) -> None:
@@ -993,6 +1025,7 @@ class MainWindow(QMainWindow):
         self._history_runner = None
         self._history_repository = value.repository
         self._history_panel.show_page(value)
+        self._diff_study_panel.show_page(value)
         count = self._history_panel.commit_count
         self._status_label.setText(f"Loaded {count} commits")
 
@@ -1163,10 +1196,15 @@ class MainWindow(QMainWindow):
             self._amend_files_loaded = True
             self._refresh_amend_tree_if_ready(value.repository)
             return
-        commit = self._history_panel.selected_commit
-        if commit is None or commit.oid != value.commit_oid:
+        history_commit = self._history_panel.selected_commit
+        study_commit = self._diff_study_panel.selected_commit
+        if (history_commit is None or history_commit.oid != value.commit_oid) and (
+            study_commit is None or study_commit.oid != value.commit_oid
+        ):
             return
         self._history_panel.show_files(value)
+        self._diff_study_panel.show_files(value)
+        self._apply_pending_study_selection()
         self._status_label.setText(f"{len(value.files)} file(s) changed in {value.commit_oid[:8]}")
 
     @Slot(object, object)
@@ -1188,12 +1226,148 @@ class MainWindow(QMainWindow):
             context_lines=self._diff_context_lines,
         )
 
+    # -- Inline history diffs -----------------------------------------------
+
+    def _reset_inline_diffs(self) -> None:
+        self._inline_diff_queue.clear()
+        self._inline_diff_wanted.clear()
+        self._inline_diff_inflight.clear()
+
+    @Slot(object)
+    def _history_file_diff_requested(self, value: object) -> None:
+        if not isinstance(value, CommitFileChange) or self._repository is None:
+            return
+        if value.path in self._inline_diff_wanted:
+            return
+        self._inline_diff_wanted[value.path] = value
+        self._inline_diff_queue.append(value)
+        self._pump_inline_diffs()
+
+    @Slot(object)
+    def _history_file_diff_cancelled(self, value: object) -> None:
+        if not isinstance(value, CommitFileChange):
+            return
+        self._inline_diff_wanted.pop(value.path, None)
+        self._inline_diff_queue = [
+            change for change in self._inline_diff_queue if change.path != value.path
+        ]
+
+    @Slot(int, int)
+    def _history_expand_all_truncated(self, shown: int, total: int) -> None:
+        self._status_label.setText(
+            f"Expanded the first {shown} of {total} files — collapse some to read the rest"
+        )
+
+    def _pump_inline_diffs(self) -> None:
+        """Read queued inline diffs a few at a time so Expand All stays responsive."""
+
+        while (
+            self._inline_diff_queue and len(self._inline_diff_inflight) < INLINE_DIFF_CONCURRENCY
+        ):
+            change = self._inline_diff_queue.pop(0)
+            if change.path not in self._inline_diff_wanted:
+                continue
+            if not self._request_inline_diff(change):
+                self._inline_diff_wanted.pop(change.path, None)
+                self._history_panel.inline_diff_failed(
+                    change.path, f"No diff available for {change.path}."
+                )
+                continue
+            self._inline_diff_inflight.add(change.path)
+
+    def _request_inline_diff(self, change: CommitFileChange) -> bool:
+        repository = self._repository
+        if repository is None:
+            return False
+        if len(self._history_refs) == 2:
+            base_ref, compare_ref = self._history_refs
+            self._git.request_ref_comparison_diff(
+                repository,
+                base_ref,
+                compare_ref,
+                change.path,
+                ignore_whitespace=self._ignore_whitespace_button.isChecked(),
+                context_lines=self._diff_context_lines,
+            )
+            return True
+        stash = self._history_panel.selected_stash
+        if stash is not None:
+            self._git.request_stash_diff(repository, stash, change.path)
+            return True
+        commit = self._history_panel.selected_commit
+        if commit is None:
+            return False
+        self._git.request_commit_diff(
+            repository,
+            commit.oid,
+            change.path,
+            parent_oid=commit.parent_oids[0] if commit.parent_oids else None,
+            ignore_whitespace=self._ignore_whitespace_button.isChecked(),
+            context_lines=self._diff_context_lines,
+        )
+        return True
+
+    def _deliver_inline_diff(self, diff: UnifiedDiff) -> bool:
+        """Route a diff to its expanded history row; returns whether it was consumed."""
+
+        if diff.path not in self._inline_diff_inflight:
+            return False
+        self._inline_diff_inflight.discard(diff.path)
+        wanted = self._inline_diff_wanted.pop(diff.path, None)
+        if wanted is not None:
+            self._history_panel.show_inline_diff(diff.path, diff)
+        self._pump_inline_diffs()
+        return True
+
+    def _reload_inline_diffs(self) -> None:
+        paths = self._history_panel.expanded_file_paths()
+        if not paths:
+            return
+        self._reset_inline_diffs()
+        for path in paths:
+            self._history_panel.request_inline_reload(path)
+
+    @Slot(object)
+    def _study_file(self, value: object) -> None:
+        """Open the Diff tab on the file the user double-clicked in History."""
+
+        if not isinstance(value, CommitFileChange):
+            return
+        self._mirror_history_context()
+        self._workspace_tabs.setCurrentIndex(TAB_DIFF)
+        if not self._diff_study_panel.select_file(value.path):
+            self._pending_study_path = value.path
+
+    @Slot(object)
+    def _study_commit(self, value: object) -> None:
+        if not isinstance(value, CommitSummary):
+            return
+        self._workspace_tabs.setCurrentIndex(TAB_DIFF)
+        self._pending_study_path = ""
+        self._diff_study_panel.select_commit(value.oid)
+
+    def _mirror_history_context(self) -> None:
+        """Point the Diff tab at whatever History is currently showing."""
+
+        commit = self._history_panel.selected_commit
+        if commit is not None:
+            self._diff_study_panel.select_commit(commit.oid)
+
+    def _apply_pending_study_selection(self) -> None:
+        """Select the double-clicked file once its commit's file list has arrived."""
+
+        if not self._pending_study_path:
+            return
+        if self._diff_study_panel.select_file(self._pending_study_path):
+            self._pending_study_path = ""
+
     @Slot(object)
     def _view_stash(self, value: object) -> None:
         if self._repository is None or not isinstance(value, StashInfo):
             return
-        self._workspace_tabs.setCurrentIndex(1)
+        self._workspace_tabs.setCurrentIndex(TAB_HISTORY)
         self._history_panel.show_stash(value)
+        self._diff_study_panel.show_stash(value)
         self._diff_view.reset()
         self._status_label.setText(f"Reading {value.ref}…")
         self._git.request_stash_contents(self._repository, value)
@@ -1203,6 +1377,7 @@ class MainWindow(QMainWindow):
         if not isinstance(value, StashFilesSnapshot) or value.repository != self._repository:
             return
         self._history_panel.show_stash_files(value)
+        self._diff_study_panel.show_stash_files(value)
         self._status_label.setText(f"{len(value.files)} file(s) in {value.stash.ref}")
 
     @Slot(object, object)
@@ -1218,11 +1393,11 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _show_stash_diff(self, value: object) -> None:
-        if (
-            not isinstance(value, StashDiffSnapshot)
-            or value.repository != self._repository
-            or self._workspace_tabs.currentIndex() != 1
-        ):
+        if not isinstance(value, StashDiffSnapshot) or value.repository != self._repository:
+            return
+        if self._deliver_inline_diff(value.diff):
+            return
+        if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
         blocker = QSignalBlocker(self._diff_version)
         self._diff_version.clear()
@@ -1337,6 +1512,8 @@ class MainWindow(QMainWindow):
         ):
             return
         self._history_panel.show_comparison(value)
+        self._diff_study_panel.show_comparison(value)
+        self._apply_pending_study_selection()
         self._status_label.setText(f"{len(value.files)} file(s) differ between the selected refs")
 
     @Slot(object)
@@ -1345,8 +1522,11 @@ class MainWindow(QMainWindow):
             not isinstance(value, RefComparisonDiffSnapshot)
             or value.repository != self._repository
             or self._history_refs != (value.base_ref, value.compare_ref)
-            or self._workspace_tabs.currentIndex() != 1
         ):
+            return
+        if self._deliver_inline_diff(value.diff):
+            return
+        if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
         blocker = QSignalBlocker(self._diff_version)
         self._diff_version.clear()
@@ -1361,21 +1541,18 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
-        self._diff_view.set_close_available(True)
         self._diff_container.show()
-        self._commit_diff_visible = True
-        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
         self._status_label.setText(f"Showing comparison diff for {value.diff.path}")
 
     @Slot(object)
     def _show_commit_diff(self, value: object) -> None:
-        if (
-            not isinstance(value, CommitDiffSnapshot)
-            or value.repository != self._repository
-            or self._workspace_tabs.currentIndex() != 1
-        ):
+        if not isinstance(value, CommitDiffSnapshot) or value.repository != self._repository:
             return
-        commit = self._history_panel.selected_commit
+        if self._deliver_inline_diff(value.diff):
+            return
+        if self._workspace_tabs.currentIndex() != TAB_DIFF:
+            return
+        commit = self._diff_study_panel.selected_commit
         if commit is None or commit.oid != value.commit_oid:
             return
         blocker = QSignalBlocker(self._diff_version)
@@ -1391,12 +1568,9 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
-        self._diff_view.set_close_available(True)
         self._diff_view_mode.show()
         self._diff.show()
         self._diff_container.show()
-        self._commit_diff_visible = True
-        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
         self._status_label.setText(f"Showing {value.diff.path} from {value.commit_oid[:8]}")
 
     @Slot(object)
@@ -3447,22 +3621,21 @@ class MainWindow(QMainWindow):
                 diff_value.staged and not file.has_worktree_change and not file.unmerged
             ),
         )
-        self._diff_view.set_close_available(False)
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
 
     @Slot()
-    def _close_history_diff(self) -> None:
-        if self._workspace_tabs.currentIndex() != 1 or not self._commit_diff_visible:
+    def _leave_diff_tab(self) -> None:
+        """Escape steps back to History rather than closing anything."""
+
+        if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
-        self._commit_diff_visible = False
-        self._diff_view.clear_display()
-        self._workspace_tab_changed(self._workspace_tabs.currentIndex())
+        self._workspace_tabs.setCurrentIndex(TAB_HISTORY)
         target = self._history_panel.files
         if target.topLevelItemCount() == 0:
             target = self._history_panel.tree
         target.setFocus()
-        self._status_label.setText("Closed commit diff")
+        self._status_label.setText("Back to history")
 
     def _sync_selected_file_checkbox(self) -> None:
         if self._amend.isChecked():
@@ -3551,29 +3724,25 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _diff_ignore_whitespace_changed(self, enabled: bool) -> None:
         self._settings.setValue("diff/ignoreWhitespace", enabled)
-        if self._workspace_tabs.currentIndex() != 1:
-            self._request_diff(silent=False)
-            return
-        item = self._history_panel.files.currentItem()
-        if item is None:
-            return
-        file = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(file, CommitFileChange):
-            return
-        if len(self._history_refs) == 2:
-            self._history_comparison_file_selected(*self._history_refs, file)
-            return
-        commit = self._history_panel.selected_commit
-        if commit is not None:
-            self._history_file_selected(commit, file)
+        self._refresh_current_diff()
 
     @Slot(int)
     def _diff_context_changed(self, context_lines: int) -> None:
         self._diff_context_lines = context_lines
-        if self._workspace_tabs.currentIndex() != 1:
+        self._settings.setValue("diff/contextLines", context_lines)
+        self._refresh_current_diff()
+
+    def _refresh_current_diff(self) -> None:
+        """Re-read whichever diffs the active tab is showing."""
+
+        index = self._workspace_tabs.currentIndex()
+        if index == TAB_CHANGES:
             self._request_diff(silent=False)
             return
-        item = self._history_panel.files.currentItem()
+        if index == TAB_HISTORY:
+            self._reload_inline_diffs()
+            return
+        item = self._diff_study_panel.files.currentItem()
         if item is None:
             return
         file = item.data(0, Qt.ItemDataRole.UserRole)
@@ -3582,7 +3751,7 @@ class MainWindow(QMainWindow):
         if len(self._history_refs) == 2:
             self._history_comparison_file_selected(*self._history_refs, file)
             return
-        commit = self._history_panel.selected_commit
+        commit = self._diff_study_panel.selected_commit
         if commit is not None:
             self._history_file_selected(commit, file)
 

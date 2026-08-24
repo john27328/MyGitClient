@@ -10,6 +10,7 @@ from PySide6.QtCore import (
     QPersistentModelIndex,
     QPoint,
     QSettings,
+    QSize,
     Qt,
     Signal,
     Slot,
@@ -45,11 +46,16 @@ from mygitclient.git.models import (
     StashFilesSnapshot,
     StashInfo,
     TagsSnapshot,
+    UnifiedDiff,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
+from mygitclient.ui.inline_diff import InlineDiffWidget
 from mygitclient.ui.refs_panel import RefsPanel
 
 BADGES_ROLE = int(Qt.ItemDataRole.UserRole) + 3
+
+MAXIMUM_EXPAND_ALL = 50
+"""Expand All stops here so a thousand-file commit cannot stall on Git reads."""
 
 
 class RefBadgesDelegate(QStyledItemDelegate):
@@ -113,6 +119,11 @@ class HistoryPanel(QWidget):
     file_open_requested = Signal(object)
     file_reveal_requested = Signal(object)
     file_restore_requested = Signal(object, object, bool)
+    file_diff_requested = Signal(object)
+    file_diff_cancelled = Signal(object)
+    expand_all_truncated = Signal(int, int)
+    study_file_requested = Signal(object)
+    study_commit_requested = Signal(object)
 
     def __init__(
         self,
@@ -121,7 +132,6 @@ class HistoryPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._settings = settings
-        self._diff_preview_mode = False
         self.tree = QTreeWidget()
         self.tree.setObjectName("historyTree")
         self.tree.setHeaderLabels(["Graph", "Refs", "Description", "Author", "Date", "Commit"])
@@ -143,6 +153,7 @@ class HistoryPanel(QWidget):
         self.tree.setItemDelegateForColumn(0, CommitGraphDelegate(self.tree))
         self.tree.setItemDelegateForColumn(1, RefBadgesDelegate(self.tree))
         self.tree.currentItemChanged.connect(self._commit_changed)
+        self.tree.itemDoubleClicked.connect(self._commit_activated)
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setObjectName("historyFilterEdit")
@@ -175,11 +186,22 @@ class HistoryPanel(QWidget):
         self.details_label.setObjectName("commitDetailsLabel")
         self.details_label.setWordWrap(True)
         self.details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.expand_all_button = QPushButton("Expand All")
+        self.expand_all_button.setObjectName("historyExpandAllButton")
+        self.expand_all_button.setToolTip("Show every changed file's diff inline")
+        self.expand_all_button.clicked.connect(self._toggle_expand_all)
+        self.expand_all_button.hide()
         self.files = QTreeWidget()
         self.files.setObjectName("commitFilesTree")
         self.files.setHeaderLabels(["Status", "File"])
         self.files.setColumnWidth(0, 80)
+        self.files.setUniformRowHeights(False)
+        self.files.setExpandsOnDoubleClick(False)
         self.files.currentItemChanged.connect(self._file_changed)
+        self.files.itemClicked.connect(self._file_clicked)
+        self.files.itemDoubleClicked.connect(self._file_activated)
+        self.files.itemExpanded.connect(self._file_expanded)
+        self.files.itemCollapsed.connect(self._file_collapsed)
         self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files.customContextMenuRequested.connect(self._show_file_context_menu)
         self._comparison_refs: tuple[str, str] | None = None
@@ -190,7 +212,11 @@ class HistoryPanel(QWidget):
         self._branch_point: BranchPointSnapshot | None = None
         details_layout = QVBoxLayout(self.details)
         details_layout.setContentsMargins(0, 8, 0, 0)
-        details_layout.addWidget(self.details_label)
+        details_header = QHBoxLayout()
+        details_header.setContentsMargins(0, 0, 0, 0)
+        details_header.addWidget(self.details_label, 1)
+        details_header.addWidget(self.expand_all_button, 0, Qt.AlignmentFlag.AlignTop)
+        details_layout.addLayout(details_header)
         details_layout.addWidget(self.files, 1)
 
         self.content_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -279,7 +305,7 @@ class HistoryPanel(QWidget):
     def clear_commits(self) -> None:
         self.filter_edit.clear()
         self.tree.clear()
-        self.files.clear()
+        self._clear_files()
         self.details_label.setText("Select a commit to view its details.")
         self._comparison_refs = None
         self._selected_stash = None
@@ -338,28 +364,173 @@ class HistoryPanel(QWidget):
     def set_expanded_layout(self, expanded: bool) -> None:
         header = self.tree.header()
         header.setStretchLastSection(False)
-        mode = (
-            header.ResizeMode.Stretch
-            if expanded or self._diff_preview_mode
-            else header.ResizeMode.Interactive
-        )
+        mode = header.ResizeMode.Stretch if expanded else header.ResizeMode.Interactive
         header.setSectionResizeMode(2, mode)
 
-    @property
-    def diff_preview_mode(self) -> bool:
-        return self._diff_preview_mode
+    # -- Inline diffs -------------------------------------------------------
 
-    def set_diff_preview_mode(self, active: bool) -> None:
-        if self._diff_preview_mode == active:
+    def _clear_files(self) -> None:
+        """Drop every row, cancelling diffs the rows were still waiting for."""
+
+        for item in self._file_items():
+            if item.isExpanded():
+                self._cancel_pending(item)
+        self.files.clear()
+        self._update_expand_all_button()
+
+    def _add_file_item(self, change: CommitFileChange) -> None:
+        item = QTreeWidgetItem([change.status, change.path])
+        item.setData(0, Qt.ItemDataRole.UserRole, change)
+        if change.original_path is not None:
+            item.setToolTip(1, f"Renamed from {change.original_path}")
+        item.setChildIndicatorPolicy(QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator)
+        self.files.addTopLevelItem(item)
+
+    def _finish_file_list(self) -> None:
+        self.files.resizeColumnToContents(0)
+        self._update_expand_all_button()
+
+    def _file_items(self) -> list[QTreeWidgetItem]:
+        return [
+            item
+            for index in range(self.files.topLevelItemCount())
+            if (item := self.files.topLevelItem(index)) is not None
+        ]
+
+    def _file_change(self, item: QTreeWidgetItem) -> CommitFileChange | None:
+        change = item.data(0, Qt.ItemDataRole.UserRole)
+        return change if isinstance(change, CommitFileChange) else None
+
+    def _inline_widget(self, item: QTreeWidgetItem) -> InlineDiffWidget | None:
+        if item.childCount() == 0:
+            return None
+        child = item.child(0)
+        widget = self.files.itemWidget(child, 0)
+        return widget if isinstance(widget, InlineDiffWidget) else None
+
+    def _size_inline_row(self, item: QTreeWidgetItem, widget: InlineDiffWidget) -> None:
+        if item.childCount() == 0:
             return
-        self._diff_preview_mode = active
-        self.refs_panel.setVisible(not active)
-        self.details_label.setVisible(not active)
-        for column in range(self.tree.columnCount()):
-            self.tree.setColumnHidden(column, active or column in (4, 5))
-        if active:
-            self.tree.setColumnHidden(2, False)
-            self.tree.header().setSectionResizeMode(2, self.tree.header().ResizeMode.Stretch)
+        item.child(0).setSizeHint(0, QSize(widget.width(), widget.height()))
+
+    @Slot(QTreeWidgetItem, int)
+    def _file_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        if self._file_change(item) is None:
+            return
+        item.setExpanded(not item.isExpanded())
+
+    @Slot(QTreeWidgetItem)
+    def _file_expanded(self, item: QTreeWidgetItem) -> None:
+        change = self._file_change(item)
+        if change is None or item.childCount() > 0:
+            return
+        child = QTreeWidgetItem(item)
+        child.setFlags(Qt.ItemFlag.ItemIsEnabled)
+        child.setFirstColumnSpanned(True)
+        widget = InlineDiffWidget(self._settings)
+        widget.set_placeholder(f"Loading diff for {change.path}…")
+        self.files.setItemWidget(child, 0, widget)
+        self._size_inline_row(item, widget)
+        self._update_expand_all_button()
+        self.file_diff_requested.emit(change)
+
+    @Slot(QTreeWidgetItem)
+    def _file_collapsed(self, item: QTreeWidgetItem) -> None:
+        self._cancel_pending(item)
+        item.takeChildren()
+        self._update_expand_all_button()
+
+    def _cancel_pending(self, item: QTreeWidgetItem) -> None:
+        widget = self._inline_widget(item)
+        change = self._file_change(item)
+        if widget is not None and widget.diff is None and change is not None:
+            self.file_diff_cancelled.emit(change)
+
+    def show_inline_diff(self, path: str, diff: UnifiedDiff) -> None:
+        """Fill the expanded row for ``path`` with an already-parsed diff."""
+
+        for item in self._file_items():
+            change = self._file_change(item)
+            if change is None or change.path != path:
+                continue
+            widget = self._inline_widget(item)
+            if widget is None:
+                return
+            widget.set_diff(diff)
+            self._size_inline_row(item, widget)
+            return
+
+    def inline_diff_failed(self, path: str, message: str) -> None:
+        for item in self._file_items():
+            change = self._file_change(item)
+            if change is None or change.path != path:
+                continue
+            widget = self._inline_widget(item)
+            if widget is None:
+                return
+            widget.set_placeholder(message)
+            self._size_inline_row(item, widget)
+            return
+
+    def request_inline_reload(self, path: str) -> None:
+        """Re-read an already-expanded row, e.g. after the context setting changed."""
+
+        for item in self._file_items():
+            change = self._file_change(item)
+            if change is None or change.path != path or not item.isExpanded():
+                continue
+            widget = self._inline_widget(item)
+            if widget is None:
+                return
+            widget.set_placeholder(f"Loading diff for {change.path}…")
+            self._size_inline_row(item, widget)
+            self.file_diff_requested.emit(change)
+            return
+
+    def expanded_file_paths(self) -> tuple[str, ...]:
+        return tuple(
+            change.path
+            for item in self._file_items()
+            if item.isExpanded() and (change := self._file_change(item)) is not None
+        )
+
+    def collapse_all_files(self) -> None:
+        for item in self._file_items():
+            item.setExpanded(False)
+
+    @Slot()
+    def _toggle_expand_all(self) -> None:
+        items = self._file_items()
+        if not items:
+            return
+        if all(item.isExpanded() for item in items):
+            for item in items:
+                item.setExpanded(False)
+            return
+        for item in items[:MAXIMUM_EXPAND_ALL]:
+            item.setExpanded(True)
+        if len(items) > MAXIMUM_EXPAND_ALL:
+            self.expand_all_truncated.emit(MAXIMUM_EXPAND_ALL, len(items))
+
+    def _update_expand_all_button(self) -> None:
+        items = self._file_items()
+        self.expand_all_button.setVisible(bool(items))
+        collapse = bool(items) and all(item.isExpanded() for item in items)
+        self.expand_all_button.setText("Collapse All" if collapse else "Expand All")
+
+    @Slot(QTreeWidgetItem, int)
+    def _file_activated(self, item: QTreeWidgetItem, _column: int) -> None:
+        change = self._file_change(item)
+        if change is None:
+            return
+        item.setExpanded(True)
+        self.study_file_requested.emit(change)
+
+    @Slot(QTreeWidgetItem, int)
+    def _commit_activated(self, item: QTreeWidgetItem, _column: int) -> None:
+        commit = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(commit, CommitSummary):
+            self.study_commit_requested.emit(commit)
 
     @Slot(int, int)
     def _save_splitter_states(self, _position: int, _index: int) -> None:
@@ -391,54 +562,52 @@ class HistoryPanel(QWidget):
         commit = self.selected_commit
         if commit is None or commit.oid != snapshot.commit_oid:
             return
-        self.files.clear()
+        self._clear_files()
         for change in snapshot.files:
-            item = QTreeWidgetItem([change.status, change.path])
-            item.setData(0, Qt.ItemDataRole.UserRole, change)
-            if change.original_path is not None:
-                item.setToolTip(1, f"Renamed from {change.original_path}")
-            self.files.addTopLevelItem(item)
-        self.files.resizeColumnToContents(0)
+            self._add_file_item(change)
+        self._finish_file_list()
 
     def show_stash(self, stash: StashInfo) -> None:
         self._selected_stash = stash
         self._comparison_refs = None
         self.tree.clearSelection()
-        self.files.clear()
+        self._clear_files()
         self.details_label.setText(f"{stash.subject}\n\nStash: {stash.ref}\nCommit: {stash.oid}")
 
     def show_stash_files(self, snapshot: StashFilesSnapshot) -> None:
         if self._selected_stash != snapshot.stash:
             return
-        self.files.clear()
+        self._clear_files()
         for change in snapshot.files:
-            item = QTreeWidgetItem([change.status, change.path])
-            item.setData(0, Qt.ItemDataRole.UserRole, change)
-            self.files.addTopLevelItem(item)
-        self.files.resizeColumnToContents(0)
+            self._add_file_item(change)
+        self._finish_file_list()
 
     def show_comparison(self, snapshot: RefComparisonSnapshot) -> None:
         self._comparison_refs = (snapshot.base_ref, snapshot.compare_ref)
         self._selected_stash = None
         self.tree.clearSelection()
-        self.files.clear()
+        self._clear_files()
         self.details_label.setText(
             f"Comparing {snapshot.base_ref} → {snapshot.compare_ref}\n\n"
             f"{len(snapshot.files)} changed file(s). Select a file to view its diff."
         )
         for change in snapshot.files:
-            item = QTreeWidgetItem([change.status, change.path])
-            item.setData(0, Qt.ItemDataRole.UserRole, change)
-            if change.original_path is not None:
-                item.setToolTip(1, f"Renamed from {change.original_path}")
-            self.files.addTopLevelItem(item)
-        self.files.resizeColumnToContents(0)
+            self._add_file_item(change)
+        self._finish_file_list()
 
     def clear_comparison(self) -> None:
         self._comparison_refs = None
         self._selected_stash = None
-        self.files.clear()
+        self._clear_files()
         self.details_label.setText("Select a commit to view its details.")
+
+    @property
+    def selected_stash(self) -> StashInfo | None:
+        return self._selected_stash
+
+    @property
+    def comparison_refs(self) -> tuple[str, str] | None:
+        return self._comparison_refs
 
     @property
     def selected_commit(self) -> CommitSummary | None:
@@ -525,7 +694,7 @@ class HistoryPanel(QWidget):
             f"Date: {commit.authored_at}\n"
             f"Parents: {parents}"
         )
-        self.files.clear()
+        self._clear_files()
         self.commit_selected.emit(commit)
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)

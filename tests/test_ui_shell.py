@@ -75,7 +75,7 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert window.centralWidget() is not None
     tabs = window.findChild(QTabWidget, "workspaceTabs")
     assert tabs is not None
-    assert tabs.count() == 2
+    assert tabs.count() == 3
     assert not window.windowIcon().isNull()
     toolbar = window.findChild(QToolBar, "repositoryToolbar")
     refresh_action = window.findChild(QAction, "refreshAction")
@@ -664,11 +664,27 @@ def test_selected_commit_shows_details_files_and_diff(
     assert file_item is not None
     assert file_item.text(1) == "tracked.txt"
 
+    # A single click only expands an inline diff in place; the shared diff pane stays
+    # hidden and the History tab stays active.
     files.setCurrentItem(file_item)
+    file_item.setExpanded(True)
+
+    def inline_diff_text() -> str:
+        widget = files.itemWidget(file_item.child(0), 0)
+        return widget.toPlainText() if isinstance(widget, QPlainTextEdit) else ""
+
+    qtbot.waitUntil(lambda: "+after" in inline_diff_text(), timeout=5000)
+    assert "-before" in inline_diff_text()
+    assert diff_container.isHidden()
+    assert tabs.currentIndex() == 1
+
+    # Double-clicking the file opens the Diff tab on this commit and file, using the
+    # shared diff pane.
+    files.itemDoubleClicked.emit(file_item, 1)
+    assert tabs.currentIndex() == 2
     qtbot.waitUntil(lambda: "+after" in diff.toPlainText(), timeout=5000)
     assert "-before" in diff.toPlainText()
     assert not diff_container.isHidden()
-    assert tabs.currentIndex() == 1
     window.close()
 
 

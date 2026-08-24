@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QStackedWidget,
+    QTabWidget,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -22,11 +23,11 @@ from mygitclient.git.models import FileStatus
 from mygitclient.theme import Theme
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_overview import DiffOverview
-from mygitclient.ui.main_window import MainWindow
+from mygitclient.ui.main_window import TAB_DIFF, TAB_HISTORY, MainWindow
 
 
-class HistoryDiffWindow(MainWindow):
-    def prepare_history_diff(
+class DiffTabWindow(MainWindow):
+    def prepare_diff_tab(
         self,
     ) -> tuple[QTreeWidget, QTreeWidget, QPlainTextEdit, QTreeWidgetItem]:
         history = self._history_panel.tree
@@ -35,39 +36,35 @@ class HistoryDiffWindow(MainWindow):
         files.addTopLevelItem(QTreeWidgetItem(["M", "file.py"]))
         history.addTopLevelItem(commit_item)
         history.setCurrentItem(commit_item)
-        self._workspace_tabs.setCurrentIndex(1)
-        self._commit_diff_visible = True
+        self._workspace_tabs.setCurrentIndex(TAB_DIFF)
         self._diff_view.show()
         self._diff_view.diff.show()
         self._diff_container.show()
         return history, files, self._diff_view.diff, commit_item
 
     @property
-    def commit_diff_visible(self) -> bool:
-        return self._commit_diff_visible
-
-    @property
     def diff_container(self) -> QStackedWidget:
         return self._diff_container
 
 
-def test_escape_closes_only_history_diff_and_returns_focus(
+def test_escape_returns_from_diff_tab_to_history_and_focuses_files(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
     settings = QSettings(str(tmp_path / "close-history-diff.ini"), QSettings.Format.IniFormat)
-    window = HistoryDiffWindow(settings, Theme.SYSTEM)
+    window = DiffTabWindow(settings, Theme.SYSTEM)
     qtbot.addWidget(window)
-    history, files, diff, commit_item = window.prepare_history_diff()
+    history, files, diff, commit_item = window.prepare_diff_tab()
     window.show()
     diff.setFocus()
     qtbot.waitUntil(diff.hasFocus)
 
     QTest.keyClick(diff, Qt.Key.Key_Escape)
 
-    assert not window.commit_diff_visible
+    tabs = window.findChild(QTabWidget, "workspaceTabs")
+    assert tabs is not None
+    assert tabs.currentIndex() == TAB_HISTORY
     assert history.currentItem() is commit_item
     assert files.hasFocus()
-    assert not window.diff_container.isVisible()
     window.close()
 
 
