@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QDateTime, QSettings, Qt
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,6 +40,7 @@ from mygitclient.theme import Theme
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.main_window import MainWindow, push_requires_rewrite, sync_action_labels
 from mygitclient.ui.refs_panel import RefsPanel
+from mygitclient.ui.review_controller import review_commit_choice_label
 
 
 class _MemoryTokenBackend:
@@ -193,6 +194,24 @@ def test_start_review_asks_for_source_and_target_branch(
     window.start_review()
 
     assert captured == [(tmp_path, "refs/heads/develop", "refs/heads/master")]
+
+
+def test_review_boundary_label_includes_commit_date_and_time() -> None:
+    commit = CommitSummary(
+        "0123456789abcdef",
+        (),
+        "Test Author",
+        "author@example.invalid",
+        "2026-08-27T15:42:11+03:00",
+        "Review this change",
+    )
+
+    local_time = QDateTime.fromString(
+        "2026-08-27T15:42:11+03:00", Qt.DateFormat.ISODate
+    ).toLocalTime()
+    assert review_commit_choice_label(commit) == (
+        f"01234567 · {local_time.toString('dd.MM.yyyy HH:mm')} · Review this change"
+    )
 
 
 def test_saved_github_token_is_resolved_only_for_https_remote(tmp_path: Path) -> None:

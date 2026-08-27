@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pytestqt.qtbot import QtBot
 
-from mygitclient.git.models import CommitFileChange
+from mygitclient.git.models import CommitFileChange, CommitSummary
 from mygitclient.ui.review_panel import ReviewPanel
 from mygitclient.workspace.reviews import ReviewSession
 
@@ -26,3 +26,47 @@ def test_review_group_expansion_survives_file_list_refresh(qtbot: QtBot, tmp_pat
     refreshed_pending = panel.files.topLevelItem(0)
     assert refreshed_pending is not None
     assert not refreshed_pending.isExpanded()
+
+
+def test_review_boundaries_are_shown_with_local_date_and_time(qtbot: QtBot) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    commits = (
+        CommitSummary(
+            "a" * 40,
+            (),
+            "Author",
+            "author@example.invalid",
+            "2026-08-27T12:30:00+03:00",
+            "First boundary",
+        ),
+        CommitSummary(
+            "b" * 40,
+            (),
+            "Author",
+            "author@example.invalid",
+            "2026-08-27T13:30:00+03:00",
+            "Second boundary",
+        ),
+    )
+    selected: list[object] = []
+    panel.boundary_selected.connect(selected.append)
+
+    panel.show_boundaries(commits, commits[0].oid)
+
+    assert panel.boundary_combo.count() == 2
+    assert "T" not in panel.boundary_combo.itemText(0)
+    panel.boundary_combo.setCurrentIndex(1)
+    assert selected == [commits[1]]
+
+
+def test_review_panel_can_mark_the_current_file(qtbot: QtBot) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    requested: list[bool] = []
+    panel.mark_file_requested.connect(lambda: requested.append(True))
+
+    panel.set_mark_file_enabled(True)
+    panel.mark_file_button.click()
+
+    assert requested == [True]

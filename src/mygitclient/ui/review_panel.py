@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import QDateTime, QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -12,7 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mygitclient.git.models import CommitFileChange
+from mygitclient.git.models import CommitFileChange, CommitSummary
 from mygitclient.workspace.reviews import ReviewSession
 
 
@@ -23,7 +24,8 @@ class ReviewPanel(QWidget):
     delete_requested = Signal(object)
     session_selected = Signal(object)
     file_selected = Signal(object)
-    mark_selected_requested = Signal()
+    mark_file_requested = Signal()
+    boundary_selected = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -56,12 +58,22 @@ class ReviewPanel(QWidget):
         sessions_layout.addLayout(sessions_header)
         sessions_layout.addWidget(self.sessions, 1)
 
-        self.context = QLabel(
-            "Select block checkboxes in the diff, then mark the selected blocks reviewed."
-        )
+        self.context = QLabel("Mark each file reviewed. Any later change returns it to review.")
         self.context.setObjectName("reviewContextLabel")
         self.context.setWordWrap(True)
         self.context.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        self.boundary_label = QLabel("Start reviewing from:")
+        self.boundary_label.setObjectName("reviewBoundaryLabel")
+        self.boundary_combo = QComboBox()
+        self.boundary_combo.setObjectName("reviewBoundaryCombo")
+        self.boundary_combo.currentIndexChanged.connect(self._boundary_changed)
+        self.boundary_label.hide()
+        self.boundary_combo.hide()
+        boundary_layout = QHBoxLayout()
+        boundary_layout.setContentsMargins(0, 0, 0, 0)
+        boundary_layout.addWidget(self.boundary_label)
+        boundary_layout.addWidget(self.boundary_combo, 1)
 
         self.files = QTreeWidget()
         self.files.setObjectName("reviewFilesTree")
@@ -72,17 +84,18 @@ class ReviewPanel(QWidget):
         self.files.itemExpanded.connect(self._group_expanded)
         self.files.itemCollapsed.connect(self._group_collapsed)
 
-        self.mark_selected_button = QPushButton("Mark selected blocks reviewed")
-        self.mark_selected_button.setObjectName("markReviewBlocksButton")
-        self.mark_selected_button.setEnabled(False)
-        self.mark_selected_button.clicked.connect(self.mark_selected_requested)
+        self.mark_file_button = QPushButton("Mark file reviewed")
+        self.mark_file_button.setObjectName("markReviewFileButton")
+        self.mark_file_button.setEnabled(False)
+        self.mark_file_button.clicked.connect(self.mark_file_requested)
 
         files_container = QWidget()
         files_layout = QVBoxLayout(files_container)
         files_layout.setContentsMargins(0, 0, 0, 0)
         files_layout.addWidget(self.context)
+        files_layout.addLayout(boundary_layout)
         files_layout.addWidget(self.files, 1)
-        files_layout.addWidget(self.mark_selected_button)
+        files_layout.addWidget(self.mark_file_button)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.setObjectName("reviewSplitter")
@@ -143,8 +156,34 @@ class ReviewPanel(QWidget):
         self._states[path] = (total, checked)
         self._render_files()
 
-    def set_mark_selected_enabled(self, enabled: bool) -> None:
-        self.mark_selected_button.setEnabled(enabled)
+    def set_mark_file_enabled(self, enabled: bool) -> None:
+        self.mark_file_button.setEnabled(enabled)
+
+    def show_boundaries(
+        self, commits: tuple[CommitSummary, ...], selected_oid: str
+    ) -> None:
+        blocker = QSignalBlocker(self.boundary_combo)
+        self.boundary_combo.clear()
+        for commit in commits:
+            timestamp = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
+            label = f"{timestamp.toLocalTime().toString('dd.MM.yyyy HH:mm')} · {commit.subject}"
+            self.boundary_combo.addItem(label, commit)
+        selected_index = next(
+            (index for index, commit in enumerate(commits) if commit.oid == selected_oid),
+            0,
+        )
+        self.boundary_combo.setCurrentIndex(selected_index)
+        del blocker
+        visible = bool(commits)
+        self.boundary_label.setVisible(visible)
+        self.boundary_combo.setVisible(visible)
+
+    def clear_boundaries(self) -> None:
+        blocker = QSignalBlocker(self.boundary_combo)
+        self.boundary_combo.clear()
+        del blocker
+        self.boundary_label.hide()
+        self.boundary_combo.hide()
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def _session_changed(
@@ -156,7 +195,7 @@ class ReviewPanel(QWidget):
         self._files = ()
         self._states.clear()
         self.files.clear()
-        self.mark_selected_button.setEnabled(False)
+        self.mark_file_button.setEnabled(False)
         if self._session is not None:
             self.context.setText(
                 f"{self._session.branch} from {self._session.displayed_start_oid[:8]} · "
@@ -164,8 +203,9 @@ class ReviewPanel(QWidget):
             )
             self.session_selected.emit(self._session)
         else:
+            self.clear_boundaries()
             self.context.setText(
-                "Select block checkboxes in the diff, then mark the selected blocks reviewed."
+                "Mark each file reviewed. Any later change returns it to review."
             )
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
@@ -175,6 +215,12 @@ class ReviewPanel(QWidget):
         value = current.data(0, Qt.ItemDataRole.UserRole) if current is not None else None
         if isinstance(value, CommitFileChange):
             self.file_selected.emit(value)
+
+    @Slot(int)
+    def _boundary_changed(self, index: int) -> None:
+        value = self.boundary_combo.itemData(index)
+        if isinstance(value, CommitSummary):
+            self.boundary_selected.emit(value)
 
     @Slot()
     def _delete_current(self) -> None:

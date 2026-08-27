@@ -431,6 +431,14 @@ class DiffView(QWidget):
     def has_pending_partial_selection(self) -> bool:
         return bool(self.selection.selected_lines) and not self.selection.whole_file
 
+    def set_object_name_prefix(self, prefix: str) -> None:
+        """Make a second view instance discoverable without colliding with the first one."""
+
+        for widget in self.findChildren(QObject):
+            name = widget.objectName()
+            if name:
+                widget.setObjectName(f"{prefix}{name[:1].upper()}{name[1:]}")
+
     @property
     def selected_line_indexes(self) -> set[int]:
         return set(self.selection.selected_lines)

@@ -9,7 +9,7 @@ from typing import cast
 
 from PySide6.QtCore import QSettings
 
-from mygitclient.git.models import DiffHunk
+from mygitclient.git.models import UnifiedDiff
 
 _SESSIONS_KEY = "reviews/sessions"
 
@@ -31,10 +31,13 @@ class ReviewSession:
         return self.start_oid or self.base_oid
 
 
-def hunk_fingerprint(path: str, hunk: DiffHunk) -> str:
-    """A content identity that survives line movement but rejects edited blocks."""
+def review_file_fingerprint(diff: UnifiedDiff) -> str:
+    """Return the exact file diff that was reviewed.
 
-    payload = "\n".join((path, *(line.kind + "\0" + line.text for line in hunk.lines)))
+    A changed diff must be reviewed again; partial hunk state is deliberately not retained.
+    """
+
+    payload = "\n".join((diff.path, *(line.kind + "\0" + line.text for line in diff.lines)))
     return hashlib.sha256(payload.encode("utf-8", errors="surrogateescape")).hexdigest()
 
 
@@ -60,23 +63,14 @@ class ReviewStore:
     def delete(self, session: ReviewSession) -> None:
         self._write(item for item in self._read() if item.key != session.key)
         self._settings.remove(self._checked_key(session))
+        self._settings.remove(self._reviewed_files_key(session))
 
-    def checked_hunks(self, session: ReviewSession, path: str) -> frozenset[str]:
-        value = self._settings.value(self._checked_key(session, path), "[]")
-        if not isinstance(value, str):
-            return frozenset()
-        try:
-            raw = json.loads(value)
-        except json.JSONDecodeError:
-            return frozenset()
-        return frozenset(item for item in raw if isinstance(item, str))
+    def reviewed_file(self, session: ReviewSession, path: str) -> str | None:
+        value = self._settings.value(self._reviewed_file_key(session, path))
+        return value if isinstance(value, str) and value else None
 
-    def set_checked_hunks(self, session: ReviewSession, path: str, values: set[str]) -> None:
-        key = self._checked_key(session, path)
-        if values:
-            self._settings.setValue(key, json.dumps(sorted(values)))
-        else:
-            self._settings.remove(key)
+    def set_reviewed_file(self, session: ReviewSession, path: str, fingerprint: str) -> None:
+        self._settings.setValue(self._reviewed_file_key(session, path), fingerprint)
 
     def _read(self) -> tuple[ReviewSession, ...]:
         value = self._settings.value(_SESSIONS_KEY, "[]")
@@ -128,3 +122,12 @@ class ReviewStore:
     def _checked_key(session: ReviewSession, path: str | None = None) -> str:
         digest = hashlib.sha256(session.key.encode("utf-8", errors="surrogateescape")).hexdigest()
         return f"reviews/checked/{digest}" if path is None else f"reviews/checked/{digest}/{path}"
+
+    @staticmethod
+    def _reviewed_file_key(session: ReviewSession, path: str) -> str:
+        return f"{ReviewStore._reviewed_files_key(session)}/{path}"
+
+    @staticmethod
+    def _reviewed_files_key(session: ReviewSession) -> str:
+        digest = hashlib.sha256(session.key.encode("utf-8", errors="surrogateescape")).hexdigest()
+        return f"reviews/files/{digest}"

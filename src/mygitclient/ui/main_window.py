@@ -365,6 +365,18 @@ class MainWindow(QMainWindow):
         self._diff_view = DiffView(self._settings)
         self._diff_view.setObjectName("diffView")
         self._diff_view.set_auto_apply_hunks(False)
+        self._review_diff_view = DiffView(self._settings)
+        self._review_diff_view.set_object_name_prefix("review")
+        self._review_diff_view.setObjectName("reviewDiffView")
+        self._review_diff_view.set_auto_apply_hunks(False)
+        self._history_diff_view = DiffView(self._settings)
+        self._history_diff_view.set_object_name_prefix("history")
+        self._history_diff_view.setObjectName("historyDiffView")
+        self._history_diff_view.set_auto_apply_hunks(False)
+        self._study_diff_view = DiffView(self._settings)
+        self._study_diff_view.set_object_name_prefix("study")
+        self._study_diff_view.setObjectName("studyDiffView")
+        self._study_diff_view.set_auto_apply_hunks(False)
         self._conflict_editor = ConflictEditor()
         self._conflict_editor.save_requested.connect(self._save_conflict_result)
         self._conflict_editor.mergetool_requested.connect(self._launch_mergetool)
@@ -372,17 +384,20 @@ class MainWindow(QMainWindow):
         self._diff_container = QStackedWidget()
         self._diff_container.setObjectName("diffContainer")
         self._diff_container.addWidget(self._diff_view)
+        self._diff_container.addWidget(self._review_diff_view)
+        self._diff_container.addWidget(self._history_diff_view)
+        self._diff_container.addWidget(self._study_diff_view)
         self._diff_container.addWidget(self._conflict_editor)
         self._review_controller = ReviewController(
             self._settings,
             self._git,
             self._review_panel,
-            self._diff_view,
+            self._review_diff_view,
             self._diff_container,
             self._workspace_tabs,
             review_tab=TAB_REVIEW,
             context_lines=lambda: self._diff_context_lines,
-            ignore_whitespace=lambda: self._ignore_whitespace_button.isChecked(),
+            ignore_whitespace=lambda: self._review_diff_view.ignore_whitespace_button.isChecked(),
             parent_widget=self,
         )
         self._diff = self._diff_view.diff
@@ -414,6 +429,25 @@ class MainWindow(QMainWindow):
         self._ignore_whitespace_button.toggled.connect(self._diff_ignore_whitespace_changed)
         self._apply_diff_wrap(self._wrap_button.isChecked())
         self._apply_diff_whitespace(self._whitespace_button.isChecked())
+        self._review_diff_view.wrap_button.setChecked(self._wrap_button.isChecked())
+        self._review_diff_view.whitespace_button.setChecked(self._whitespace_button.isChecked())
+        self._review_diff_view.ignore_whitespace_button.setChecked(
+            self._ignore_whitespace_button.isChecked()
+        )
+        self._review_diff_view.wrap_button.toggled.connect(self._review_diff_view.set_wrap)
+        self._review_diff_view.whitespace_button.toggled.connect(
+            self._review_diff_view.set_whitespace
+        )
+        self._review_diff_view.ignore_whitespace_button.toggled.connect(
+            self._diff_ignore_whitespace_changed
+        )
+        for view in (self._history_diff_view, self._study_diff_view):
+            view.wrap_button.setChecked(self._wrap_button.isChecked())
+            view.whitespace_button.setChecked(self._whitespace_button.isChecked())
+            view.ignore_whitespace_button.setChecked(self._ignore_whitespace_button.isChecked())
+            view.wrap_button.toggled.connect(view.set_wrap)
+            view.whitespace_button.toggled.connect(view.set_whitespace)
+            view.ignore_whitespace_button.toggled.connect(self._diff_ignore_whitespace_changed)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("mainSplitter")
@@ -711,9 +745,11 @@ class MainWindow(QMainWindow):
             font.setPointSize(interface_size.value())
             app.setFont(font)
         self._diff_view.set_font_size(diff_size.value())
+        self._review_diff_view.set_font_size(diff_size.value())
 
     def set_diff_font_size(self, point_size: int) -> None:
         self._diff_view.set_font_size(point_size)
+        self._review_diff_view.set_font_size(point_size)
 
     def _populate_recent_repositories(self) -> None:
         repositories = self._workspace.recent_repositories()
@@ -800,6 +836,9 @@ class MainWindow(QMainWindow):
         self._history_refs = ()
         self._review_controller.activate_repository(repository)
         self._diff_view.reset()
+        self._review_diff_view.reset()
+        self._history_diff_view.reset()
+        self._study_diff_view.reset()
         self._conflict_editor.clear()
         self._diff_container.setCurrentWidget(self._diff_view)
         self._welcome.hide()
@@ -827,10 +866,18 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _workspace_tab_changed(self, index: int) -> None:
-        diff_container = cast(QWidget | None, getattr(self, "_diff_container", None))
+        diff_container = cast(QStackedWidget | None, getattr(self, "_diff_container", None))
         if diff_container is None:
             return
         repository = getattr(self, "_repository", None)
+        if index == TAB_REVIEW:
+            diff_container.setCurrentWidget(self._review_diff_view)
+        elif index == TAB_HISTORY:
+            diff_container.setCurrentWidget(self._history_diff_view)
+        elif index == TAB_DIFF:
+            diff_container.setCurrentWidget(self._study_diff_view)
+        elif diff_container.currentWidget() is not self._conflict_editor:
+            diff_container.setCurrentWidget(self._diff_view)
         # History reads its diffs inline, so it is the one tab that gives the pane away.
         diff_container.setVisible(repository is not None and index != TAB_HISTORY)
         if repository is not None:
@@ -1309,13 +1356,13 @@ class MainWindow(QMainWindow):
             return
         if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
-        blocker = QSignalBlocker(self._diff_version)
-        self._diff_version.clear()
-        self._diff_version.addItem(value.stash.ref, None)
+        blocker = QSignalBlocker(self._study_diff_view.version_combo)
+        self._study_diff_view.version_combo.clear()
+        self._study_diff_view.version_combo.addItem(value.stash.ref, None)
         del blocker
-        self._diff_view.refresh_version_selector()
-        self._diff_container.setCurrentWidget(self._diff_view)
-        self._diff_view.display_diff(
+        self._study_diff_view.refresh_version_selector()
+        self._diff_container.setCurrentWidget(self._study_diff_view)
+        self._study_diff_view.display_diff(
             value.diff,
             selection_key=None,
             preserve_scroll=False,
@@ -1440,13 +1487,13 @@ class MainWindow(QMainWindow):
             return
         if self._workspace_tabs.currentIndex() != TAB_DIFF:
             return
-        blocker = QSignalBlocker(self._diff_version)
-        self._diff_version.clear()
-        self._diff_version.addItem(f"{value.base_ref}…{value.compare_ref}", None)
+        blocker = QSignalBlocker(self._study_diff_view.version_combo)
+        self._study_diff_view.version_combo.clear()
+        self._study_diff_view.version_combo.addItem(f"{value.base_ref}…{value.compare_ref}", None)
         del blocker
-        self._diff_view.refresh_version_selector()
-        self._diff_container.setCurrentWidget(self._diff_view)
-        self._diff_view.display_diff(
+        self._study_diff_view.refresh_version_selector()
+        self._diff_container.setCurrentWidget(self._study_diff_view)
+        self._study_diff_view.display_diff(
             value.diff,
             selection_key=None,
             preserve_scroll=False,
@@ -1467,13 +1514,13 @@ class MainWindow(QMainWindow):
         commit = self._diff_study_panel.selected_commit
         if commit is None or commit.oid != value.commit_oid:
             return
-        blocker = QSignalBlocker(self._diff_version)
-        self._diff_version.clear()
-        self._diff_version.addItem(f"Commit {value.commit_oid[:8]}", None)
+        blocker = QSignalBlocker(self._study_diff_view.version_combo)
+        self._study_diff_view.version_combo.clear()
+        self._study_diff_view.version_combo.addItem(f"Commit {value.commit_oid[:8]}", None)
         del blocker
-        self._diff_view.refresh_version_selector()
-        self._diff_container.setCurrentWidget(self._diff_view)
-        self._diff_view.display_diff(
+        self._study_diff_view.refresh_version_selector()
+        self._diff_container.setCurrentWidget(self._study_diff_view)
+        self._study_diff_view.display_diff(
             value.diff,
             selection_key=None,
             preserve_scroll=False,

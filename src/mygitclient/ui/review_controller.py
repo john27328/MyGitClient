@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Signal, Slot
+from PySide6.QtCore import QDateTime, QObject, QSettings, Qt, Signal, Slot
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QStackedWidget, QTabWidget, QWidget
 
 from mygitclient.git.models import (
     BranchInfo,
     CommitFileChange,
+    CommitSummary,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
     ReviewCommitSnapshot,
@@ -17,7 +18,15 @@ from mygitclient.git.models import (
 from mygitclient.git.service import GitService
 from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.review_panel import ReviewPanel
-from mygitclient.workspace.reviews import ReviewSession, ReviewStore, hunk_fingerprint
+from mygitclient.workspace.reviews import ReviewSession, ReviewStore, review_file_fingerprint
+
+
+def review_commit_choice_label(commit: CommitSummary) -> str:
+    """Return the unambiguous label used to choose a review boundary."""
+
+    timestamp = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
+    display_time = timestamp.toLocalTime().toString("dd.MM.yyyy HH:mm")
+    return f"{commit.oid[:8]} · {display_time} · {commit.subject}"
 
 
 class ReviewController(QObject):
@@ -54,19 +63,22 @@ class ReviewController(QObject):
         self._branches: tuple[BranchInfo, ...] = ()
         self._start_branch = ""
         self._start_target = ""
+        self._review_boundaries: dict[str, tuple[CommitSummary, ...]] = {}
         self._active: ReviewSession | None = None
         self._diff: UnifiedDiff | None = None
         panel.start_requested.connect(self.start)
         panel.delete_requested.connect(self.delete)
         panel.session_selected.connect(self.select_session)
         panel.file_selected.connect(self.select_file)
-        panel.mark_selected_requested.connect(self.mark_selected_hunks)
+        panel.mark_file_requested.connect(self.mark_file)
+        panel.boundary_selected.connect(self.select_boundary)
 
     def activate_repository(self, repository: Path) -> None:
         self._repository = repository.resolve()
         self._branches = ()
         self._active = None
         self._diff = None
+        self._review_boundaries.clear()
         self._panel.show_sessions(self._store.sessions(self._repository))
 
     def set_branches(self, branches: tuple[BranchInfo, ...]) -> None:
@@ -84,13 +96,13 @@ class ReviewController(QObject):
     def update_selection_actions(self) -> bool:
         if self._tabs.currentIndex() != self._review_tab:
             return False
-        self._panel.set_mark_selected_enabled(bool(self._diff_view.selected_line_indexes))
+        self._panel.set_mark_file_enabled(self._active is not None and self._diff is not None)
         return True
 
     def handle_stage_requested(self) -> bool:
         if self._tabs.currentIndex() != self._review_tab:
             return False
-        self.mark_selected_hunks()
+        self.mark_file()
         return True
 
     @Slot()
@@ -146,28 +158,20 @@ class ReviewController(QObject):
             self._start_target,
         ):
             return
-        choices = [f"{commit.oid[:8]} · {commit.subject}" for commit in value.commits]
-        if not choices:
+        if not value.commits:
             QMessageBox.information(
                 self._parent_widget, "Start review", "The selected branch has no commits."
             )
             return
-        choice, accepted = QInputDialog.getItem(
-            self._parent_widget,
-            "Start review",
-            "Show changes from commit:",
-            choices,
-            min(1, len(choices) - 1),
-            False,
-        )
-        if not accepted:
-            return
-        commit = value.commits[choices.index(choice)]
+        boundaries = tuple(reversed(value.commits))
+        commit = boundaries[0]
         base = commit.parent_oids[0] if commit.parent_oids else GitService.EMPTY_TREE
         session = ReviewSession(value.repository, value.branch, base, commit.subject, commit.oid)
+        self._review_boundaries[session.key] = boundaries
         self._store.save(session)
         self._panel.show_sessions(self._store.sessions(value.repository))
         self._panel.select_session(session)
+        self._tabs.setCurrentIndex(self._review_tab)
 
     @Slot(object)
     def delete(self, value: object) -> None:
@@ -192,6 +196,11 @@ class ReviewController(QObject):
         if not isinstance(value, ReviewSession) or value.repository != self._repository:
             return
         self._active, self._diff = value, None
+        boundaries = self._review_boundaries.get(value.key)
+        if boundaries is None:
+            self._panel.clear_boundaries()
+        else:
+            self._panel.show_boundaries(boundaries, value.start_oid)
         self._git.request_ref_comparison(
             value.repository, value.base_oid, value.branch, merge_base=False
         )
@@ -209,6 +218,21 @@ class ReviewController(QObject):
             context_lines=self._context_lines(),
             merge_base=False,
         )
+
+    @Slot(object)
+    def select_boundary(self, value: object) -> None:
+        active = self._active
+        if active is None or not isinstance(value, CommitSummary) or value.oid == active.start_oid:
+            return
+        boundaries = self._review_boundaries.get(active.key)
+        if boundaries is None or all(commit.oid != value.oid for commit in boundaries):
+            return
+        base = value.parent_oids[0] if value.parent_oids else GitService.EMPTY_TREE
+        session = ReviewSession(active.repository, active.branch, base, value.subject, value.oid)
+        self._review_boundaries[session.key] = boundaries
+        self._store.save(session)
+        self._panel.show_sessions(self._store.sessions(active.repository))
+        self._panel.select_session(session)
 
     @Slot(object)
     def handle_comparison(self, value: object) -> bool:
@@ -237,10 +261,11 @@ class ReviewController(QObject):
         if self._tabs.currentIndex() != self._review_tab:
             return True
         self._diff = value.diff
-        checked = self._store.checked_hunks(self._active, value.diff.path)
-        fingerprints = {hunk_fingerprint(value.diff.path, hunk) for hunk in value.diff.hunks}
+        reviewed = self._store.reviewed_file(self._active, value.diff.path)
         self._panel.update_file_state(
-            value.diff.path, len(fingerprints), len(checked & fingerprints)
+            value.diff.path,
+            1,
+            1 if reviewed == review_file_fingerprint(value.diff) else 0,
         )
         self._diff_container.setCurrentWidget(self._diff_view)
         self._diff_view.display_diff(
@@ -252,30 +277,17 @@ class ReviewController(QObject):
             ),
             preserve_scroll=False,
             whole_file_staged=False,
-            interactive=True,
+            interactive=False,
         )
-        self._panel.set_mark_selected_enabled(False)
+        self._panel.set_mark_file_enabled(True)
         return True
 
     @Slot()
-    def mark_selected_hunks(self) -> None:
+    def mark_file(self) -> None:
         if self._active is None or self._diff is None:
             return
-        indexes = {
-            self._diff.hunk_index_for_line(line) for line in self._diff_view.selected_line_indexes
-        }
-        fingerprints = {
-            hunk_fingerprint(self._diff.path, self._diff.hunks[index])
-            for index in indexes
-            if index is not None
-        }
-        if not fingerprints:
-            return
-        checked = set(self._store.checked_hunks(self._active, self._diff.path)) | fingerprints
-        self._store.set_checked_hunks(self._active, self._diff.path, checked)
-        self._diff_view.clear_selection()
-        all_fingerprints = {hunk_fingerprint(self._diff.path, hunk) for hunk in self._diff.hunks}
-        self._panel.update_file_state(
-            self._diff.path, len(all_fingerprints), len(checked & all_fingerprints)
+        self._store.set_reviewed_file(
+            self._active, self._diff.path, review_file_fingerprint(self._diff)
         )
-        self.status_changed.emit("Selected blocks marked reviewed")
+        self._panel.update_file_state(self._diff.path, 1, 1)
+        self.status_changed.emit("File marked reviewed")
