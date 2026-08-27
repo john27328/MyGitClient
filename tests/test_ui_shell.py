@@ -33,6 +33,7 @@ from mygitclient.git.models import (
     RepositoryOperationSnapshot,
     RepositoryStatus,
 )
+from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.github import GitHubProfile, GitHubTokenStore
 from mygitclient.theme import Theme
@@ -64,6 +65,19 @@ class _TestMainWindow(MainWindow):
 
     def github_token(self) -> str | None:
         return self._resolve_github_token()
+
+    def configure_review_start(
+        self, repository: Path, branches: tuple[BranchInfo, ...]
+    ) -> None:
+        self._repository = repository
+        self._branches = branches
+
+    @property
+    def git_service(self) -> GitService:
+        return self._git
+
+    def start_review(self) -> None:
+        self._start_review()
 
 
 def test_main_window_is_created(qapp: QApplication) -> None:
@@ -113,6 +127,7 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert reset_to_upstream is not None
     assert reset_to_upstream.text() == "Reset to upstream…"
     assert push_submodules is not None
+
     assert font_sizes is not None
     assert not fetch_action.icon().isNull()
     assert not push_action.icon().isNull()
@@ -152,6 +167,32 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert not refresh_action.icon().isNull()
 
     window.close()
+
+
+def test_start_review_asks_for_source_and_target_branch(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "review-start.ini"), QSettings.Format.IniFormat)
+    window = _TestMainWindow(settings, Theme.SYSTEM)
+    window.configure_review_start(
+        tmp_path,
+        (
+        BranchInfo("refs/heads/develop", "develop", "a" * 40, False, current=True),
+        BranchInfo("refs/heads/master", "master", "b" * 40, False),
+        ),
+    )
+    choices = iter((("refs/heads/develop", True), ("refs/heads/master", True)))
+    monkeypatch.setattr(QInputDialog, "getItem", staticmethod(lambda *_args: next(choices)))
+    captured: list[tuple[Path, str, str]] = []
+    def capture_request(repository: Path, branch: str, target: str) -> GitRunner:
+        captured.append((repository, branch, target))
+        return GitRunner()
+
+    monkeypatch.setattr(window.git_service, "request_review_commits", capture_request)
+
+    window.start_review()
+
+    assert captured == [(tmp_path, "refs/heads/develop", "refs/heads/master")]
 
 
 def test_saved_github_token_is_resolved_only_for_https_remote(tmp_path: Path) -> None:

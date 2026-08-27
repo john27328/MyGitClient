@@ -1564,13 +1564,26 @@ class MainWindow(QMainWindow):
         )
         if not accepted or not branch:
             return
-        self._review_start_branch = branch
-        target = next((item.full_name for item in branches if item.current), "")
-        if not target:
+        target_names = [name for name in names if name != branch]
+        if not target_names:
             QMessageBox.information(
-                self, "Start review", "Check out a target branch before starting a review."
+                self, "Start review", "Create or fetch another branch to use as the target."
             )
             return
+        preferred_target = next(
+            (
+                index
+                for index, name in enumerate(target_names)
+                if name.rsplit("/", maxsplit=1)[-1] in {"main", "master"}
+            ),
+            0,
+        )
+        target, accepted = QInputDialog.getItem(
+            self, "Start review", "Target branch:", target_names, preferred_target, False
+        )
+        if not accepted or not target:
+            return
+        self._review_start_branch = branch
         self._review_start_target = target
         self._status_label.setText(f"Reading commits in {branch} that are not in {target}…")
         self._git.request_review_commits(repository, branch, target)
