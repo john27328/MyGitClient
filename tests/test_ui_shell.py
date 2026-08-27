@@ -69,15 +69,15 @@ class _TestMainWindow(MainWindow):
     def configure_review_start(
         self, repository: Path, branches: tuple[BranchInfo, ...]
     ) -> None:
-        self._repository = repository
-        self._branches = branches
+        self._review_controller.activate_repository(repository)
+        self._review_controller.set_branches(branches)
 
     @property
     def git_service(self) -> GitService:
         return self._git
 
     def start_review(self) -> None:
-        self._start_review()
+        self._review_controller.start()
 
 
 def test_main_window_is_created(qapp: QApplication) -> None:

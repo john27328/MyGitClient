@@ -83,7 +83,6 @@ from mygitclient.git.models import (
     RepositoryStatus,
     RepositoryStatusSnapshot,
     RevertPreviewSnapshot,
-    ReviewCommitSnapshot,
     StashDiffSnapshot,
     StashesSnapshot,
     StashFilesSnapshot,
@@ -111,6 +110,7 @@ from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.interactive_rebase import InteractiveRebaseDialog
 from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
+from mygitclient.ui.review_controller import ReviewController
 from mygitclient.ui.review_panel import ReviewPanel
 from mygitclient.updates import (
     UpdateChecker,
@@ -126,7 +126,6 @@ from mygitclient.workspace import (
     WorkspaceManager,
     find_repository_root,
 )
-from mygitclient.workspace.reviews import ReviewSession, ReviewStore, hunk_fingerprint
 
 TAB_CHANGES = 0
 TAB_HISTORY = 1
@@ -154,7 +153,6 @@ class MainWindow(QMainWindow):
         self._session_mode = session_mode
         self._apply_saved_ui_font()
         self._workspace = WorkspaceManager(settings)
-        self._review_store = ReviewStore(settings)
         self._workspace_discovery = WorkspaceDiscoveryService(self)
         self._update_checker = UpdateChecker(self)
         self._update_downloader = UpdateDownloader(self)
@@ -201,11 +199,6 @@ class MainWindow(QMainWindow):
         self._history_runner: GitRunner | None = None
         self._history_repository: Path | None = None
         self._history_refs: tuple[str, ...] = ()
-        self._branches: tuple[BranchInfo, ...] = ()
-        self._review_start_branch = ""
-        self._review_start_target = ""
-        self._active_review: ReviewSession | None = None
-        self._review_diff: UnifiedDiff | None = None
         self._active_queue_operation: QueuedOperation | None = None
         self._queued_operation_count = 0
         self._refresh_all_after_queue = False
@@ -346,11 +339,6 @@ class MainWindow(QMainWindow):
         )
 
         self._review_panel = ReviewPanel()
-        self._review_panel.start_requested.connect(self._start_review)
-        self._review_panel.delete_requested.connect(self._delete_review)
-        self._review_panel.session_selected.connect(self._review_session_selected)
-        self._review_panel.file_selected.connect(self._review_file_selected)
-        self._review_panel.mark_selected_requested.connect(self._mark_selected_review_hunks)
 
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
@@ -404,6 +392,18 @@ class MainWindow(QMainWindow):
         self._diff_container.setObjectName("diffContainer")
         self._diff_container.addWidget(self._diff_view)
         self._diff_container.addWidget(self._conflict_editor)
+        self._review_controller = ReviewController(
+            self._settings,
+            self._git,
+            self._review_panel,
+            self._diff_view,
+            self._diff_container,
+            self._workspace_tabs,
+            review_tab=TAB_REVIEW,
+            context_lines=lambda: self._diff_context_lines,
+            ignore_whitespace=lambda: self._ignore_whitespace_button.isChecked(),
+            parent_widget=self,
+        )
         self._diff = self._diff_view.diff
         self._diff_gutter = self._diff_view.gutter
         self._diff_version = self._diff_view.version_combo
@@ -451,6 +451,7 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Ready")
         self._status_label.setObjectName("statusLabel")
         self.statusBar().addWidget(self._status_label)
+        self._review_controller.status_changed.connect(self._status_label.setText)
         if not self._session_mode:
             QTimer.singleShot(2500, self._automatic_update_check)
 
@@ -763,9 +764,11 @@ class MainWindow(QMainWindow):
         self._git.status_ready.connect(self._show_status)
         self._git.repository_operation_ready.connect(self._show_repository_operation)
         self._git.history_ready.connect(self._show_history)
-        self._git.review_commits_ready.connect(self._show_review_commits)
+        self._git.review_commits_ready.connect(self._review_controller.handle_review_commits)
         self._git.comparison_ready.connect(self._show_ref_comparison)
+        self._git.comparison_ready.connect(self._review_controller.handle_comparison)
         self._git.comparison_diff_ready.connect(self._show_ref_comparison_diff)
+        self._git.comparison_diff_ready.connect(self._review_controller.handle_comparison_diff)
         self._git.branches_ready.connect(self._show_branches)
         self._git.incoming_commits_ready.connect(self._show_incoming_commits)
         self._git.branch_point_ready.connect(self._show_branch_point)
@@ -930,10 +933,7 @@ class MainWindow(QMainWindow):
         self._history_panel.reset()
         self._diff_study_panel.clear_commits()
         self._history_refs = ()
-        self._branches = ()
-        self._active_review = None
-        self._review_diff = None
-        self._review_panel.show_sessions(self._review_store.sessions(repository))
+        self._review_controller.activate_repository(repository)
         self._diff_view.reset()
         self._conflict_editor.clear()
         self._diff_container.setCurrentWidget(self._diff_view)
@@ -1548,179 +1548,8 @@ class MainWindow(QMainWindow):
             context_lines=self._diff_context_lines,
         )
 
-    @Slot()
-    def _start_review(self) -> None:
-        repository = self._repository
-        branches = tuple(branch for branch in self._branches if not branch.remote)
-        if repository is None:
-            return
-        if not branches:
-            QMessageBox.information(self, "Start review", "Branches are still loading.")
-            return
-        names = [branch.full_name for branch in branches]
-        current = next((index for index, branch in enumerate(branches) if branch.current), 0)
-        branch, accepted = QInputDialog.getItem(
-            self, "Start review", "Branch to review:", names, current, False
-        )
-        if not accepted or not branch:
-            return
-        target_names = [name for name in names if name != branch]
-        if not target_names:
-            QMessageBox.information(
-                self, "Start review", "Create or fetch another branch to use as the target."
-            )
-            return
-        preferred_target = next(
-            (
-                index
-                for index, name in enumerate(target_names)
-                if name.rsplit("/", maxsplit=1)[-1] in {"main", "master"}
-            ),
-            0,
-        )
-        target, accepted = QInputDialog.getItem(
-            self, "Start review", "Target branch:", target_names, preferred_target, False
-        )
-        if not accepted or not target:
-            return
-        self._review_start_branch = branch
-        self._review_start_target = target
-        self._status_label.setText(f"Reading commits in {branch} that are not in {target}…")
-        self._git.request_review_commits(repository, branch, target)
-
-    @Slot(object)
-    def _show_review_commits(self, value: object) -> None:
-        if not isinstance(value, ReviewCommitSnapshot):
-            return
-        if (
-            value.repository != self._repository
-            or value.branch != self._review_start_branch
-            or value.target_branch != self._review_start_target
-        ):
-            return
-        choices = [f"{commit.oid[:8]} · {commit.subject}" for commit in value.commits]
-        if not choices:
-            QMessageBox.information(self, "Start review", "The selected branch has no commits.")
-            return
-        choice, accepted = QInputDialog.getItem(
-            self,
-            "Start review",
-            "Show changes from commit:",
-            choices,
-            min(1, len(choices) - 1),
-            False,
-        )
-        if not accepted:
-            return
-        commit = value.commits[choices.index(choice)]
-        base_oid = commit.parent_oids[0] if commit.parent_oids else GitService.EMPTY_TREE
-        session = ReviewSession(
-            value.repository.resolve(), value.branch, base_oid, commit.subject, commit.oid
-        )
-        self._review_store.save(session)
-        self._review_panel.show_sessions(self._review_store.sessions(value.repository))
-        self._review_panel.select_session(session)
-
-    @Slot(object)
-    def _delete_review(self, value: object) -> None:
-        if not isinstance(value, ReviewSession):
-            return
-        answer = QMessageBox.question(
-            self,
-            "Delete review",
-            f"Delete local review of {value.branch}? Git branches and commits will not change.",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self._review_store.delete(value)
-        if self._active_review == value:
-            self._active_review = None
-            self._review_diff = None
-            self._diff_view.reset()
-        if self._repository is not None:
-            self._review_panel.show_sessions(self._review_store.sessions(self._repository))
-
-    @Slot(object)
-    def _review_session_selected(self, value: object) -> None:
-        if not isinstance(value, ReviewSession) or self._repository != value.repository:
-            return
-        self._active_review = value
-        self._review_diff = None
-        self._git.request_ref_comparison(
-            value.repository, value.base_oid, value.branch, merge_base=False
-        )
-
-    @Slot(object)
-    def _review_file_selected(self, value: object) -> None:
-        review = self._active_review
-        if review is None or not isinstance(value, CommitFileChange):
-            return
-        self._git.request_ref_comparison_diff(
-            review.repository,
-            review.base_oid,
-            review.branch,
-            value.path,
-            ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=self._diff_context_lines,
-            merge_base=False,
-        )
-
-    def _show_review_diff(self, review: ReviewSession, diff: UnifiedDiff) -> None:
-        if self._workspace_tabs.currentIndex() != TAB_REVIEW:
-            return
-        self._review_diff = diff
-        checked = self._review_store.checked_hunks(review, diff.path)
-        fingerprints = [hunk_fingerprint(diff.path, hunk) for hunk in diff.hunks]
-        checked_count = len(checked & set(fingerprints))
-        self._review_panel.update_file_state(diff.path, len(fingerprints), checked_count)
-        self._diff_container.setCurrentWidget(self._diff_view)
-        self._diff_view.display_diff(
-            diff,
-            selection_key=(review.repository, f"review:{review.key}:{diff.path}", False),
-            preserve_scroll=False,
-            whole_file_staged=False,
-            interactive=True,
-        )
-        self._review_panel.set_mark_selected_enabled(False)
-        self._diff_container.show()
-
-    @Slot()
-    def _mark_selected_review_hunks(self) -> None:
-        review = self._active_review
-        diff = self._review_diff
-        if review is None or diff is None:
-            return
-        selected = self._diff_view.selected_line_indexes
-        hunk_indexes = {diff.hunk_index_for_line(index) for index in selected}
-        fingerprints = {
-            hunk_fingerprint(diff.path, diff.hunks[index])
-            for index in hunk_indexes
-            if index is not None
-        }
-        if not fingerprints:
-            return
-        checked = set(self._review_store.checked_hunks(review, diff.path))
-        checked.update(fingerprints)
-        self._review_store.set_checked_hunks(review, diff.path, checked)
-        self._diff_view.clear_selection()
-        all_fingerprints = {hunk_fingerprint(diff.path, hunk) for hunk in diff.hunks}
-        checked_count = len(checked & all_fingerprints)
-        self._review_panel.update_file_state(diff.path, len(all_fingerprints), checked_count)
-        self._review_panel.set_mark_selected_enabled(False)
-        self._status_label.setText("Selected blocks marked reviewed")
-
     @Slot(object)
     def _show_ref_comparison(self, value: object) -> None:
-        review = self._active_review
-        if (
-            isinstance(value, RefComparisonSnapshot)
-            and review is not None
-            and value.repository == self._repository
-            and (value.base_ref, value.compare_ref) == (review.base_oid, review.branch)
-        ):
-            self._review_panel.show_files(review, value.files)
-            self._status_label.setText(f"{len(value.files)} file(s) need review")
-            return
         if (
             not isinstance(value, RefComparisonSnapshot)
             or value.repository != self._repository
@@ -1734,15 +1563,6 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _show_ref_comparison_diff(self, value: object) -> None:
-        review = self._active_review
-        if (
-            isinstance(value, RefComparisonDiffSnapshot)
-            and review is not None
-            and value.repository == self._repository
-            and (value.base_ref, value.compare_ref) == (review.base_oid, review.branch)
-        ):
-            self._show_review_diff(review, value.diff)
-            return
         if (
             not isinstance(value, RefComparisonDiffSnapshot)
             or value.repository != self._repository
@@ -1804,7 +1624,7 @@ class MainWindow(QMainWindow):
     def _show_branches(self, value: object) -> None:
         if not isinstance(value, BranchesSnapshot) or value.repository != self._repository:
             return
-        self._branches = value.branches
+        self._review_controller.set_branches(value.branches)
         self._history_panel.show_branches(value)
         for branch in value.branches:
             if (
@@ -2617,6 +2437,7 @@ class MainWindow(QMainWindow):
         self._git.request_stashes(self._repository)
         self._status_label.setText(f"Refreshing {self._repository.name}…")
         self._status_runner = self._git.request_status(self._repository)
+        self._review_controller.refresh()
 
     @Slot()
     def _pull_repository(self) -> None:
@@ -2794,11 +2615,7 @@ class MainWindow(QMainWindow):
         if self._status_runner is not None and self._status_runner.is_running:
             return
         self._status_runner = self._git.request_status(self._repository)
-        review = self._active_review
-        if review is not None and self._workspace_tabs.currentIndex() == TAB_REVIEW:
-            self._git.request_ref_comparison(
-                review.repository, review.base_oid, review.branch, merge_base=False
-            )
+        self._review_controller.refresh()
 
     @Slot(object)
     def _show_operation_queue(self, value: object) -> None:
@@ -3641,8 +3458,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _update_selection_actions(self) -> None:
-        if self._workspace_tabs.currentIndex() == TAB_REVIEW:
-            self._review_panel.set_mark_selected_enabled(bool(self._diff_view.selected_line_indexes))
+        if self._review_controller.update_selection_actions():
             return
         self._changes_panel.refresh_selection_controls()
         diff = self._diff_view.current_diff
@@ -3660,8 +3476,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _stage_checked_changes(self) -> None:
-        if self._workspace_tabs.currentIndex() == TAB_REVIEW:
-            self._mark_selected_review_hunks()
+        if self._review_controller.handle_stage_requested():
             return
         diff = self._diff_view.current_diff
         selected_lines = self._diff_view.selected_line_indexes
