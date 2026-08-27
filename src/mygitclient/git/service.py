@@ -37,6 +37,7 @@ from mygitclient.git.models import (
     RepositoryOperationSnapshot,
     RepositoryStatusSnapshot,
     RevertPreviewSnapshot,
+    ReviewCommitSnapshot,
     StashDiffSnapshot,
     StashesSnapshot,
     StashFilesSnapshot,
@@ -146,6 +147,7 @@ class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
     history_ready = Signal(object)
+    review_commits_ready = Signal(object)
     branches_ready = Signal(object)
     incoming_commits_ready = Signal(object)
     branch_point_ready = Signal(object)
@@ -171,7 +173,7 @@ class GitService(QObject):
     stash_files_ready = Signal(object)
     stash_diff_ready = Signal(object)
 
-    _EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+    EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -190,6 +192,8 @@ class GitService(QObject):
         self._reset_to_upstream_workflows: dict[GitRunner, _ResetToUpstreamWorkflow] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
+        self._review_commit_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
+        self._latest_review_commit_request: dict[tuple[Path, str, str], int] = {}
         self._incoming_commit_requests: dict[GitRunner, tuple[Path, str, str, int, int]] = {}
         self._latest_incoming_commit_request: dict[tuple[Path, str], int] = {}
         self._branch_requests: dict[GitRunner, tuple[Path, int]] = {}
@@ -209,7 +213,7 @@ class GitService(QObject):
         self._commit_diff_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
         self._latest_commit_diff_request: dict[tuple[Path, str, str], int] = {}
         self._comparison_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
-        self._latest_comparison_request: dict[Path, int] = {}
+        self._latest_comparison_request: dict[tuple[Path, str, str], int] = {}
         self._comparison_diff_requests: dict[GitRunner, tuple[Path, str, str, str, int]] = {}
         self._latest_comparison_diff_request: dict[tuple[Path, str, str, str], int] = {}
         self._amend_preview_requests: dict[GitRunner, tuple[Path, str, int]] = {}
@@ -1009,7 +1013,7 @@ class GitService(QObject):
             "--cached",
             "--no-ext-diff",
             "--no-color",
-            parent_oid or self._EMPTY_TREE,
+            parent_oid or self.EMPTY_TREE,
         ]
         if path is not None:
             arguments.extend(("--", path))
@@ -1035,7 +1039,7 @@ class GitService(QObject):
             arguments = ("add", "-A", "--", path)
             operation = "include file in amended commit"
         else:
-            arguments = ("reset", "-q", parent_oid or self._EMPTY_TREE, "--", path)
+            arguments = ("reset", "-q", parent_oid or self.EMPTY_TREE, "--", path)
             operation = "exclude file from amended commit"
         runner = GitRunner(parent=self)
         self._runners.add(runner)
@@ -1111,6 +1115,34 @@ class GitService(QObject):
         runner.run(GitCommand(arguments, repository, "read commit history"))
         return runner
 
+    def request_review_commits(
+        self, repository: Path, branch: str, target_branch: str, *, limit: int = 200
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        request_id = next(self._request_ids)
+        key = (repository, branch, target_branch)
+        self._latest_review_commit_request[key] = request_id
+        self._review_commit_requests[runner] = (repository, branch, target_branch, request_id)
+        runner.completed.connect(self._handle_review_commits)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                (
+                    "log",
+                    f"--max-count={limit}",
+                    "--date=iso-strict",
+                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    branch,
+                    "--not",
+                    target_branch,
+                ),
+                repository,
+                "read review commit history",
+            )
+        )
+        return runner
+
     def request_incoming_commits(
         self,
         repository: Path,
@@ -1149,12 +1181,12 @@ class GitService(QObject):
         return runner
 
     def request_ref_comparison(
-        self, repository: Path, base_ref: str, compare_ref: str
+        self, repository: Path, base_ref: str, compare_ref: str, *, merge_base: bool = True
     ) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
-        self._latest_comparison_request[repository] = request_id
+        self._latest_comparison_request[(repository, base_ref, compare_ref)] = request_id
         self._comparison_requests[runner] = (
             repository,
             base_ref,
@@ -1170,7 +1202,7 @@ class GitService(QObject):
                     "--name-status",
                     "-z",
                     "--find-renames",
-                    f"{base_ref}...{compare_ref}",
+                    f"{base_ref}{'...' if merge_base else '..'}{compare_ref}",
                 ),
                 repository,
                 "compare refs",
@@ -1187,6 +1219,7 @@ class GitService(QObject):
         *,
         ignore_whitespace: bool = False,
         context_lines: int = 3,
+        merge_base: bool = True,
     ) -> GitRunner:
         if context_lines < 0:
             raise ValueError("Diff context cannot be negative")
@@ -1207,7 +1240,7 @@ class GitService(QObject):
             "diff",
             "--no-ext-diff",
             "--no-color",
-            f"{base_ref}...{compare_ref}",
+            f"{base_ref}{'...' if merge_base else '..'}{compare_ref}",
             "--",
             path,
         ]
@@ -1764,7 +1797,7 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         runner.run(
             GitCommand(
-                ("restore", f"--source={revision or self._EMPTY_TREE}", "--worktree", "--", path),
+                ("restore", f"--source={revision or self.EMPTY_TREE}", "--worktree", "--", path),
                 repository,
                 "restore file from commit",
             )
@@ -1927,6 +1960,7 @@ class GitService(QObject):
         reset_to_upstream = self._reset_to_upstream_workflows.pop(runner, None)
         self._operation_action_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
+        self._review_commit_requests.pop(runner, None)
         self._incoming_commit_requests.pop(runner, None)
         self._branch_requests.pop(runner, None)
         self._tag_requests.pop(runner, None)
@@ -2055,6 +2089,36 @@ class GitService(QObject):
         self.history_ready.emit(page)
 
     @Slot(object)
+    def _handle_review_commits(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned review history from an unknown operation")
+            return
+        request = self._review_commit_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected review history result")
+            return
+        repository, branch, target_branch, request_id = request
+        key = (repository, branch, target_branch)
+        if self._latest_review_commit_request.get(key) != request_id:
+            return
+        self._latest_review_commit_request.pop(key, None)
+        if result.cancelled:
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read review commit history")
+            return
+        try:
+            commits = parse_commit_log(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        self.review_commits_ready.emit(
+            ReviewCommitSnapshot(repository, branch, target_branch, commits)
+        )
+
+    @Slot(object)
     def _handle_incoming_commits(self, result: object) -> None:
         runner = self.sender()
         if not isinstance(runner, GitRunner):
@@ -2102,9 +2166,10 @@ class GitService(QObject):
             self.operation_failed.emit("Git returned an unexpected comparison result")
             return
         repository, base_ref, compare_ref, request_id = request
-        if self._latest_comparison_request.get(repository) != request_id:
+        key = (repository, base_ref, compare_ref)
+        if self._latest_comparison_request.get(key) != request_id:
             return
-        self._latest_comparison_request.pop(repository, None)
+        self._latest_comparison_request.pop(key, None)
         if result.cancelled:
             self.operation_cancelled.emit()
             return

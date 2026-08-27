@@ -75,7 +75,7 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert window.centralWidget() is not None
     tabs = window.findChild(QTabWidget, "workspaceTabs")
     assert tabs is not None
-    assert tabs.count() == 3
+    assert tabs.count() == 4
     assert not window.windowIcon().isNull()
     toolbar = window.findChild(QToolBar, "repositoryToolbar")
     refresh_action = window.findChild(QAction, "refreshAction")

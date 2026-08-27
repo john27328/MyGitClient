@@ -28,6 +28,7 @@ from mygitclient.git.models import (
     RefComparisonSnapshot,
     RepositoryOperationSnapshot,
     RevertPreviewSnapshot,
+    ReviewCommitSnapshot,
     StashDiffSnapshot,
     StashesSnapshot,
     StashFilesSnapshot,
@@ -307,6 +308,35 @@ def test_history_can_be_limited_to_one_branch(qtbot: QtBot, tmp_path: Path) -> N
         "feature commit",
         "main commit",
     }
+
+
+def test_review_commit_list_excludes_commits_already_in_target_branch(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("base\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-m", "base")
+    _git(tmp_path, "switch", "-c", "feature")
+    tracked.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-am", "feature only")
+    _git(tmp_path, "switch", "main")
+    tracked.write_text("main\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-am", "main only")
+
+    service = GitService()
+    snapshots: list[object] = []
+    service.review_commits_ready.connect(snapshots.append)
+
+    with qtbot.waitSignal(service.review_commits_ready, timeout=5000):
+        service.request_review_commits(tmp_path, "feature", "main")
+
+    snapshot = snapshots[-1]
+    assert isinstance(snapshot, ReviewCommitSnapshot)
+    assert snapshot.target_branch == "main"
+    assert [commit.subject for commit in snapshot.commits] == ["feature only"]
 
 
 def test_branch_point_is_loaded_with_merge_base(qtbot: QtBot, tmp_path: Path) -> None:

@@ -224,6 +224,14 @@ class CommitPage:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewCommitSnapshot:
+    repository: Path
+    branch: str
+    target_branch: str
+    commits: tuple[CommitSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class IncomingCommitsSnapshot:
     repository: Path
     branch_ref: str

@@ -10,6 +10,7 @@ from mygitclient.workspace.manager import (
     discover_linked_repositories,
     find_repository_root,
 )
+from mygitclient.workspace.reviews import ReviewSession, ReviewStore, hunk_fingerprint
 
 __all__ = [
     "LinkedRepository",
@@ -18,4 +19,7 @@ __all__ = [
     "WorkspaceDiscoveryService",
     "discover_linked_repositories",
     "find_repository_root",
+    "ReviewSession",
+    "ReviewStore",
+    "hunk_fingerprint",
 ]
