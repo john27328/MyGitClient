@@ -31,6 +31,7 @@ class ReviewPanel(QWidget):
         self._session: ReviewSession | None = None
         self._files: tuple[CommitFileChange, ...] = ()
         self._states: dict[str, tuple[int, int]] = {}
+        self._expanded_groups = {"Needs review", "Reviewed"}
 
         self.start_button = QPushButton("Start review")
         self.start_button.setObjectName("startReviewButton")
@@ -68,6 +69,8 @@ class ReviewPanel(QWidget):
         self.files.setColumnWidth(0, 150)
         self.files.setRootIsDecorated(True)
         self.files.currentItemChanged.connect(self._file_changed)
+        self.files.itemExpanded.connect(self._group_expanded)
+        self.files.itemCollapsed.connect(self._group_collapsed)
 
         self.mark_selected_button = QPushButton("Mark selected blocks reviewed")
         self.mark_selected_button.setObjectName("markReviewBlocksButton")
@@ -178,6 +181,16 @@ class ReviewPanel(QWidget):
         if self._session is not None:
             self.delete_requested.emit(self._session)
 
+    @Slot(QTreeWidgetItem)
+    def _group_expanded(self, item: QTreeWidgetItem) -> None:
+        if item.parent() is None:
+            self._expanded_groups.add(item.text(0))
+
+    @Slot(QTreeWidgetItem)
+    def _group_collapsed(self, item: QTreeWidgetItem) -> None:
+        if item.parent() is None:
+            self._expanded_groups.discard(item.text(0))
+
     def _render_files(self) -> None:
         selected_path = self.selected_file.path if self.selected_file is not None else ""
         self.files.clear()
@@ -189,8 +202,8 @@ class ReviewPanel(QWidget):
         for _title, values in (("Needs review", pending), ("Reviewed", reviewed)):
             group = QTreeWidgetItem([_title, str(len(values))])
             group.setFirstColumnSpanned(True)
-            group.setExpanded(True)
             self.files.addTopLevelItem(group)
+            group.setExpanded(_title in self._expanded_groups)
             for change in values:
                 total, checked = self._states.get(change.path, (0, 0))
                 state = f"✓ {checked}/{total}" if total else "Needs review"
