@@ -59,13 +59,7 @@ from mygitclient.ui.github_repositories_dialog import GitHubRepositoriesDialog
 from mygitclient.ui.github_sign_in_dialog import GitHubSignInDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
-from mygitclient.updates import (
-    UpdateChecker,
-    UpdateDownloader,
-    UpdateInfo,
-    launch_updater,
-    portable_install_directory,
-)
+from mygitclient.ui.update_controller import UpdateController
 from mygitclient.workspace import WorkspaceManager, find_repository_root
 
 
@@ -140,18 +134,6 @@ class AppShell(QMainWindow):
         self._clone_service.completed.connect(self._clone_completed)
         self._clone_service.failed.connect(self._clone_failed)
         self._clone_service.cancelled.connect(self._clone_cancelled)
-        self._manual_update_check = False
-        self._update_progress: QProgressDialog | None = None
-        self._update_checker = UpdateChecker(self)
-        self._update_downloader = UpdateDownloader(self)
-        self._update_checker.update_available.connect(self._update_available)
-        self._update_checker.up_to_date.connect(self._update_is_current)
-        self._update_checker.failed.connect(self._update_check_failed)
-        self._update_downloader.progress.connect(self._update_download_progress)
-        self._update_downloader.ready.connect(self._update_downloaded)
-        self._update_downloader.failed.connect(self._update_download_failed)
-        self._update_downloader.cancelled.connect(self._update_download_cancelled)
-
         self.setObjectName("appShell")
         self.setWindowTitle("MyGitClient")
         self.setWindowIcon(load_icon("app-icon.png"))
@@ -165,6 +147,10 @@ class AppShell(QMainWindow):
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._current_tab_changed)
         self.setCentralWidget(self.tabs)
+        self._update_controller = UpdateController(
+            self,
+            set_status=lambda message: self.statusBar().showMessage(message, 5000),
+        )
 
         self.home = HomePanel()
         self.home.choose_repository_requested.connect(self._choose_repository)
@@ -189,6 +175,7 @@ class AppShell(QMainWindow):
         self._refresh_home()
         self._github_token_timer.start()
         QTimer.singleShot(0, self._renew_stale_github_tokens)
+        QTimer.singleShot(2500, self._update_controller.check_automatically)
 
     def _build_global_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -226,7 +213,7 @@ class AppShell(QMainWindow):
         help_menu = self.menuBar().addMenu("&Help")
         check_updates = help_menu.addAction("Check for Updates…")
         check_updates.setObjectName("checkUpdatesAction")
-        check_updates.triggered.connect(self._manual_update_check_requested)
+        check_updates.triggered.connect(self._update_controller.check_manually)
         about_action = help_menu.addAction("About MyGitClient")
         about_action.setObjectName("aboutAction")
         about_action.triggered.connect(self._show_about)
@@ -770,109 +757,6 @@ class AppShell(QMainWindow):
         font = app.font()
         font.setPointSize(max(7, min(24, point_size)))
         app.setFont(font)
-
-    @Slot()
-    def _manual_update_check_requested(self) -> None:
-        self._manual_update_check = True
-        self.statusBar().showMessage("Checking for updates…")
-        self._update_checker.check()
-
-    @Slot(object)
-    def _update_available(self, value: object) -> None:
-        if not isinstance(value, UpdateInfo):
-            return
-        self._manual_update_check = False
-        install_directory = portable_install_directory()
-        can_install = (
-            install_directory is not None
-            and value.archive_url is not None
-            and value.checksum_url is not None
-        )
-        if not can_install:
-            answer = QMessageBox.question(
-                self,
-                "Update available",
-                f"MyGitClient {value.version} is available.\n\n"
-                f"You are using {__version__}. Open the download page?",
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                QDesktopServices.openUrl(QUrl(value.page_url))
-            return
-        answer = QMessageBox.question(
-            self,
-            "Update available",
-            f"MyGitClient {value.version} is available.\n\n"
-            "Download it, install it, and restart MyGitClient?",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        progress = QProgressDialog("Downloading update…", "Cancel", 0, 0, self)
-        progress.setObjectName("updateDownloadProgress")
-        progress.setWindowTitle("Updating MyGitClient")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.canceled.connect(self._update_downloader.cancel)
-        self._update_progress = progress
-        progress.show()
-        self._update_downloader.download(value)
-
-    @Slot(int, int)
-    def _update_download_progress(self, received: int, total: int) -> None:
-        progress = self._update_progress
-        if progress is None:
-            return
-        if total <= 0:
-            progress.setRange(0, 0)
-        else:
-            progress.setRange(0, total)
-            progress.setValue(received)
-        progress.setLabelText(f"Downloading update… {received / 1024 / 1024:.1f} MB")
-
-    @Slot(object)
-    def _update_downloaded(self, value: object) -> None:
-        self._close_update_progress()
-        if not isinstance(value, Path):
-            return
-        install_directory = portable_install_directory()
-        if install_directory is None:
-            QMessageBox.warning(self, "Update failed", "This installation is not portable.")
-            return
-        if not launch_updater(value, install_directory):
-            QMessageBox.warning(self, "Update failed", "Could not start the update installer.")
-            return
-        app = QApplication.instance()
-        if isinstance(app, QApplication):
-            app.quit()
-
-    @Slot(str)
-    def _update_download_failed(self, message: str) -> None:
-        self._close_update_progress()
-        QMessageBox.warning(self, "Update failed", message)
-
-    @Slot()
-    def _update_download_cancelled(self) -> None:
-        self._close_update_progress()
-        self.statusBar().showMessage("Update cancelled", 5000)
-
-    def _close_update_progress(self) -> None:
-        if self._update_progress is not None:
-            self._update_progress.close()
-            self._update_progress.deleteLater()
-            self._update_progress = None
-
-    @Slot()
-    def _update_is_current(self) -> None:
-        if self._manual_update_check:
-            QMessageBox.information(
-                self, "No updates", f"MyGitClient {__version__} is the latest version."
-            )
-        self._manual_update_check = False
-
-    @Slot(str)
-    def _update_check_failed(self, message: str) -> None:
-        if self._manual_update_check:
-            QMessageBox.warning(self, "Update check failed", message)
-        self._manual_update_check = False
 
     @Slot()
     def _show_about(self) -> None:
