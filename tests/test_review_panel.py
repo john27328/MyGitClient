@@ -70,3 +70,22 @@ def test_review_panel_can_mark_the_current_file(qtbot: QtBot) -> None:
     panel.mark_file_button.click()
 
     assert requested == [True]
+
+
+def test_review_session_displays_local_start_date_and_time(qtbot: QtBot, tmp_path: Path) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    session = ReviewSession(
+        tmp_path,
+        "refs/heads/topic",
+        "a" * 40,
+        "Start point",
+        "b" * 40,
+        "2026-08-27T13:02:00+03:00",
+    )
+
+    panel.show_sessions((session,))
+
+    item = panel.sessions.topLevelItem(0)
+    assert item is not None
+    assert "27.08.2026 13:02" in item.text(0)

@@ -166,7 +166,9 @@ class ReviewController(QObject):
         boundaries = tuple(reversed(value.commits))
         commit = boundaries[0]
         base = commit.parent_oids[0] if commit.parent_oids else GitService.EMPTY_TREE
-        session = ReviewSession(value.repository, value.branch, base, commit.subject, commit.oid)
+        session = ReviewSession(
+            value.repository, value.branch, base, commit.subject, commit.oid, commit.authored_at
+        )
         self._review_boundaries[session.key] = boundaries
         self._store.save(session)
         self._panel.show_sessions(self._store.sessions(value.repository))
@@ -228,7 +230,14 @@ class ReviewController(QObject):
         if boundaries is None or all(commit.oid != value.oid for commit in boundaries):
             return
         base = value.parent_oids[0] if value.parent_oids else GitService.EMPTY_TREE
-        session = ReviewSession(active.repository, active.branch, base, value.subject, value.oid)
+        session = ReviewSession(
+            active.repository,
+            active.branch,
+            base,
+            value.subject,
+            value.oid,
+            value.authored_at,
+        )
         self._review_boundaries[session.key] = boundaries
         self._store.save(session)
         self._panel.show_sessions(self._store.sessions(active.repository))

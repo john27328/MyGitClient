@@ -21,6 +21,7 @@ class ReviewSession:
     base_oid: str
     base_subject: str
     start_oid: str = ""
+    start_at: str = ""
 
     @property
     def key(self) -> str:
@@ -92,16 +93,20 @@ class ReviewStore:
             base_oid = record.get("base_oid")
             base_subject = record.get("base_subject")
             start_oid = record.get("start_oid", base_oid)
+            start_at = record.get("start_at", "")
             if (
                 not isinstance(repository, str)
                 or not isinstance(branch, str)
                 or not isinstance(base_oid, str)
                 or not isinstance(base_subject, str)
                 or not isinstance(start_oid, str)
+                or not isinstance(start_at, str)
             ):
                 continue
             sessions.append(
-                ReviewSession(Path(repository).resolve(), branch, base_oid, base_subject, start_oid)
+                ReviewSession(
+                    Path(repository).resolve(), branch, base_oid, base_subject, start_oid, start_at
+                )
             )
         return tuple(sessions)
 
@@ -113,6 +118,7 @@ class ReviewStore:
                 "base_oid": session.base_oid,
                 "base_subject": session.base_subject,
                 "start_oid": session.start_oid,
+                "start_at": session.start_at,
             }
             for session in sessions
         ]

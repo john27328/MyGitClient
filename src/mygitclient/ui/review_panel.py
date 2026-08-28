@@ -126,10 +126,19 @@ class ReviewPanel(QWidget):
         self.sessions.clear()
         selected_item: QTreeWidgetItem | None = None
         for session in sessions:
-            item = QTreeWidgetItem([f"{session.branch} · {session.displayed_start_oid[:8]}"])
+            timestamp = QDateTime.fromString(session.start_at, Qt.DateFormat.ISODate)
+            started = (
+                timestamp.toLocalTime().toString("dd.MM.yyyy HH:mm")
+                if timestamp.isValid()
+                else ""
+            )
+            details = " · ".join(
+                part for part in (session.branch, session.displayed_start_oid[:8], started) if part
+            )
+            item = QTreeWidgetItem([details])
             item.setData(0, Qt.ItemDataRole.UserRole, session)
             item.setToolTip(
-                0, f"From {session.displayed_start_oid[:8]} · {session.base_subject}"
+                0, f"From {session.displayed_start_oid[:8]} · {started} · {session.base_subject}"
             )
             self.sessions.addTopLevelItem(item)
             if session.key == selected_key:
