@@ -485,9 +485,9 @@ def test_commit_history_is_loaded_asynchronously(
     assert second.text(2) == "First commit"
     assert not load_more.isVisible()
     tabs.setCurrentIndex(1)
-    assert diff_container.isHidden()
+    assert not diff_container.isVisibleTo(window)
     tabs.setCurrentIndex(0)
-    assert not diff_container.isHidden()
+    assert diff_container.isVisibleTo(window)
     window.close()
 
 
@@ -572,7 +572,7 @@ def test_open_repositories_are_restored_on_home_without_activation(
     assert recent.topLevelItemCount() == 0
     assert window.windowTitle() == "MyGitClient"
     assert home.isVisibleTo(window)
-    assert diff_container.isHidden()
+    assert not diff_container.isVisibleTo(window)
     assert settings.value("workspace/lastRepository") == str(repositories[1])
     window.close()
 
@@ -738,16 +738,17 @@ def test_selected_commit_shows_details_files_and_diff(
 
     qtbot.waitUntil(lambda: "+after" in inline_diff_text(), timeout=5000)
     assert "-before" in inline_diff_text()
-    assert diff_container.isHidden()
+    assert not diff_container.isVisibleTo(window)
     assert tabs.currentIndex() == 1
 
-    # Double-clicking the file opens the Diff tab on this commit and file, using the
-    # shared diff pane.
+    # Double-clicking the file opens the Diff tab on this commit and file.
     files.itemDoubleClicked.emit(file_item, 1)
     assert tabs.currentIndex() == 2
-    qtbot.waitUntil(lambda: "+after" in diff.toPlainText(), timeout=5000)
-    assert "-before" in diff.toPlainText()
-    assert not diff_container.isHidden()
+    study_diff = window.findChild(QPlainTextEdit, "studyDiffPanel")
+    assert study_diff is not None
+    qtbot.waitUntil(lambda: "+after" in study_diff.toPlainText(), timeout=5000)
+    assert "-before" in study_diff.toPlainText()
+    assert not diff_container.isVisibleTo(window)
     window.close()
 
 

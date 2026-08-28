@@ -36,11 +36,11 @@ class DiffTabWindow(MainWindow):
         files.addTopLevelItem(QTreeWidgetItem(["M", "file.py"]))
         history.addTopLevelItem(commit_item)
         history.setCurrentItem(commit_item)
+        self._workspace_container.show()
         self._workspace_tabs.setCurrentIndex(TAB_DIFF)
-        self._diff_view.show()
-        self._diff_view.diff.show()
-        self._diff_container.show()
-        return history, files, self._diff_view.diff, commit_item
+        self._study_diff_view.show()
+        self._study_diff_view.diff.show()
+        return history, files, self._study_diff_view.diff, commit_item
 
     @property
     def diff_container(self) -> QStackedWidget:
@@ -447,9 +447,10 @@ def test_selecting_changed_file_displays_diff(
     assert "changed again" in side_new.toPlainText()
     assert settings.value("diff/viewMode") == "side-by-side"
     sizes = splitter.sizes()
-    assert len(sizes) == 4
-    assert sizes[1] == 0
-    assert sizes[3] > sizes[2]
+    assert len(sizes) == 3
+    changes_splitter = window.findChild(QSplitter, "changesWorkspaceSplitter")
+    assert changes_splitter is not None
+    assert changes_splitter.sizes()[1] > changes_splitter.sizes()[0]
     window.close()
 
 
