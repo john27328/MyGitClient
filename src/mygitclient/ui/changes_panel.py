@@ -230,7 +230,8 @@ class ChangesPanel(QWidget):
 
         self.stage_all = QCheckBox("Select all changes")
         self.stage_all.setObjectName("stageAllCheckBox")
-        self.stage_all.setTristate(True)
+        # Partial is an indicator of manual selection; clicking must still select everything.
+        self.stage_all.setTristate(False)
         self.stage_all.stateChanged.connect(self._select_all_changed)
         self.stage_summary = QLabel("✓ 0 · ✎ 0")
         self.stage_summary.setObjectName("stageSummaryLabel")

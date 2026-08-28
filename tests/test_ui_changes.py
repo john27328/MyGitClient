@@ -198,7 +198,7 @@ def test_stage_all_checkbox_updates_every_file(
         )
 
     assert stage_all.checkState() is Qt.CheckState.Unchecked
-    stage_all.setCheckState(Qt.CheckState.Checked)
+    stage_all.click()
     qtbot.waitUntil(lambda: every_file_has_state(Qt.CheckState.Checked), timeout=5000)
     assert stage_all.checkState() is Qt.CheckState.Checked
 
