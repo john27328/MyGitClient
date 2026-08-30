@@ -8,11 +8,6 @@ on:
         required: false
         default: ""
         type: string
-      dry_run:
-        description: Validate and run CI without changing branches, tags, or releases
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   actions: read
@@ -82,7 +77,6 @@ jobs:
           - Version: ``$releaseVersion``
           - Source: ``develop@$developSha``
           - Tag: ``$releaseTag``
-          - Dry run: ``${{ inputs.dry_run }}``
           "@ >> $env:GITHUB_STEP_SUMMARY
 
   checks:
@@ -92,7 +86,6 @@ jobs:
       checkout_ref: ${{ needs.validate.outputs.develop_sha }}
 
   promote:
-    if: ${{ !inputs.dry_run }}
     needs: [validate, checks]
     runs-on: ubuntu-latest
     outputs:
@@ -151,7 +144,6 @@ jobs:
           "@ >> $env:GITHUB_STEP_SUMMARY
 
   portable:
-    if: ${{ !inputs.dry_run }}
     needs: [validate, promote]
     uses: ./.github/workflows/windows-portable.yml
     with:
@@ -175,6 +167,4 @@ jobs:
           | CI | ``${{ needs.checks.result }}`` |
           | Promote and tag | ``${{ needs.promote.result }}`` |
           | Portable release | ``${{ needs.portable.result }}`` |
-
-          Dry runs intentionally skip promotion and publication.
           "@ >> $env:GITHUB_STEP_SUMMARY

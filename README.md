@@ -98,9 +98,9 @@ build dependencies are already installed.
 
 Use the `Release` workflow in GitHub Actions:
 
-1. Run it from `develop` with the next version number, without the `v` prefix.
-2. Keep `dry_run` enabled first to validate the branches and run the full CI matrix.
-3. If the dry run is green, run it again with `dry_run` disabled.
+Run it from `develop` with the next version number, without the `v` prefix. The workflow
+validates the release request and runs the full CI matrix before it changes branches, creates a
+tag, or publishes anything.
 
 The workflow refuses stale or diverged branches and duplicate tags. A published run
 updates both version files, fast-forwards `develop` and `master`, creates the matching
