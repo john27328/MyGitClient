@@ -419,6 +419,7 @@ class MainWindow(QMainWindow):
         self._diff_view.selection_changed.connect(self._update_selection_actions)
         self._diff_view.context_requested.connect(self._diff_context_changed)
         self._diff_view.close_requested.connect(self._leave_diff_tab)
+        self._study_diff_view.close_requested.connect(self._leave_diff_tab)
         self._diff_view.stage_requested.connect(self._stage_checked_changes)
         self._diff_view.stash_requested.connect(self._stash_checked_changes)
         self._diff_view.unstage_requested.connect(self._unstage_checked_changes)

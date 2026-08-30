@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import QDateTime, Qt
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import CommitFileChange, CommitSummary
@@ -88,4 +89,5 @@ def test_review_session_displays_local_start_date_and_time(qtbot: QtBot, tmp_pat
 
     item = panel.sessions.topLevelItem(0)
     assert item is not None
-    assert "27.08.2026 13:02" in item.text(0)
+    expected_time = QDateTime.fromString(session.start_at, Qt.DateFormat.ISODate).toLocalTime()
+    assert expected_time.toString("dd.MM.yyyy HH:mm") in item.text(0)
