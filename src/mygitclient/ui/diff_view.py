@@ -336,7 +336,6 @@ class DiffView(QWidget):
         layout.addWidget(toolbar)
         layout.addWidget(self.file_header_container)
         layout.addWidget(self.stack)
-        self.hide()
         self.gutter.line_activated.connect(self._gutter_line_activated)
         self.diff.cursorPositionChanged.connect(self._update_hunk_button)
         self.view_mode_combo.currentIndexChanged.connect(self._update_hunk_button)

@@ -365,10 +365,6 @@ class MainWindow(QMainWindow):
         self._review_diff_view.set_object_name_prefix("review")
         self._review_diff_view.setObjectName("reviewDiffView")
         self._review_diff_view.set_auto_apply_hunks(False)
-        self._history_diff_view = DiffView(self._settings)
-        self._history_diff_view.set_object_name_prefix("history")
-        self._history_diff_view.setObjectName("historyDiffView")
-        self._history_diff_view.set_auto_apply_hunks(False)
         self._study_diff_view = DiffView(self._settings)
         self._study_diff_view.set_object_name_prefix("study")
         self._study_diff_view.setObjectName("studyDiffView")
@@ -387,9 +383,6 @@ class MainWindow(QMainWindow):
         self._changes_page = self._make_workspace_page(
             "changesWorkspaceSplitter", self._changes_container, self._diff_container
         )
-        self._history_page = self._make_workspace_page(
-            "historyWorkspaceSplitter", self._history_panel, self._history_diff_view
-        )
         self._study_page = self._make_workspace_page(
             "studyWorkspaceSplitter", self._diff_study_panel, self._study_diff_view
         )
@@ -398,7 +391,7 @@ class MainWindow(QMainWindow):
         )
         self._study_page.splitterMoved.connect(self._study_splitter_moved)
         self._workspace_tabs.addTab(self._changes_page, "Changes")
-        self._workspace_tabs.addTab(self._history_page, "History")
+        self._workspace_tabs.addTab(self._history_panel, "History")
         self._workspace_tabs.addTab(self._study_page, "Diff")
         self._workspace_tabs.addTab(self._review_page, "Review")
         self._review_controller = ReviewController(
@@ -454,13 +447,18 @@ class MainWindow(QMainWindow):
         self._review_diff_view.ignore_whitespace_button.toggled.connect(
             self._diff_ignore_whitespace_changed
         )
-        for view in (self._history_diff_view, self._study_diff_view):
-            view.wrap_button.setChecked(self._wrap_button.isChecked())
-            view.whitespace_button.setChecked(self._whitespace_button.isChecked())
-            view.ignore_whitespace_button.setChecked(self._ignore_whitespace_button.isChecked())
-            view.wrap_button.toggled.connect(view.set_wrap)
-            view.whitespace_button.toggled.connect(view.set_whitespace)
-            view.ignore_whitespace_button.toggled.connect(self._diff_ignore_whitespace_changed)
+        self._study_diff_view.wrap_button.setChecked(self._wrap_button.isChecked())
+        self._study_diff_view.whitespace_button.setChecked(self._whitespace_button.isChecked())
+        self._study_diff_view.ignore_whitespace_button.setChecked(
+            self._ignore_whitespace_button.isChecked()
+        )
+        self._study_diff_view.wrap_button.toggled.connect(self._study_diff_view.set_wrap)
+        self._study_diff_view.whitespace_button.toggled.connect(
+            self._study_diff_view.set_whitespace
+        )
+        self._study_diff_view.ignore_whitespace_button.toggled.connect(
+            self._diff_ignore_whitespace_changed
+        )
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("mainSplitter")
@@ -769,13 +767,11 @@ class MainWindow(QMainWindow):
             app.setFont(font)
         self._diff_view.set_font_size(diff_size.value())
         self._review_diff_view.set_font_size(diff_size.value())
-        self._history_diff_view.set_font_size(diff_size.value())
         self._study_diff_view.set_font_size(diff_size.value())
 
     def set_diff_font_size(self, point_size: int) -> None:
         self._diff_view.set_font_size(point_size)
         self._review_diff_view.set_font_size(point_size)
-        self._history_diff_view.set_font_size(point_size)
         self._study_diff_view.set_font_size(point_size)
 
     def _populate_recent_repositories(self) -> None:
@@ -864,7 +860,6 @@ class MainWindow(QMainWindow):
         self._review_controller.activate_repository(repository)
         self._diff_view.reset()
         self._review_diff_view.reset()
-        self._history_diff_view.reset()
         self._study_diff_view.reset()
         self._conflict_editor.clear()
         self._diff_container.setCurrentWidget(self._diff_view)
@@ -897,12 +892,22 @@ class MainWindow(QMainWindow):
         if repository is not None:
             self._settings.setValue("workspace/activeTab", index)
         if index == TAB_HISTORY:
-            self._history_panel.set_expanded_layout(False)
+            self._history_panel.set_expanded_layout(True)
         elif index == TAB_DIFF and repository is not None:
             self._history_panel.set_expanded_layout(False)
             self._apply_study_splitter_sizes()
         elif repository is not None:
             self._history_panel.set_expanded_layout(False)
+            page = self._changes_page if index == TAB_CHANGES else self._review_page
+            self._ensure_workspace_page_sizes(page)
+
+    @staticmethod
+    def _ensure_workspace_page_sizes(page: QSplitter) -> None:
+        sizes = page.sizes()
+        if len(sizes) != 2 or sizes[1] > 1:
+            return
+        available = max(page.width(), 900)
+        page.setSizes([min(420, available // 2), max(available - 420, 500)])
 
     def _apply_study_splitter_sizes(self) -> None:
         saved: object = self._settings.value("diff/studySplitterSizes")

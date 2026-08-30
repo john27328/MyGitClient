@@ -724,8 +724,7 @@ def test_selected_commit_shows_details_files_and_diff(
     assert file_item is not None
     assert file_item.text(1) == "tracked.txt"
 
-    # A single click only expands an inline diff in place; the shared diff pane stays
-    # hidden and the History tab stays active.
+    # A single click only expands an inline diff in place and the History tab stays active.
     files.setCurrentItem(file_item)
     file_item.setExpanded(True)
 

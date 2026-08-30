@@ -333,7 +333,6 @@ class ChangesPanel(QWidget):
         layout.addWidget(commit_actions)
         layout.addWidget(self.commit_error)
         self._update_selection_controls()
-        self.hide()
 
     @property
     def tree_mode(self) -> bool:

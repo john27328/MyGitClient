@@ -429,6 +429,7 @@ def test_selecting_changed_file_displays_diff(
     window.show()
     window.open_repository(repository)
     qtbot.waitUntil(lambda: changes.topLevelItemCount() == 1, timeout=5000)
+    assert changes.isVisibleTo(window)
     changed_item = changes.topLevelItem(0)
     assert changed_item is not None
     changes.setCurrentItem(changed_item)
