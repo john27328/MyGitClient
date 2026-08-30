@@ -19,7 +19,7 @@ jobs:
       matrix:
         # macOS is temporarily excluded until the asynchronous amend UI test is stable.
         os: [ubuntu-latest, windows-latest]
-        python-version: ["3.12"]
+        python-version: ["3.14"]
     runs-on: ${{ matrix.os }}
     env:
       QT_QPA_PLATFORM: ${{ startsWith(matrix.os, 'ubuntu') && 'offscreen' || '' }}
