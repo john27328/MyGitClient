@@ -41,7 +41,7 @@ jobs:
           python -c "import subprocess, sys;
           raise SystemExit(subprocess.call([
           sys.executable, '-m', 'pyright', '--pythonpath', sys.executable]))"
-      - run: pytest --junitxml=test-results.xml
+      - run: pytest --timeout=60 --junitxml=test-results.xml
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
