@@ -52,7 +52,7 @@ mygitclient = "mygitclient.__main__:main"
 packages = ["src/mygitclient"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q -p mygitclient.pytest_temp_storage"
 testpaths = ["tests"]
 
 [tool.ruff]

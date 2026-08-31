@@ -65,7 +65,15 @@ def test_show_browser_pending_opens_the_url_and_locks_inputs(
     dialog.close()
 
 
-def test_show_error_unlocks_inputs_and_recomputes_button_state(qapp: QApplication) -> None:
+def test_show_error_unlocks_inputs_and_recomputes_button_state(
+    qapp: QApplication, monkeypatch: MonkeyPatch
+) -> None:
+    def fake_open_url(_: QUrl) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "mygitclient.ui.github_sign_in_dialog.QDesktopServices.openUrl", fake_open_url
+    )
     dialog = GitHubSignInDialog(client_id="client-id", client_secret="client-secret")
     dialog.show_browser_pending("https://github.com/login/oauth/authorize")
 
