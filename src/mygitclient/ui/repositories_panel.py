@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal, Slot
@@ -129,18 +130,14 @@ class RepositoriesPanel(QWidget):
     ) -> None:
         item = self._find_item(repository)
         if item is not None:
+            existing_children = {
+                child.data(0, Qt.ItemDataRole.UserRole): child
+                for index in range(item.childCount())
+                if (child := item.child(index)) is not None
+            }
             for linked in linked_repositories:
                 self._remove_duplicate_top_level(linked.path, except_item=item)
-                existing = next(
-                    (
-                        child
-                        for index in range(item.childCount())
-                        if (child := item.child(index)) is not None
-                        and child.data(0, Qt.ItemDataRole.UserRole)
-                        == linked.path
-                    ),
-                    None,
-                )
+                existing = existing_children.get(linked.path)
                 if existing is not None:
                     existing.setText(0, f"{linked.path.name} ({linked.kind})")
                     continue
@@ -148,6 +145,7 @@ class RepositoriesPanel(QWidget):
                 child.setToolTip(0, str(linked.path))
                 child.setData(0, Qt.ItemDataRole.UserRole, linked.path)
                 item.addChild(child)
+                existing_children[linked.path] = child
             item.setExpanded(True)
         self._rebuild_recent_menu()
 
@@ -215,21 +213,25 @@ class RepositoriesPanel(QWidget):
             self._add_repository_tree_item(popup_item, child)
 
     def _repository_items(self) -> list[QTreeWidgetItem]:
-        pending = [
+        pending = deque(
             item
             for index in range(self.tree.topLevelItemCount())
             if (item := self.tree.topLevelItem(index)) is not None
-        ]
+        )
         result: list[QTreeWidgetItem] = []
         while pending:
-            item = pending.pop(0)
+            item = pending.popleft()
             if isinstance(item.data(0, Qt.ItemDataRole.UserRole), Path):
                 result.append(item)
-            pending[0:0] = [
-                child
-                for index in range(item.childCount())
-                if (child := item.child(index)) is not None
-            ]
+            pending.extendleft(
+                reversed(
+                    [
+                        child
+                        for index in range(item.childCount())
+                        if (child := item.child(index)) is not None
+                    ]
+                )
+            )
         return result
 
     def _find_item(self, repository: Path) -> QTreeWidgetItem | None:

@@ -98,6 +98,21 @@ def test_discover_nested_submodule_and_worktree(tmp_path: Path) -> None:
     }
 
 
+def test_discovery_skips_workspace_local_pytest_repositories(tmp_path: Path) -> None:
+    repository = tmp_path / "main"
+    (repository / ".git").mkdir(parents=True)
+    nested = repository / "packages" / "nested"
+    (nested / ".git").mkdir(parents=True)
+    generated = repository / ".test-tmp-session" / "run" / "temporary-repository"
+    (generated / ".git").mkdir(parents=True)
+
+    linked = discover_linked_repositories(repository)
+
+    assert [(item.path, item.kind) for item in linked] == [
+        (nested.resolve(), "nested")
+    ]
+
+
 def test_discover_submodules_recursively(tmp_path: Path) -> None:
     repository = tmp_path / "main"
     child = repository / "vendor" / "library"

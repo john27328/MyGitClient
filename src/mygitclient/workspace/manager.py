@@ -48,7 +48,13 @@ def discover_linked_repositories(
             if _is_repository_directory(path):
                 discovered[path] = "worktree"
 
-    skipped = {".git", ".venv", "node_modules", "__pycache__"}
+    skipped = {
+        ".git",
+        ".test-tmp-session",
+        ".venv",
+        "node_modules",
+        "__pycache__",
+    }
     for current, directories, _files in os.walk(root):
         if is_cancelled():
             return ()
