@@ -248,6 +248,7 @@ class ReviewPanel(QWidget):
 
     def _render_files(self) -> None:
         selected_path = self.selected_file.path if self.selected_file is not None else ""
+        blocker = QSignalBlocker(self.files)
         self.files.clear()
         pending: list[CommitFileChange] = []
         reviewed: list[CommitFileChange] = []
@@ -268,3 +269,4 @@ class ReviewPanel(QWidget):
                 group.addChild(item)
                 if change.path == selected_path:
                     self.files.setCurrentItem(item)
+        del blocker

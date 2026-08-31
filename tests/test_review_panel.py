@@ -29,6 +29,29 @@ def test_review_group_expansion_survives_file_list_refresh(qtbot: QtBot, tmp_pat
     assert not refreshed_pending.isExpanded()
 
 
+def test_refreshing_review_files_does_not_reselect_the_current_file(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
+    change = CommitFileChange("M", "src/example.py")
+    selected: list[CommitFileChange] = []
+    panel.file_selected.connect(selected.append)
+    panel.show_sessions((session,))
+    panel.select_session(session)
+    panel.show_files(session, (change,))
+    group = panel.files.topLevelItem(0)
+
+    assert group is not None
+    item = group.child(0)
+    assert item is not None
+    panel.files.setCurrentItem(item)
+    panel.show_files(session, (change,))
+
+    assert selected == [change]
+
+
 def test_review_boundaries_are_shown_with_local_date_and_time(qtbot: QtBot) -> None:
     panel = ReviewPanel()
     qtbot.addWidget(panel)
