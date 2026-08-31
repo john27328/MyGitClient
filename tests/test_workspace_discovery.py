@@ -44,3 +44,14 @@ def test_cancelled_discovery_does_not_publish_result(qtbot: QtBot, tmp_path: Pat
 
     qtbot.waitUntil(lambda: not service.is_running, timeout=5000)
     assert received == []
+
+
+def test_shutdown_drains_the_worker_thread(qtbot: QtBot, tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    (repository / ".git").mkdir(parents=True)
+    service = WorkspaceDiscoveryService()
+
+    service.request_linked_repositories(repository)
+    service.shutdown()
+
+    qtbot.waitUntil(lambda: not service.is_running, timeout=1000)

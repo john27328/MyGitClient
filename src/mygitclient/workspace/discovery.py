@@ -5,7 +5,7 @@ from itertools import count
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 
 from mygitclient.workspace.manager import LinkedRepository, discover_linked_repositories
 
@@ -85,7 +85,11 @@ class WorkspaceDiscoveryService(QObject):
         worker.completed.connect(self._handle_completed)
         worker.failed.connect(self._handle_failed)
         worker.finished.connect(worker.deleteLater)
-        worker.finished.connect(thread.quit)
+        # ``shutdown()`` waits for the worker thread on the GUI thread.  The default queued
+        # connection would need that same GUI thread to deliver ``quit()``, leaving the worker
+        # alive until the wait times out.  Quitting the QThread is thread-safe, so deliver this
+        # notification directly from the worker instead.
+        worker.finished.connect(thread.quit, Qt.ConnectionType.DirectConnection)
         thread.finished.connect(self._release)
         thread.start()
 
