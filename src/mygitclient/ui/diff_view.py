@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QFontDatabase,
     QFontMetrics,
     QKeyEvent,
+    QShowEvent,
     QTextBlockFormat,
     QTextCursor,
     QTextOption,
@@ -141,6 +142,7 @@ class DiffView(QWidget):
         self.gutter = DiffGutter()
         self.gutter.setObjectName("diffGutter")
         self.gutter.setReadOnly(True)
+        self.gutter.document().setDocumentMargin(0)
         self.gutter.setFont(diff_font)
         self.gutter.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.gutter.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -345,7 +347,7 @@ class DiffView(QWidget):
         self.hunk_button.clicked.connect(self._request_selected_hunk)
         self._update_gutter_visibility(False)
 
-    def showEvent(self, event: QEvent) -> None:  # noqa: N802
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
         if self.current_diff is not None:
             self._force_repaint()
@@ -414,6 +416,7 @@ class DiffView(QWidget):
         gutter = DiffGutter()
         gutter.setObjectName(object_name)
         gutter.setReadOnly(True)
+        gutter.document().setDocumentMargin(0)
         gutter.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         gutter.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         gutter.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -531,6 +534,9 @@ class DiffView(QWidget):
         self.file_header_container.setVisible(True)
         self.diff.show()
         self.view_mode_combo.show()
+        self._update_gutter_visibility(
+            self.diff.lineWrapMode() != QPlainTextEdit.LineWrapMode.NoWrap
+        )
         self.diff.setPlainText(
             "\n".join(self._display_lines(diff)) or "No textual changes to display."
         )
