@@ -112,6 +112,102 @@ def _powershell_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+_LOCK_INFO_CS = """
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class MyGitClientLockInfo
+{
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    private static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, string strSessionKey);
+
+    [DllImport("rstrtmgr.dll")]
+    private static extern int RmEndSession(uint pSessionHandle);
+
+    [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
+    private static extern int RmRegisterResources(uint pSessionHandle, uint nFiles, string[] rgsFilenames,
+        uint nApplications, RM_UNIQUE_PROCESS[] rgApplications, uint nServices, string[] rgsServiceNames);
+
+    [DllImport("rstrtmgr.dll")]
+    private static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo,
+        [In, Out] RM_PROCESS_INFO[] rgAffectedApps, ref uint lpdwRebootReasons);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RM_UNIQUE_PROCESS
+    {
+        public int dwProcessId;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime;
+    }
+
+    private enum RM_APP_TYPE
+    {
+        RmUnknownApp = 0,
+        RmMainWindow = 1,
+        RmOtherWindow = 2,
+        RmService = 3,
+        RmExplorer = 4,
+        RmConsole = 5,
+        RmCritical = 1000
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct RM_PROCESS_INFO
+    {
+        public RM_UNIQUE_PROCESS Process;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string strAppName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)]
+        public string strServiceShortName;
+        public RM_APP_TYPE ApplicationType;
+        public uint AppStatus;
+        public uint TSSessionId;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool bRestartable;
+    }
+
+    public static List<string> GetLockingProcesses(string[] paths)
+    {
+        var result = new List<string>();
+        uint handle;
+        if (RmStartSession(out handle, 0, Guid.NewGuid().ToString()) != 0)
+        {
+            return result;
+        }
+        try
+        {
+            if (RmRegisterResources(handle, (uint)paths.Length, paths, 0, null, 0, null) != 0)
+            {
+                return result;
+            }
+            uint pnProcInfoNeeded = 0;
+            uint pnProcInfo = 0;
+            uint lpdwRebootReasons = 0;
+            int status = RmGetList(handle, out pnProcInfoNeeded, ref pnProcInfo, null, ref lpdwRebootReasons);
+            if (status == 234)
+            {
+                pnProcInfo = pnProcInfoNeeded;
+                var processInfo = new RM_PROCESS_INFO[pnProcInfo];
+                status = RmGetList(handle, out pnProcInfoNeeded, ref pnProcInfo, processInfo, ref lpdwRebootReasons);
+                if (status == 0)
+                {
+                    for (int i = 0; i < pnProcInfo; i++)
+                    {
+                        result.Add(processInfo[i].strAppName + " (PID " + processInfo[i].Process.dwProcessId + ")");
+                    }
+                }
+            }
+        }
+        finally
+        {
+            RmEndSession(handle);
+        }
+        return result;
+    }
+}
+"""
+
+
 def create_updater_script(archive: Path, install_directory: Path) -> Path:
     update_root = archive.parent
     script = update_root / "install-update.ps1"
@@ -125,6 +221,25 @@ $target = {_powershell_literal(target)}
 $staging = {_powershell_literal(staging)}
 $backup = {_powershell_literal(backup)}
 $executable = {_powershell_literal(executable)}
+$lockInfoSource = @'
+{_LOCK_INFO_CS}
+'@
+function Invoke-WithRetry {{
+    param(
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [int]$Attempts = 10,
+        [int]$DelayMilliseconds = 300
+    )
+    for ($i = 1; $i -le $Attempts; $i++) {{
+        try {{
+            & $Action
+            return
+        }} catch {{
+            if ($i -eq $Attempts) {{ throw }}
+            Start-Sleep -Milliseconds $DelayMilliseconds
+        }}
+    }}
+}}
 try {{
     Wait-Process -Id {os.getpid()} -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
@@ -134,9 +249,9 @@ try {{
         throw \"The update archive does not contain MyGitClient.exe.\"
     }}
     Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $target -Destination $backup
+    Invoke-WithRetry {{ Move-Item -LiteralPath $target -Destination $backup }}
     try {{
-        Move-Item -LiteralPath $source -Destination $target
+        Invoke-WithRetry {{ Move-Item -LiteralPath $source -Destination $target }}
     }} catch {{
         Move-Item -LiteralPath $backup -Destination $target
         throw
@@ -144,8 +259,23 @@ try {{
     Start-Process -FilePath $executable -WorkingDirectory $target
     Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
 }} catch {{
+    $lockMessage = $_.Exception.Message
+    try {{
+        Add-Type -TypeDefinition $lockInfoSource -ErrorAction Stop
+        $lockedFiles = @()
+        if (Test-Path -LiteralPath $target) {{
+            $lockedFiles = @(Get-ChildItem -LiteralPath $target -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {{ $_.FullName }})
+        }}
+        if ($lockedFiles.Count -gt 0) {{
+            $lockingProcesses = [MyGitClientLockInfo]::GetLockingProcesses($lockedFiles)
+            if ($lockingProcesses.Count -gt 0) {{
+                $lockMessage += \"`n`nЗанято процессом(-ами): \" + ($lockingProcesses -join \", \")
+            }}
+        }}
+    }} catch {{
+    }}
     Add-Type -AssemblyName PresentationFramework
-    [System.Windows.MessageBox]::Show($_.Exception.Message, \"MyGitClient update failed\")
+    [System.Windows.MessageBox]::Show($lockMessage, \"MyGitClient update failed\")
 }}
 """
     script.write_text(content, encoding="utf-8-sig")
