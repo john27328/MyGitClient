@@ -41,11 +41,11 @@ jobs:
           python -c "import subprocess, sys;
           raise SystemExit(subprocess.call([
           sys.executable, '-m', 'pyright', '--pythonpath', sys.executable]))"
-      - run: pytest -vv --timeout=60 --junitxml=test-results.xml
+      - run: python tests/run_ci_tests.py
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ matrix.os }}-python-${{ matrix.python-version }}
-          path: test-results.xml
+          path: test-results
           if-no-files-found: warn

@@ -8,18 +8,11 @@ from PySide6.QtWidgets import QApplication
 
 
 @pytest.fixture(autouse=True)
-def dispose_top_level_widgets_after_qt_test(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Leave no Qt windows or deferred deletions for the next UI test."""
+def dispose_top_level_widgets_after_qt_test(qapp: QApplication) -> Iterator[None]:
+    """Give every test a QApplication and leave no Qt state for the next one."""
     yield
 
-    if "qtbot" not in request.fixturenames and "qapp" not in request.fixturenames:
-        return
-
-    application = QCoreApplication.instance()
-    if not isinstance(application, QApplication):
-        return
-
-    for widget in tuple(application.topLevelWidgets()):
+    for widget in tuple(qapp.topLevelWidgets()):
         widget.close()
         widget.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
