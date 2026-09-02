@@ -345,6 +345,11 @@ class DiffView(QWidget):
         self.hunk_button.clicked.connect(self._request_selected_hunk)
         self._update_gutter_visibility(False)
 
+    def showEvent(self, event: QEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self.current_diff is not None:
+            self._force_repaint()
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         if (
             watched in (self.diff, self.side_old, self.side_new)
@@ -542,7 +547,27 @@ class DiffView(QWidget):
         if text_selections is not None:
             self._restore_text_selections(text_selections)
         self._update_hunk_button()
+        self._force_repaint()
         self.selection_changed.emit()
+
+    def _force_repaint(self) -> None:
+        """Force a fresh paint after swapping hidden blocks and content.
+
+        Some Qt backends (observed over RDP) don't reliably schedule a repaint
+        of the viewport after `QTextBlock.setVisible()` toggles combined with
+        a full-document replacement, leaving stale or blank pixels on screen
+        even though the underlying document is correct.
+        """
+
+        for editor in (
+            self.diff,
+            self.gutter,
+            self.side_old,
+            self.side_new,
+            self.side_old_gutter,
+            self.side_new_gutter,
+        ):
+            editor.viewport().update()
 
     def _text_selections(self) -> tuple[tuple[int, int] | None, ...]:
         selections: list[tuple[int, int] | None] = []
