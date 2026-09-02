@@ -123,6 +123,7 @@ TAB_CHANGES = 0
 TAB_HISTORY = 1
 TAB_DIFF = 2
 TAB_REVIEW = 3
+DIFF_CONTEXT_LINES = 3
 
 INLINE_DIFF_CONCURRENCY = 4
 """How many inline diffs may be read at once before the rest wait their turn."""
@@ -402,7 +403,7 @@ class MainWindow(QMainWindow):
             self._review_diff_container,
             self._workspace_tabs,
             review_tab=TAB_REVIEW,
-            context_lines=lambda: self._diff_context_lines,
+            context_lines=lambda: DIFF_CONTEXT_LINES,
             ignore_whitespace=lambda: self._review_diff_view.ignore_whitespace_button.isChecked(),
             parent_widget=self,
         )
@@ -417,7 +418,6 @@ class MainWindow(QMainWindow):
         self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
         self._diff_view.selection_changed.connect(self._update_selection_actions)
-        self._diff_view.context_requested.connect(self._diff_context_changed)
         self._diff_view.close_requested.connect(self._leave_diff_tab)
         self._study_diff_view.close_requested.connect(self._leave_diff_tab)
         self._diff_view.stage_requested.connect(self._stage_checked_changes)
@@ -427,7 +427,6 @@ class MainWindow(QMainWindow):
         self._close_diff_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._close_diff_shortcut.setObjectName("leaveDiffTabShortcut")
         self._close_diff_shortcut.activated.connect(self._leave_diff_tab)
-        self._diff_context_lines = self._read_int_setting("diff/contextLines", 3)
         self._wrap_button.setChecked(self._read_bool_setting("diff/wrapLines"))
         self._wrap_button.toggled.connect(self._diff_wrap_changed)
         self._whitespace_button.setChecked(self._read_bool_setting("diff/showWhitespace"))
@@ -466,7 +465,6 @@ class MainWindow(QMainWindow):
         self._study_diff_view.view_mode_combo.currentIndexChanged.connect(
             self._study_diff_view_changed
         )
-        self._study_diff_view.context_requested.connect(self._diff_context_changed)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("mainSplitter")
@@ -500,15 +498,6 @@ class MainWindow(QMainWindow):
     def _read_bool_setting(self, key: str) -> bool:
         value = self._settings.value(key, False)
         return value is True or value == "true" or value == 1
-
-    def _read_int_setting(self, key: str, fallback: int) -> int:
-        value = self._settings.value(key, fallback)
-        if isinstance(value, (int, str)):
-            try:
-                return max(0, int(value))
-            except ValueError:
-                return fallback
-        return fallback
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -1185,7 +1174,7 @@ class MainWindow(QMainWindow):
             file_value.path,
             parent_oid=commit_value.parent_oids[0] if commit_value.parent_oids else None,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=self._diff_context_lines,
+            context_lines=DIFF_CONTEXT_LINES,
         )
 
     # -- Inline history diffs -----------------------------------------------
@@ -1264,7 +1253,7 @@ class MainWindow(QMainWindow):
                 compare_ref,
                 change.path,
                 ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-                context_lines=self._diff_context_lines,
+                context_lines=DIFF_CONTEXT_LINES,
             )
             return True
         if source == "stash":
@@ -1284,7 +1273,7 @@ class MainWindow(QMainWindow):
             change.path,
             parent_oid=commit.parent_oids[0] if commit.parent_oids else None,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=self._diff_context_lines,
+            context_lines=DIFF_CONTEXT_LINES,
         )
         return True
 
@@ -1391,7 +1380,6 @@ class MainWindow(QMainWindow):
             preserve_scroll=False,
             whole_file_staged=False,
         )
-        self._study_diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing {value.diff.path} from {value.stash.ref}")
 
     def _history_file_path(self, change: CommitFileChange) -> Path | None:
@@ -1481,7 +1469,7 @@ class MainWindow(QMainWindow):
             compare_ref,
             file_value.path,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=self._diff_context_lines,
+            context_lines=DIFF_CONTEXT_LINES,
         )
 
     @Slot(object)
@@ -1523,7 +1511,6 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
-        self._study_diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing comparison diff for {value.diff.path}")
 
     @Slot(object)
@@ -1549,7 +1536,6 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
-        self._study_diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing {value.diff.path} from {value.commit_oid[:8]}")
 
     @Slot(object)
@@ -3152,7 +3138,6 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
-        self._diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing commit {value.commit_oid[:8]} to amend")
         if value.path is None:
             self._refresh_amend_tree_if_ready(value.repository)
@@ -3561,7 +3546,7 @@ class MainWindow(QMainWindow):
             file,
             staged=staged,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=self._diff_context_lines,
+            context_lines=DIFF_CONTEXT_LINES,
         )
 
     def _populate_diff_versions(self, file: FileStatus) -> None:
@@ -3607,7 +3592,6 @@ class MainWindow(QMainWindow):
                 diff_value.staged and not file.has_worktree_change and not file.unmerged
             ),
         )
-        self._diff_view.set_context_lines(self._diff_context_lines)
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
 
@@ -3723,12 +3707,6 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def _diff_ignore_whitespace_changed(self, enabled: bool) -> None:
         self._settings.setValue("diff/ignoreWhitespace", enabled)
-        self._refresh_current_diff()
-
-    @Slot(int)
-    def _diff_context_changed(self, context_lines: int) -> None:
-        self._diff_context_lines = context_lines
-        self._settings.setValue("diff/contextLines", context_lines)
         self._refresh_current_diff()
 
     def _refresh_current_diff(self) -> None:

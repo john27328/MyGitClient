@@ -6,8 +6,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
-    QAction,
-    QActionGroup,
     QColor,
     QFont,
     QFontDatabase,
@@ -22,7 +20,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -77,7 +74,6 @@ class DiffView(QWidget):
     selection_changed = Signal()
     lines_requested = Signal(object, object)
     hunk_requested = Signal(object, int)
-    context_requested = Signal(int)
     close_requested = Signal()
     stage_requested = Signal()
     stash_requested = Signal()
@@ -261,26 +257,6 @@ class DiffView(QWidget):
         self.ignore_whitespace_button.setToolTip(
             "Ignore whitespace changes when loading the diff"
         )
-        self.context_button = QToolButton()
-        self.context_button.setObjectName("diffContextButton")
-        self.context_button.setText("Context")
-        self.context_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        context_menu = QMenu(self.context_button)
-        self._context_actions = QActionGroup(self.context_button)
-        self._context_actions.setExclusive(True)
-        for label, lines in (
-            ("Default context", 3),
-            ("Expand blocks", 20),
-            ("Show full file", 999_999),
-        ):
-            action = context_menu.addAction(label)
-            action.setCheckable(True)
-            action.setData(lines)
-            self._context_actions.addAction(action)
-            if lines == 3:
-                action.setChecked(True)
-        self.context_button.setMenu(context_menu)
-        self._context_actions.triggered.connect(self._context_action_triggered)
         self.hunk_button = QToolButton()
         self.hunk_button.setObjectName("diffHunkButton")
         self.hunk_button.setText("Stage hunk")
@@ -318,7 +294,6 @@ class DiffView(QWidget):
         toolbar_layout.addWidget(self.wrap_button)
         toolbar_layout.addWidget(self.whitespace_button)
         toolbar_layout.addWidget(self.ignore_whitespace_button)
-        toolbar_layout.addWidget(self.context_button)
         toolbar_layout.addWidget(self.stage_button)
         toolbar_layout.addWidget(self.stash_button)
         toolbar_layout.addWidget(self.unstage_button)
@@ -779,17 +754,6 @@ class DiffView(QWidget):
             option.setFlags(flags)
             editor.document().setDefaultTextOption(option)
 
-    def set_context_lines(self, lines: int) -> None:
-        """Sync the Context button to a value applied from outside (e.g. settings)."""
-
-        for action in self._context_actions.actions():
-            if action.data() == lines:
-                action.setChecked(True)
-                break
-        self.context_button.setText(
-            "Full file" if lines > 100_000 else ("Expanded" if lines > 3 else "Context")
-        )
-
     def set_font_size(self, point_size: int) -> None:
         for editor in (
             self.diff,
@@ -810,16 +774,6 @@ class DiffView(QWidget):
         self._update_gutter_visibility(
             self.diff.lineWrapMode() != QPlainTextEdit.LineWrapMode.NoWrap
         )
-
-    @Slot(QAction)
-    def _context_action_triggered(self, action: QAction) -> None:
-        lines = action.data()
-        if not isinstance(lines, int):
-            return
-        self.context_button.setText(
-            "Full file" if lines > 100_000 else ("Expanded" if lines > 3 else "Context")
-        )
-        self.context_requested.emit(lines)
 
     def _render_gutter(self, diff: UnifiedDiff, selection: DiffSelection) -> None:
         old_width = max(
