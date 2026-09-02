@@ -288,6 +288,7 @@ class ReviewController(QObject):
             whole_file_staged=False,
             interactive=False,
         )
+        self._diff_view.set_context_lines(self._context_lines())
         self._panel.set_mark_file_enabled(True)
         return True
 

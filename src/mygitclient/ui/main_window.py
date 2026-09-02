@@ -460,6 +460,13 @@ class MainWindow(QMainWindow):
         self._study_diff_view.ignore_whitespace_button.toggled.connect(
             self._diff_ignore_whitespace_changed
         )
+        self._review_diff_view.view_mode_combo.currentIndexChanged.connect(
+            self._review_diff_view_changed
+        )
+        self._study_diff_view.view_mode_combo.currentIndexChanged.connect(
+            self._study_diff_view_changed
+        )
+        self._study_diff_view.context_requested.connect(self._diff_context_changed)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setObjectName("mainSplitter")
@@ -1384,6 +1391,7 @@ class MainWindow(QMainWindow):
             preserve_scroll=False,
             whole_file_staged=False,
         )
+        self._study_diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing {value.diff.path} from {value.stash.ref}")
 
     def _history_file_path(self, change: CommitFileChange) -> Path | None:
@@ -1515,6 +1523,7 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
+        self._study_diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing comparison diff for {value.diff.path}")
 
     @Slot(object)
@@ -1540,8 +1549,7 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
-        self._diff_view_mode.show()
-        self._diff.show()
+        self._study_diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing {value.diff.path} from {value.commit_oid[:8]}")
 
     @Slot(object)
@@ -3144,6 +3152,7 @@ class MainWindow(QMainWindow):
             whole_file_staged=False,
             interactive=False,
         )
+        self._diff_view.set_context_lines(self._diff_context_lines)
         self._status_label.setText(f"Showing commit {value.commit_oid[:8]} to amend")
         if value.path is None:
             self._refresh_amend_tree_if_ready(value.repository)
@@ -3598,6 +3607,7 @@ class MainWindow(QMainWindow):
                 diff_value.staged and not file.has_worktree_change and not file.unmerged
             ),
         )
+        self._diff_view.set_context_lines(self._diff_context_lines)
         version = "staged" if diff_value.staged else "working tree"
         self._status_label.setText(f"Showing {version} diff for {diff_value.path}")
 
@@ -3671,6 +3681,18 @@ class MainWindow(QMainWindow):
             return
         self._settings.setValue("diff/viewMode", mode)
         self._diff_view.set_view_mode(mode)
+
+    @Slot(int)
+    def _review_diff_view_changed(self, _index: int) -> None:
+        mode = self._review_diff_view.view_mode_combo.currentData()
+        if isinstance(mode, str):
+            self._review_diff_view.set_view_mode(mode)
+
+    @Slot(int)
+    def _study_diff_view_changed(self, _index: int) -> None:
+        mode = self._study_diff_view.view_mode_combo.currentData()
+        if isinstance(mode, str):
+            self._study_diff_view.set_view_mode(mode)
 
     @Slot(object, int)
     def _apply_diff_hunk(self, diff_value: object, hunk_index: int) -> None:

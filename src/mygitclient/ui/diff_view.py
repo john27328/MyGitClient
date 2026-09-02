@@ -529,6 +529,8 @@ class DiffView(QWidget):
         self.git_state_badge.setVisible(True)
         self.file_header.setVisible(True)
         self.file_header_container.setVisible(True)
+        self.diff.show()
+        self.view_mode_combo.show()
         self.diff.setPlainText(
             "\n".join(self._display_lines(diff)) or "No textual changes to display."
         )
@@ -770,6 +772,17 @@ class DiffView(QWidget):
                 flags &= ~QTextOption.Flag.ShowTabsAndSpaces
             option.setFlags(flags)
             editor.document().setDefaultTextOption(option)
+
+    def set_context_lines(self, lines: int) -> None:
+        """Sync the Context button to a value applied from outside (e.g. settings)."""
+
+        for action in self._context_actions.actions():
+            if action.data() == lines:
+                action.setChecked(True)
+                break
+        self.context_button.setText(
+            "Full file" if lines > 100_000 else ("Expanded" if lines > 3 else "Context")
+        )
 
     def set_font_size(self, point_size: int) -> None:
         for editor in (
