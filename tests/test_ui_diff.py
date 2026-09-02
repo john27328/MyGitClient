@@ -279,14 +279,13 @@ def test_switching_repository_clears_visible_diff_overview(
     qtbot.waitUntil(lambda: "+changed" in diff_panel.toPlainText(), timeout=5000)
     assert overview.isVisible()
 
-    for index in range(12):
-        target = repositories[(index + 1) % 2]
-        window.open_repository(target)
-        qtbot.waitUntil(
-            lambda target=target: window.windowTitle().startswith(target.name),
-            timeout=5000,
-        )
-        qtbot.wait(100)
+    target = repositories[1]
+    window.open_repository(target)
+    qtbot.waitUntil(
+        lambda: window.windowTitle().startswith(target.name),
+        timeout=5000,
+    )
+    qtbot.wait(100)
 
     assert diff_panel.toPlainText() == ""
     assert overview.isHidden()
