@@ -37,7 +37,7 @@ from mygitclient.git.models import (
 )
 from mygitclient.git.operation_queue import GitOperationQueue
 from mygitclient.git.runner import GitRunner
-from mygitclient.git.service import GitService, detect_repository_operation
+from mygitclient.git.service import HISTORY_PAGE_SIZE, GitService, detect_repository_operation
 
 
 def _git(repository: Path, *arguments: str) -> None:
@@ -83,6 +83,23 @@ def test_completed_runner_is_released(qtbot: QtBot, tmp_path: Path) -> None:
         service.request_status(tmp_path)
 
     qtbot.waitUntil(lambda: not service.findChildren(GitRunner), timeout=5000)
+
+
+def test_history_uses_a_thousand_commits_by_default(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[GitCommand] = []
+
+    def capture_run(_runner: GitRunner, command: GitCommand) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(GitRunner, "run", capture_run)
+    service = GitService()
+
+    service.request_history(tmp_path)
+
+    assert HISTORY_PAGE_SIZE == 1000
+    assert commands[0].arguments[2] == "--max-count=1001"
 
 
 def test_status_does_not_compete_for_index_lock(qtbot: QtBot, tmp_path: Path) -> None:

@@ -143,8 +143,7 @@ class HistoryPanel(QWidget):
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         for column, width in enumerate((60, 230, 360, 150, 190, 90)):
             self.tree.setColumnWidth(column, width)
-        for column in (4, 5):
-            self.tree.setColumnHidden(column, True)
+        self.tree.setColumnHidden(5, True)
         self.tree.header().setStretchLastSection(False)
         self.tree.header().setSectionsMovable(True)
         self.tree.header().setFirstSectionMovable(False)
@@ -561,6 +560,9 @@ class HistoryPanel(QWidget):
             self.content_splitter.restoreState(content_state)
         if isinstance(columns_state, QByteArray):
             self.tree.header().restoreState(columns_state)
+        if not self._settings.value("history/dateColumnShown", False, type=bool):
+            self.tree.setColumnHidden(4, False)
+            self._settings.setValue("history/dateColumnShown", True)
 
     def show_files(self, snapshot: CommitFilesSnapshot) -> None:
         commit = self.selected_commit

@@ -60,6 +60,8 @@ from mygitclient.git.parsers import (
 )
 from mygitclient.git.runner import GitRunner
 
+HISTORY_PAGE_SIZE = 1000
+
 
 @dataclass(slots=True)
 class _CheckoutWorkflow:
@@ -1093,7 +1095,7 @@ class GitService(QObject):
         repository: Path,
         *,
         offset: int = 0,
-        limit: int = 100,
+        limit: int = HISTORY_PAGE_SIZE,
         refs: tuple[str, ...] = (),
     ) -> GitRunner:
         runner = GitRunner(parent=self)

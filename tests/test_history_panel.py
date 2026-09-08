@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QDateTime, QSettings, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QTreeWidgetItem
 from pytestqt.qtbot import QtBot
@@ -60,7 +60,12 @@ def test_history_panel_renders_page_and_graph(qtbot: QtBot) -> None:
     assert first is not None
     assert first.text(2) == "Merge feature"
     assert first.text(3) == "Test Author"
+    expected_date = QDateTime.fromString(
+        "2026-07-17T10:30:00+03:00", Qt.DateFormat.ISODate
+    ).toLocalTime().toString("dd.MM.yyyy HH:mm")
+    assert first.text(4) == expected_date
     assert first.text(5) == "merge"
+    assert not panel.tree.isColumnHidden(4)
     assert isinstance(first.data(0, GRAPH_ROLE), CommitGraphRow)
     assert not panel.load_more_button.isHidden()
 
@@ -168,7 +173,7 @@ def test_history_layout_stacks_commit_details_and_can_focus_diff(
     assert panel.content_splitter.orientation() is Qt.Orientation.Vertical
     assert panel.content_splitter.widget(1) is panel.details
     assert not panel.tree.isColumnHidden(3)
-    assert panel.tree.isColumnHidden(4)
+    assert not panel.tree.isColumnHidden(4)
     assert panel.tree.isColumnHidden(5)
 
 def test_history_panel_expand_all_expands_every_file_row(qtbot: QtBot) -> None:
