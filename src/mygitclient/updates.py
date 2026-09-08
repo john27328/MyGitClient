@@ -120,18 +120,23 @@ using System.Runtime.InteropServices;
 public static class MyGitClientLockInfo
 {
     [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
-    private static extern int RmStartSession(out uint pSessionHandle, int dwSessionFlags, string strSessionKey);
+    private static extern int RmStartSession(
+        out uint pSessionHandle, int dwSessionFlags, string strSessionKey);
 
     [DllImport("rstrtmgr.dll")]
     private static extern int RmEndSession(uint pSessionHandle);
 
     [DllImport("rstrtmgr.dll", CharSet = CharSet.Unicode)]
-    private static extern int RmRegisterResources(uint pSessionHandle, uint nFiles, string[] rgsFilenames,
-        uint nApplications, RM_UNIQUE_PROCESS[] rgApplications, uint nServices, string[] rgsServiceNames);
+    private static extern int RmRegisterResources(
+        uint pSessionHandle, uint nFiles, string[] rgsFilenames,
+        uint nApplications, RM_UNIQUE_PROCESS[] rgApplications,
+        uint nServices, string[] rgsServiceNames);
 
     [DllImport("rstrtmgr.dll")]
-    private static extern int RmGetList(uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo,
-        [In, Out] RM_PROCESS_INFO[] rgAffectedApps, ref uint lpdwRebootReasons);
+    private static extern int RmGetList(
+        uint dwSessionHandle, out uint pnProcInfoNeeded, ref uint pnProcInfo,
+        [In, Out] RM_PROCESS_INFO[] rgAffectedApps,
+        ref uint lpdwRebootReasons);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct RM_UNIQUE_PROCESS
@@ -183,17 +188,22 @@ public static class MyGitClientLockInfo
             uint pnProcInfoNeeded = 0;
             uint pnProcInfo = 0;
             uint lpdwRebootReasons = 0;
-            int status = RmGetList(handle, out pnProcInfoNeeded, ref pnProcInfo, null, ref lpdwRebootReasons);
+            int status = RmGetList(
+                handle, out pnProcInfoNeeded, ref pnProcInfo, null, ref lpdwRebootReasons);
             if (status == 234)
             {
                 pnProcInfo = pnProcInfoNeeded;
                 var processInfo = new RM_PROCESS_INFO[pnProcInfo];
-                status = RmGetList(handle, out pnProcInfoNeeded, ref pnProcInfo, processInfo, ref lpdwRebootReasons);
+                status = RmGetList(
+                    handle, out pnProcInfoNeeded, ref pnProcInfo, processInfo,
+                    ref lpdwRebootReasons);
                 if (status == 0)
                 {
                     for (int i = 0; i < pnProcInfo; i++)
                     {
-                        result.Add(processInfo[i].strAppName + " (PID " + processInfo[i].Process.dwProcessId + ")");
+                        result.Add(
+                            processInfo[i].strAppName + " (PID "
+                            + processInfo[i].Process.dwProcessId + ")");
                     }
                 }
             }
@@ -264,7 +274,10 @@ try {{
         Add-Type -TypeDefinition $lockInfoSource -ErrorAction Stop
         $lockedFiles = @()
         if (Test-Path -LiteralPath $target) {{
-            $lockedFiles = @(Get-ChildItem -LiteralPath $target -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {{ $_.FullName }})
+            $lockedFiles = @(
+                Get-ChildItem -LiteralPath $target -Recurse -File -ErrorAction SilentlyContinue |
+                    ForEach-Object {{ $_.FullName }}
+            )
         }}
         if ($lockedFiles.Count -gt 0) {{
             $lockingProcesses = [MyGitClientLockInfo]::GetLockingProcesses($lockedFiles)
