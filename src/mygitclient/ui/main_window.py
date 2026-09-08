@@ -370,6 +370,9 @@ class MainWindow(QMainWindow):
         self._study_diff_view.set_object_name_prefix("study")
         self._study_diff_view.setObjectName("studyDiffView")
         self._study_diff_view.set_auto_apply_hunks(False)
+        self._diff_context_lines = self._read_diff_context_lines()
+        for view in (self._diff_view, self._review_diff_view, self._study_diff_view):
+            view.set_context_lines(self._diff_context_lines)
         self._conflict_editor = ConflictEditor()
         self._conflict_editor.save_requested.connect(self._save_conflict_result)
         self._conflict_editor.mergetool_requested.connect(self._launch_mergetool)
@@ -403,7 +406,7 @@ class MainWindow(QMainWindow):
             self._review_diff_container,
             self._workspace_tabs,
             review_tab=TAB_REVIEW,
-            context_lines=lambda: DIFF_CONTEXT_LINES,
+            context_lines=lambda: self._diff_context_lines,
             ignore_whitespace=lambda: self._review_diff_view.ignore_whitespace_button.isChecked(),
             parent_widget=self,
         )
@@ -418,6 +421,9 @@ class MainWindow(QMainWindow):
         self._diff_version.currentIndexChanged.connect(self._request_selected_diff)
         self._diff_view_mode.currentIndexChanged.connect(self._diff_view_changed)
         self._diff_view.selection_changed.connect(self._update_selection_actions)
+        self._diff_view.context_requested.connect(self._changes_diff_context_changed)
+        self._review_diff_view.context_requested.connect(self._review_diff_context_changed)
+        self._study_diff_view.context_requested.connect(self._study_diff_context_changed)
         self._diff_view.close_requested.connect(self._leave_diff_tab)
         self._study_diff_view.close_requested.connect(self._leave_diff_tab)
         self._diff_view.stage_requested.connect(self._stage_checked_changes)
@@ -498,6 +504,22 @@ class MainWindow(QMainWindow):
     def _read_bool_setting(self, key: str) -> bool:
         value = self._settings.value(key, False)
         return value is True or value == "true" or value == 1
+
+    def _read_diff_context_lines(self) -> int:
+        value = self._settings.value("diff/contextLines", 3)
+        try:
+            lines = int(value) if isinstance(value, (int, str)) else 3
+        except ValueError:
+            return 3
+        return lines if lines in (3, 20, 999_999) else 3
+
+    def _set_diff_context_lines(self, lines: int) -> None:
+        if lines not in (3, 20, 999_999):
+            return
+        self._diff_context_lines = lines
+        self._settings.setValue("diff/contextLines", lines)
+        for view in (self._diff_view, self._review_diff_view, self._study_diff_view):
+            view.set_context_lines(lines)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -1174,7 +1196,7 @@ class MainWindow(QMainWindow):
             file_value.path,
             parent_oid=commit_value.parent_oids[0] if commit_value.parent_oids else None,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=DIFF_CONTEXT_LINES,
+            context_lines=self._diff_context_lines,
         )
 
     # -- Inline history diffs -----------------------------------------------
@@ -1469,7 +1491,7 @@ class MainWindow(QMainWindow):
             compare_ref,
             file_value.path,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=DIFF_CONTEXT_LINES,
+            context_lines=self._diff_context_lines,
         )
 
     @Slot(object)
@@ -3546,7 +3568,7 @@ class MainWindow(QMainWindow):
             file,
             staged=staged,
             ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=DIFF_CONTEXT_LINES,
+            context_lines=self._diff_context_lines,
         )
 
     def _populate_diff_versions(self, file: FileStatus) -> None:
@@ -3665,6 +3687,21 @@ class MainWindow(QMainWindow):
             return
         self._settings.setValue("diff/viewMode", mode)
         self._diff_view.set_view_mode(mode)
+
+    @Slot(int)
+    def _changes_diff_context_changed(self, lines: int) -> None:
+        self._set_diff_context_lines(lines)
+        self._request_diff(silent=False)
+
+    @Slot(int)
+    def _review_diff_context_changed(self, lines: int) -> None:
+        self._set_diff_context_lines(lines)
+        self._review_controller.reload_selected_file()
+
+    @Slot(int)
+    def _study_diff_context_changed(self, lines: int) -> None:
+        self._set_diff_context_lines(lines)
+        self._refresh_current_diff()
 
     @Slot(int)
     def _review_diff_view_changed(self, _index: int) -> None:

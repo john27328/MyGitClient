@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSettings, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
     QColor,
     QFont,
     QFontDatabase,
@@ -20,6 +22,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPlainTextEdit,
     QPushButton,
     QSplitter,
@@ -74,6 +77,7 @@ class DiffView(QWidget):
     selection_changed = Signal()
     lines_requested = Signal(object, object)
     hunk_requested = Signal(object, int)
+    context_requested = Signal(int)
     close_requested = Signal()
     stage_requested = Signal()
     stash_requested = Signal()
@@ -257,6 +261,20 @@ class DiffView(QWidget):
         self.ignore_whitespace_button.setToolTip(
             "Ignore whitespace changes when loading the diff"
         )
+        self.context_button = QToolButton()
+        self.context_button.setObjectName("diffContextButton")
+        self.context_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        context_menu = QMenu(self.context_button)
+        self._context_actions = QActionGroup(self.context_button)
+        self._context_actions.setExclusive(True)
+        for label, lines in (("Context", 3), ("Expand blocks", 20), ("Full file", 999_999)):
+            action = context_menu.addAction(label)
+            action.setCheckable(True)
+            action.setData(lines)
+            self._context_actions.addAction(action)
+        self.context_button.setMenu(context_menu)
+        self._context_actions.triggered.connect(self._context_action_triggered)
+        self.set_context_lines(self._read_context_lines(settings))
         self.hunk_button = QToolButton()
         self.hunk_button.setObjectName("diffHunkButton")
         self.hunk_button.setText("Stage hunk")
@@ -294,6 +312,7 @@ class DiffView(QWidget):
         toolbar_layout.addWidget(self.wrap_button)
         toolbar_layout.addWidget(self.whitespace_button)
         toolbar_layout.addWidget(self.ignore_whitespace_button)
+        toolbar_layout.addWidget(self.context_button)
         toolbar_layout.addWidget(self.stage_button)
         toolbar_layout.addWidget(self.stash_button)
         toolbar_layout.addWidget(self.unstage_button)
@@ -420,6 +439,37 @@ class DiffView(QWidget):
             name = widget.objectName()
             if name:
                 widget.setObjectName(f"{prefix}{name[:1].upper()}{name[1:]}")
+
+    @staticmethod
+    def _read_context_lines(settings: QSettings) -> int:
+        value = settings.value("diff/contextLines", 3)
+        try:
+            lines = int(value) if isinstance(value, (int, str)) else 3
+        except ValueError:
+            return 3
+        return lines if lines in (3, 20, 999_999) else 3
+
+    def set_context_lines(self, context_lines: int) -> None:
+        action = next(
+            (
+                action
+                for action in self._context_actions.actions()
+                if action.data() == context_lines
+            ),
+            None,
+        )
+        if action is None:
+            action = self._context_actions.actions()[0]
+        action.setChecked(True)
+        self.context_button.setText(action.text())
+
+    @Slot(QAction)
+    def _context_action_triggered(self, action: QAction) -> None:
+        lines = action.data()
+        if not isinstance(lines, int):
+            return
+        self.set_context_lines(lines)
+        self.context_requested.emit(lines)
 
     @property
     def selected_line_indexes(self) -> set[int]:

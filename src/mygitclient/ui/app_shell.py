@@ -59,7 +59,6 @@ from mygitclient.ui.github_repositories_dialog import GitHubRepositoriesDialog
 from mygitclient.ui.github_sign_in_dialog import GitHubSignInDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
-from mygitclient.ui.update_controller import UpdateController
 from mygitclient.workspace import WorkspaceManager, find_repository_root
 
 
@@ -147,11 +146,6 @@ class AppShell(QMainWindow):
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._current_tab_changed)
         self.setCentralWidget(self.tabs)
-        self._update_controller = UpdateController(
-            self,
-            set_status=lambda message: self.statusBar().showMessage(message, 5000),
-        )
-
         self.home = HomePanel()
         self.home.choose_repository_requested.connect(self._choose_repository)
         self.home.open_repository_requested.connect(self._open_home_repository)
@@ -175,7 +169,6 @@ class AppShell(QMainWindow):
         self._refresh_home()
         self._github_token_timer.start()
         QTimer.singleShot(0, self._renew_stale_github_tokens)
-        QTimer.singleShot(2500, self._update_controller.check_automatically)
 
     def _build_global_menu(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -211,9 +204,6 @@ class AppShell(QMainWindow):
         font_sizes.triggered.connect(self._configure_font_sizes)
 
         help_menu = self.menuBar().addMenu("&Help")
-        check_updates = help_menu.addAction("Check for Updates…")
-        check_updates.setObjectName("checkUpdatesAction")
-        check_updates.triggered.connect(self._update_controller.check_manually)
         about_action = help_menu.addAction("About MyGitClient")
         about_action.setObjectName("aboutAction")
         about_action.triggered.connect(self._show_about)

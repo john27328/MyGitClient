@@ -95,6 +95,9 @@ The system Git executable must still be installed and available in PATH.
 "@
 Set-Content -LiteralPath (Join-Path $packageRoot "README.txt") `
     -Value $readme -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $packageRoot "VERSION.txt") -Value $version -Encoding Ascii
+Copy-Item -LiteralPath (Join-Path $root "scripts\Update-MyGitClient.ps1") `
+    -Destination (Join-Path $packageRoot "Update-MyGitClient.ps1")
 
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force

@@ -221,6 +221,11 @@ class ReviewController(QObject):
             merge_base=False,
         )
 
+    def reload_selected_file(self) -> None:
+        selected = self._panel.selected_file
+        if selected is not None:
+            self.select_file(selected)
+
     @Slot(object)
     def select_boundary(self, value: object) -> None:
         active = self._active

@@ -177,7 +177,7 @@ def test_diff_and_line_numbers_scroll_together(qapp: QApplication, qtbot: QtBot)
     window.close()
 
 
-def test_diff_uses_compact_fixed_context_and_shows_overview(
+def test_diff_context_can_expand_the_changes_view_and_shows_overview(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:
     repository = tmp_path / "context-repository"
@@ -205,12 +205,13 @@ def test_diff_uses_compact_fixed_context_and_shows_overview(
     lines[30] = "changed line\n"
     tracked.write_text("".join(lines), encoding="utf-8")
     settings = QSettings(str(tmp_path / "context.ini"), QSettings.Format.IniFormat)
-    settings.setValue("diff/contextLines", 999_999)
     window = MainWindow(settings, Theme.SYSTEM)
     changes = window.findChild(QTreeWidget, "changesTree")
     diff_panel = window.findChild(QPlainTextEdit, "diffPanel")
     overview = window.findChild(DiffOverview, "diffOverview")
+    context_button = window.findChild(QToolButton, "diffContextButton")
     assert changes is not None and diff_panel is not None and overview is not None
+    assert context_button is not None
 
     window.show()
     window.open_repository(repository)
@@ -222,7 +223,12 @@ def test_diff_uses_compact_fixed_context_and_shows_overview(
     assert " line 10" not in diff_panel.toPlainText()
     assert overview.isVisible()
 
-    assert window.findChild(QToolButton, "diffContextButton") is None
+    menu = context_button.menu()
+    assert menu is not None
+    full_file = next(action for action in menu.actions() if action.text() == "Full file")
+    full_file.trigger()
+    qtbot.waitUntil(lambda: " line 10" in diff_panel.toPlainText(), timeout=5000)
+    assert settings.value("diff/contextLines") == 999_999
     window.close()
 
 
