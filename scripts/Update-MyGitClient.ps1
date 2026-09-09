@@ -1,13 +1,46 @@
 [CmdletBinding()]
 param(
-    [string]$InstallDirectory = (Split-Path -Parent $PSScriptRoot),
+    [string]$InstallDirectory = $PSScriptRoot,
     [switch]$CheckOnly,
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$RunFromTemporaryCopy
 )
 
 $ErrorActionPreference = "Stop"
 $releaseApi = "https://api.github.com/repos/john27328/MyGitClient/releases/latest"
 $headers = @{ Accept = "application/vnd.github+json"; "User-Agent" = "MyGitClient-Updater" }
+
+if (-not $RunFromTemporaryCopy) {
+    $bootstrapRoot = Join-Path ([IO.Path]::GetTempPath()) ("MyGitClient-updater-" + [guid]::NewGuid())
+    $bootstrapScript = Join-Path $bootstrapRoot "Update-MyGitClient.ps1"
+    try {
+        New-Item -ItemType Directory -Path $bootstrapRoot | Out-Null
+        Copy-Item -LiteralPath $PSCommandPath -Destination $bootstrapScript
+        $arguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            $bootstrapScript,
+            "-InstallDirectory",
+            $PSScriptRoot,
+            "-RunFromTemporaryCopy"
+        )
+        if ($CheckOnly) {
+            $arguments += "-CheckOnly"
+        }
+        if ($Yes) {
+            $arguments += "-Yes"
+        }
+        & powershell.exe @arguments
+        $exitCode = $LASTEXITCODE
+        exit $exitCode
+    } finally {
+        if (Test-Path -LiteralPath $bootstrapRoot) {
+            Remove-Item -LiteralPath $bootstrapRoot -Recurse -Force
+        }
+    }
+}
 
 function Get-InstalledVersion([string]$Directory) {
     $versionFile = Join-Path $Directory "VERSION.txt"

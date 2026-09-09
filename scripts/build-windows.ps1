@@ -98,6 +98,8 @@ Set-Content -LiteralPath (Join-Path $packageRoot "README.txt") `
 Set-Content -LiteralPath (Join-Path $packageRoot "VERSION.txt") -Value $version -Encoding Ascii
 Copy-Item -LiteralPath (Join-Path $root "scripts\Update-MyGitClient.ps1") `
     -Destination (Join-Path $packageRoot "Update-MyGitClient.ps1")
+Copy-Item -LiteralPath (Join-Path $root "scripts\Update-MyGitClient.cmd") `
+    -Destination (Join-Path $packageRoot "Update-MyGitClient.cmd")
 
 if (Test-Path -LiteralPath $archivePath) {
     Remove-Item -LiteralPath $archivePath -Force

@@ -39,10 +39,10 @@ Download the portable ZIP and matching checksum from the
 [latest release](https://github.com/john27328/MyGitClient/releases/latest), extract it,
 and start `MyGitClient.exe` or `Launch MyGitClient.cmd`.
 
-Portable builds include `Update-MyGitClient.ps1`. Close MyGitClient, then run
-`powershell -ExecutionPolicy Bypass -File .\Update-MyGitClient.ps1` from the portable folder.
-The script checks the latest GitHub release, verifies the published SHA-256 checksum, and
-replaces the portable folder. Use `-CheckOnly` to check without installing.
+Portable builds include `Update-MyGitClient.cmd`. Close MyGitClient, then double-click that file
+in the portable folder. It checks the latest GitHub release, verifies the published SHA-256
+checksum, and replaces the portable folder. Use `Update-MyGitClient.cmd -CheckOnly` to check
+without installing.
 
 The archive includes the Python runtime and application dependencies. A system Git
 installation must still be available in `PATH`.

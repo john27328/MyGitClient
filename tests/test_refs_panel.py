@@ -109,6 +109,27 @@ def test_refs_panel_checks_out_branch_on_double_click(qtbot: QtBot) -> None:
     assert requested == [feature]
 
 
+def test_refs_panel_views_stash_on_selection_without_loading_ref_history(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    branch = BranchInfo("refs/heads/main", "main", "1" * 40, False, current=True)
+    stash = StashInfo("stash@{0}", "2" * 40, "On main: saved work")
+    selected_refs: list[object] = []
+    viewed: list[object] = []
+    panel.refs_selected.connect(selected_refs.append)
+    panel.stash_view_requested.connect(viewed.append)
+
+    panel.show_branches(BranchesSnapshot(Path("repository"), (branch,)))
+    panel.show_stashes(StashesSnapshot(Path("repository"), (stash,)))
+    stashes = panel.tree.topLevelItem(3)
+    assert stashes is not None
+
+    panel.tree.setCurrentItem(cast(QTreeWidgetItem, stashes.child(0)))
+
+    assert viewed == [stash]
+    assert selected_refs == [("refs/heads/main",)]
+
+
 def test_refs_panel_marks_local_branch_sync_states(qtbot: QtBot) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)
@@ -280,7 +301,7 @@ def test_refs_panel_shows_stashes_submodules_and_worktrees(qtbot: QtBot, tmp_pat
     assert applied == [stash]
     assert popped == [stash]
     assert dropped == [stash]
-    assert viewed == [stash]
+    assert viewed == [stash, stash]
     assert opened == [submodule, worktree]
 
 

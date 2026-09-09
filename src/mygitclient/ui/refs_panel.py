@@ -351,6 +351,10 @@ class RefsPanel(QWidget):
     ) -> None:
         if current is None:
             return
+        value = current.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(value, StashInfo):
+            self.stash_view_requested.emit(value)
+            return
         ref = current.data(0, REF_ROLE)
         if isinstance(ref, str) and ref != self._selected_ref:
             self._selected_ref = ref
