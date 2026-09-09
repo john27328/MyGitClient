@@ -256,6 +256,34 @@ def test_tree_mode_compacts_directories_but_keeps_file_as_a_separate_leaf(
     assert not item.icon(0).isNull()
 
 
+def test_large_tree_mode_collapses_folders_but_reveals_the_selected_file(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "changes.ini"), QSettings.Format.IniFormat)
+    settings.setValue("changes/viewMode", "tree")
+    panel = ChangesPanel(settings)
+    qtbot.addWidget(panel)
+    files = [
+        (FileStatus(f"src/component/{index}.py", ".", "M"), Qt.CheckState.Unchecked)
+        for index in range(501)
+    ] + [
+        (FileStatus(f"tests/component/{index}.py", ".", "M"), Qt.CheckState.Unchecked)
+        for index in range(501)
+    ]
+    selected_path = "src/component/0.py"
+
+    selected = panel.show_files(files, selected_path)
+
+    src = panel.tree.topLevelItem(0)
+    tests = panel.tree.topLevelItem(1)
+    assert src is not None and src.text(0) == "src/component"
+    assert tests is not None and tests.text(0) == "tests/component"
+    assert src.isExpanded()
+    assert not tests.isExpanded()
+    assert selected is not None
+    assert selected.data(0, Qt.ItemDataRole.UserRole) == files[0][0]
+
+
 def test_split_folder_checkbox_selects_files_without_applying_git(
     qtbot: QtBot, tmp_path: Path
 ) -> None:

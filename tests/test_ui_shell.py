@@ -80,11 +80,15 @@ class _TestMainWindow(MainWindow):
     def start_review(self) -> None:
         self._review_controller.start()
 
+    def show_sync_status(self, status: RepositoryStatus) -> None:
+        self._repository_status = status
+        self._update_sync_indicators()
+
 
 def test_main_window_is_created(qapp: QApplication) -> None:
     settings = QSettings(QSettings.Format.IniFormat, QSettings.Scope.UserScope, "test", "app")
     settings.clear()
-    window = MainWindow(settings, Theme.SYSTEM)
+    window = _TestMainWindow(settings, Theme.SYSTEM)
 
     assert window.windowTitle() == "MyGitClient"
     assert window.centralWidget() is not None
@@ -105,6 +109,9 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     fetch_submodules = window.findChild(QAction, "fetchSubmodulesAction")
     pull_submodules = window.findChild(QAction, "pullSubmodulesAction")
     reset_to_upstream = window.findChild(QAction, "resetToUpstreamAction")
+    discard_all = window.findChild(QAction, "discardAllChangesAction")
+    clean_untracked = window.findChild(QAction, "cleanUntrackedAction")
+    current_branch = window.findChild(QLabel, "currentBranchLabel")
     push_submodules = window.findChild(QAction, "pushSubmodulesAction")
     font_sizes = window.findChild(QAction, "fontSizesAction")
     assert toolbar is not None
@@ -127,6 +134,10 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert pull_submodules is not None
     assert reset_to_upstream is not None
     assert reset_to_upstream.text() == "Reset to upstream…"
+    assert discard_all is not None
+    assert clean_untracked is not None
+    assert current_branch is not None
+    assert current_branch.text() == "Branch: —"
     assert push_submodules is not None
 
     assert font_sizes is not None
@@ -151,6 +162,12 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     )
     assert pull_label == "Pull ↓2 · Rebase · Stash"
     assert push_label == "Push ⚠ ↑3"
+    window.show_sync_status(
+        RepositoryStatus(
+            branch=BranchStatus(head="feature", upstream="origin/feature", ahead=3, behind=2)
+        )
+    )
+    assert current_branch.text() == "Branch: feature ↑3 ↓2"
     assert push_requires_rewrite(
         RepositoryStatus(
             branch=BranchStatus(

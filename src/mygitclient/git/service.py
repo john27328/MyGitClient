@@ -414,6 +414,21 @@ class GitService(QObject):
         self._operation_queue.enqueue(runner, GitCommand(arguments, repository, "checkout branch"))
         return runner
 
+    def request_checkout_discarding_changes(
+        self, repository: Path, branch: BranchInfo
+    ) -> GitRunner:
+        arguments = ["switch", "--discard-changes"]
+        if branch.remote:
+            arguments.extend(("--track", branch.name))
+        else:
+            arguments.append(branch.name)
+        return self._request_simple_mutation(
+            repository,
+            tuple(arguments),
+            f"branch:{branch.name}",
+            "checkout branch and discard changes",
+        )
+
     def request_checkout_commit(self, repository: Path, commit: CommitSummary) -> GitRunner:
         return self._request_simple_mutation(
             repository,
@@ -1719,6 +1734,40 @@ class GitService(QObject):
             )
             runners.append(runner)
         return tuple(runners)
+
+    def request_discard_all_changes(self, repository: Path) -> GitRunner:
+        return self._request_simple_mutation(
+            repository,
+            ("reset", "--hard"),
+            "discard-all",
+            "discard all tracked changes",
+        )
+
+    def request_clean_untracked(
+        self,
+        repository: Path,
+        *,
+        remove_directories: bool,
+        include_ignored: bool,
+        ignored_only: bool = False,
+    ) -> GitRunner:
+        arguments = ["clean", "-f"]
+        if remove_directories:
+            arguments.append("-d")
+        if ignored_only:
+            arguments.append("-X")
+        elif include_ignored:
+            arguments.append("-x")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._mutation_requests[runner] = "clean"
+        runner.completed.connect(self._handle_mutation)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(tuple(arguments), repository, "remove untracked files"),
+        )
+        return runner
 
     def request_stash_files(self, repository: Path, files: tuple[FileStatus, ...]) -> GitRunner:
         runner = GitRunner(parent=self)

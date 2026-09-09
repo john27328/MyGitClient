@@ -9,10 +9,12 @@ from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QTreeWidget,
 )
 from pytest import MonkeyPatch
@@ -21,6 +23,60 @@ from pytestqt.qtbot import QtBot
 from mygitclient.theme import Theme
 from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.main_window import MainWindow
+
+
+def test_git_clean_saves_options_and_removes_ignored_files(
+    qapp: QApplication,
+    qtbot: QtBot,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = tmp_path / "clean-repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    ignored = repository / "ignored.txt"
+    (repository / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+    )
+    ignored.write_text("remove\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "clean.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    clean = window.findChild(QAction, "cleanUntrackedAction")
+    assert clean is not None
+
+    def accept_clean_options(dialog: QDialog) -> QDialog.DialogCode:
+        include_ignored = dialog.findChild(QRadioButton, "cleanAllFilesRadio")
+        assert include_ignored is not None
+        include_ignored.setChecked(True)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", accept_clean_options)
+    def confirm_clean(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
+        return QMessageBox.StandardButton.Discard
+
+    monkeypatch.setattr(QMessageBox, "question", confirm_clean)
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: clean.isEnabled(), timeout=5000)
+    clean.trigger()
+    qtbot.waitUntil(lambda: not ignored.exists(), timeout=5000)
+
+    assert settings.value("clean/removeDirectories") is True
+    assert settings.value("clean/includeIgnored") is True
+    assert settings.value("clean/mode") == "all"
+    window.close()
 
 
 def test_changed_file_can_be_opened_with_the_system_application(

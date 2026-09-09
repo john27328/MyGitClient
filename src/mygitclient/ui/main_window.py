@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QSplitter,
     QStackedWidget,
@@ -284,6 +285,9 @@ class MainWindow(QMainWindow):
         refs_panel = self._history_panel.refs_panel
         refs_panel.refs_selected.connect(self._history_refs_selected)
         refs_panel.checkout_requested.connect(self._checkout_branch)
+        refs_panel.checkout_discarding_changes_requested.connect(
+            self._checkout_branch_discarding_changes
+        )
         refs_panel.rename_requested.connect(self._rename_branch)
         refs_panel.delete_requested.connect(self._delete_branch)
         refs_panel.force_delete_requested.connect(self._force_delete_branch)
@@ -501,8 +505,8 @@ class MainWindow(QMainWindow):
         splitter.setSizes([420, 900])
         return splitter
 
-    def _read_bool_setting(self, key: str) -> bool:
-        value = self._settings.value(key, False)
+    def _read_bool_setting(self, key: str, *, default: bool = False) -> bool:
+        value = self._settings.value(key, default)
         return value is True or value == "true" or value == 1
 
     def _read_diff_context_lines(self) -> int:
@@ -538,7 +542,11 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("repositoryToolbar")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        toolbar.addAction(open_action)
+        self._current_branch_label = QLabel("Branch: —")
+        self._current_branch_label.setObjectName("currentBranchLabel")
+        self._current_branch_label.setToolTip("Current branch")
+        self._current_branch_label.setMaximumWidth(360)
+        toolbar.addWidget(self._current_branch_label)
         self._repository_switcher = self._repositories_panel.switcher
         refresh_action = QAction(load_icon("refresh.svg"), "Refresh", self)
         refresh_action.setObjectName("refreshAction")
@@ -598,6 +606,18 @@ class MainWindow(QMainWindow):
             "Fetch, then discard local commits and tracked changes to match upstream"
         )
         self._reset_to_upstream_action.triggered.connect(self._reset_to_upstream)
+        self._discard_all_action = pull_menu.addAction(
+            load_icon("remove.svg"), "Discard all tracked changes…"
+        )
+        self._discard_all_action.setObjectName("discardAllChangesAction")
+        self._discard_all_action.setToolTip(
+            "Discard every staged and unstaged change to tracked files"
+        )
+        self._discard_all_action.triggered.connect(self._discard_all_changes)
+        self._clean_action = pull_menu.addAction(load_icon("remove.svg"), "Git Clean…")
+        self._clean_action.setObjectName("cleanUntrackedAction")
+        self._clean_action.setToolTip("Remove untracked files using saved Git Clean options")
+        self._clean_action.triggered.connect(self._clean_untracked_files)
         for option in (
             self._pull_merge_action,
             self._pull_rebase_action,
@@ -1696,6 +1716,24 @@ class MainWindow(QMainWindow):
         )
 
     @Slot(object)
+    def _checkout_branch_discarding_changes(self, value: object) -> None:
+        if self._repository is None or not isinstance(value, BranchInfo):
+            return
+        answer = QMessageBox.question(
+            self,
+            "Force checkout",
+            f"Switch to {value.name} and permanently discard staged and unstaged changes?\n\n"
+            "Untracked files are kept unless they conflict with files in the target branch.",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Discard:
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Checking out {value.name} and discarding changes…")
+        self._git.request_checkout_discarding_changes(self._repository, value)
+
+    @Slot(object)
     def _checkout_commit(self, value: object) -> None:
         if self._repository is None or not isinstance(value, CommitSummary):
             return
@@ -2456,6 +2494,7 @@ class MainWindow(QMainWindow):
         self._push_action.setIcon(
             load_icon("force-push.svg" if push_requires_rewrite(status) else "push.svg")
         )
+        self._update_current_branch_label(status)
         if status is None or status.branch.head is None:
             self._push_action.setToolTip("No checked-out branch to push")
             return
@@ -2477,6 +2516,28 @@ class MainWindow(QMainWindow):
         self._pull_action.setToolTip(
             f"{branch.behind} commit(s) available from {branch.upstream or 'upstream'}"
         )
+
+    def _update_current_branch_label(self, status: RepositoryStatus | None) -> None:
+        if status is None or status.branch.head is None:
+            self._current_branch_label.setText("Branch: —")
+            self._current_branch_label.setToolTip("No branch is currently checked out")
+            return
+        branch = status.branch
+        changes = ""
+        if branch.ahead:
+            changes += f" ↑{branch.ahead}"
+        if branch.behind:
+            changes += f" ↓{branch.behind}"
+        text = f"Branch: {branch.head}{changes}"
+        self._current_branch_label.setText(
+            self._current_branch_label.fontMetrics().elidedText(
+                text,
+                Qt.TextElideMode.ElideRight,
+                self._current_branch_label.maximumWidth(),
+            )
+        )
+        upstream = f"\nTracking: {branch.upstream}" if branch.upstream else "\nNo upstream"
+        self._current_branch_label.setToolTip(f"Current branch: {branch.head}{upstream}")
 
     @Slot()
     def _fetch_repository(self) -> None:
@@ -3022,6 +3083,10 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Repository operation updated")
         elif path == "stash":
             self._status_label.setText("Selected changes stashed")
+        elif path == "clean":
+            self._status_label.setText("Untracked files removed")
+        elif path == "discard-all":
+            self._status_label.setText("All tracked changes discarded")
         else:
             self._status_label.setText(f"Updated staging area for {path}")
         if self._repository is not None:
@@ -3524,6 +3589,108 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Discarding changes to {target}…")
         self._clear_change_selection_after_mutation = True
         self._git.request_discard_files(repository, files)
+
+    @Slot()
+    def _discard_all_changes(self) -> None:
+        repository = self._repository
+        if repository is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Discard all changes",
+            "Permanently discard every staged and unstaged change to tracked files?\n\n"
+            "Untracked and ignored files are kept. Use Git Clean to remove them.",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Discard:
+            return
+        self._changes_container.setEnabled(False)
+        self._status_label.setText("Discarding all tracked changes…")
+        self._clear_change_selection_after_mutation = True
+        self._git.request_discard_all_changes(repository)
+
+    @Slot()
+    def _clean_untracked_files(self) -> None:
+        repository = self._repository
+        if repository is None:
+            return
+        dialog = QDialog(self)
+        dialog.setObjectName("cleanUntrackedDialog")
+        dialog.setWindowTitle("Git Clean")
+        layout = QVBoxLayout(dialog)
+        warning = QLabel(
+            "Remove untracked files from this repository. This cannot be undone."
+        )
+        warning.setWordWrap(True)
+        layout.addWidget(warning)
+        remove_directories = QCheckBox("Remove untracked directories")
+        remove_directories.setObjectName("cleanRemoveDirectoriesCheckBox")
+        remove_directories.setChecked(
+            self._read_bool_setting("clean/removeDirectories", default=True)
+        )
+        saved_mode = self._settings.value("clean/mode", "")
+        mode = saved_mode if isinstance(saved_mode, str) else ""
+        if mode not in {"untracked", "all", "ignored"}:
+            mode = "all" if self._read_bool_setting("clean/includeIgnored") else "untracked"
+        untracked_only = QRadioButton("Untracked files")
+        untracked_only.setObjectName("cleanUntrackedOnlyRadio")
+        all_files = QRadioButton("Untracked and ignored files (-x)")
+        all_files.setObjectName("cleanAllFilesRadio")
+        ignored_only = QRadioButton("Only ignored files (-X)")
+        ignored_only.setObjectName("cleanIgnoredOnlyRadio")
+        untracked_only.setChecked(mode == "untracked")
+        all_files.setChecked(mode == "all")
+        ignored_only.setChecked(mode == "ignored")
+        all_files.setToolTip("Also removes files ignored by .gitignore, such as build output.")
+        ignored_only.setToolTip("Keeps ordinary untracked files and removes only ignored files.")
+        layout.addWidget(remove_directories)
+        layout.addWidget(untracked_only)
+        layout.addWidget(all_files)
+        layout.addWidget(ignored_only)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dialog,
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Continue…")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if ignored_only.isChecked():
+            clean_mode = "ignored"
+        elif all_files.isChecked():
+            clean_mode = "all"
+        else:
+            clean_mode = "untracked"
+        self._settings.setValue("clean/removeDirectories", remove_directories.isChecked())
+        self._settings.setValue("clean/mode", clean_mode)
+        self._settings.setValue("clean/includeIgnored", clean_mode == "all")
+        scope = {
+            "untracked": "untracked files",
+            "all": "untracked and ignored files",
+            "ignored": "ignored files only",
+        }[clean_mode]
+        answer = QMessageBox.question(
+            self,
+            "Git Clean",
+            f"Permanently remove {scope}"
+            + (" and directories" if remove_directories.isChecked() else "")
+            + "?\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Discard:
+            return
+        self._changes_container.setEnabled(False)
+        self._status_label.setText("Removing untracked files…")
+        self._git.request_clean_untracked(
+            repository,
+            remove_directories=remove_directories.isChecked(),
+            include_ignored=clean_mode == "all",
+            ignored_only=clean_mode == "ignored",
+        )
 
     def _selected_file(self) -> FileStatus | None:
         selected_items = self._changes_panel.active_tree().selectedItems()

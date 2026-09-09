@@ -34,6 +34,7 @@ from mygitclient.git.models import FileStatus
 from mygitclient.resources import load_icon
 
 _FOLDER_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+_AUTO_COLLAPSE_THRESHOLD = 1_000
 
 
 class ChangesTreeWidget(QTreeWidget):
@@ -642,7 +643,12 @@ class ChangesPanel(QWidget):
                 root = tree.topLevelItem(index)
                 if root is not None and checkable:
                     self._refresh_folder_state(root)
-            tree.expandAll()
+            if len(files) > _AUTO_COLLAPSE_THRESHOLD:
+                tree.collapseAll()
+                if selected_item is not None:
+                    self._expand_item_ancestors(selected_item)
+            else:
+                tree.expandAll()
         del blocker
         if preserve_scroll:
             self._pending_scroll_restore = (
@@ -682,6 +688,13 @@ class ChangesPanel(QWidget):
             child = item.child(index)
             assert child is not None
             self._compact_folder_chain(child)
+
+    @staticmethod
+    def _expand_item_ancestors(item: QTreeWidgetItem) -> None:
+        parent = item.parent()
+        while parent is not None:
+            parent.setExpanded(True)
+            parent = parent.parent()
 
     def _find_file_item(
         self, tree: QTreeWidget, path: str | None

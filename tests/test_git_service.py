@@ -1541,6 +1541,154 @@ def test_discard_files_batches_tracked_and_untracked_changes(qtbot: QtBot, tmp_p
     assert not untracked.exists()
 
 
+def test_clean_untracked_removes_directories_but_keeps_ignored_files(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _git(tmp_path, "config", "user.name", "MyGitClient Test")
+    _git(tmp_path, "config", "user.email", "test@example.invalid")
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    _git(tmp_path, "add", ".gitignore")
+    _git(tmp_path, "commit", "-m", "initial")
+    untracked = tmp_path / "untracked" / "nested.txt"
+    untracked.parent.mkdir()
+    untracked.write_text("temporary\n", encoding="utf-8")
+    ignored = tmp_path / "ignored.txt"
+    ignored.write_text("keep\n", encoding="utf-8")
+    service = GitService()
+    mutations: list[str] = []
+    service.mutation_ready.connect(mutations.append)
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_clean_untracked(
+            tmp_path, remove_directories=True, include_ignored=False
+        )
+
+    assert mutations == ["clean"]
+    assert not untracked.parent.exists()
+    assert ignored.exists()
+
+
+def test_clean_untracked_can_include_ignored_files(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    _git(tmp_path, "add", ".gitignore")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    ignored = tmp_path / "ignored.txt"
+    ignored.write_text("remove\n", encoding="utf-8")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_clean_untracked(
+            tmp_path, remove_directories=True, include_ignored=True
+        )
+
+    assert not ignored.exists()
+
+
+def test_clean_untracked_can_remove_only_ignored_files(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    _git(tmp_path, "add", ".gitignore")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    ignored = tmp_path / "ignored.txt"
+    ignored.write_text("remove\n", encoding="utf-8")
+    untracked = tmp_path / "untracked.txt"
+    untracked.write_text("keep\n", encoding="utf-8")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_clean_untracked(
+            tmp_path,
+            remove_directories=True,
+            include_ignored=False,
+            ignored_only=True,
+        )
+
+    assert not ignored.exists()
+    assert untracked.exists()
+
+
+def test_discard_all_changes_resets_tracked_files_and_keeps_untracked(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(
+        tmp_path,
+        "-c",
+        "user.name=MyGitClient Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "initial",
+    )
+    tracked.write_text("after\n", encoding="utf-8")
+    staged = tmp_path / "staged.txt"
+    staged.write_text("staged\n", encoding="utf-8")
+    _git(tmp_path, "add", "staged.txt")
+    untracked = tmp_path / "untracked.txt"
+    untracked.write_text("keep\n", encoding="utf-8")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_discard_all_changes(tmp_path)
+
+    assert tracked.read_text(encoding="utf-8") == "before\n"
+    assert not staged.exists()
+    assert untracked.exists()
+
+
+def test_checkout_discarding_changes_switches_branch_and_resets_worktree(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("main\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-m", "initial")
+    _git(tmp_path, "switch", "-c", "feature")
+    tracked.write_text("feature\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-am", "feature")
+    _git(tmp_path, "switch", "main")
+    tracked.write_text("local\n", encoding="utf-8")
+    untracked = tmp_path / "untracked.txt"
+    untracked.write_text("keep\n", encoding="utf-8")
+    service = GitService()
+    branch = BranchInfo("refs/heads/feature", "feature", "0" * 40, False)
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_checkout_discarding_changes(tmp_path, branch)
+
+    assert subprocess.check_output(
+        ["git", "branch", "--show-current"], cwd=tmp_path, text=True
+    ).strip() == "feature"
+    assert tracked.read_text(encoding="utf-8") == "feature\n"
+    assert untracked.exists()
+
+
 def test_pull_rebase_autostash_restores_changes(qtbot: QtBot, tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
     seed = tmp_path / "seed"

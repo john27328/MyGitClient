@@ -32,6 +32,7 @@ REF_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 class RefsPanel(QWidget):
     refs_selected = Signal(object)
     checkout_requested = Signal(object)
+    checkout_discarding_changes_requested = Signal(object)
     rename_requested = Signal(object)
     delete_requested = Signal(object)
     force_delete_requested = Signal(object)
@@ -98,6 +99,13 @@ class RefsPanel(QWidget):
         self.create_worktree_action.triggered.connect(self._create_worktree_selected)
         self.checkout_action = self.context_menu.addAction("Checkout")
         self.checkout_action.triggered.connect(self._checkout_selected)
+        self.checkout_discarding_changes_action = self.context_menu.addAction(
+            "Force checkout…"
+        )
+        self.checkout_discarding_changes_action.setObjectName("checkoutDiscardChangesAction")
+        self.checkout_discarding_changes_action.triggered.connect(
+            self._checkout_selected_discarding_changes
+        )
         self.copy_branch_action = self.context_menu.addAction("Copy branch name")
         self.copy_branch_action.setObjectName("copyBranchNameAction")
         self.copy_branch_action.triggered.connect(self._copy_branch_name)
@@ -427,6 +435,8 @@ class RefsPanel(QWidget):
         )
         self.checkout_action.setVisible(branch is not None)
         self.checkout_action.setEnabled(checkout)
+        self.checkout_discarding_changes_action.setVisible(branch is not None)
+        self.checkout_discarding_changes_action.setEnabled(checkout)
         self.copy_branch_action.setVisible(branch is not None)
         upstream_ref = self._upstream_ref(branch)
         self.compare_upstream_action.setVisible(upstream_ref is not None)
@@ -480,6 +490,12 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo) and not branch.current:
             self.checkout_requested.emit(branch)
+
+    @Slot()
+    def _checkout_selected_discarding_changes(self) -> None:
+        branch = self._selected_value()
+        if isinstance(branch, BranchInfo) and not branch.current:
+            self.checkout_discarding_changes_requested.emit(branch)
 
     @Slot()
     def _create_branch_from_selected(self) -> None:

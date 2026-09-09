@@ -75,17 +75,21 @@ def test_refs_panel_exposes_branch_context_actions(qtbot: QtBot) -> None:
     deleted: list[object] = []
     forced: list[object] = []
     rebased: list[object] = []
+    discard_checkout: list[object] = []
     panel.delete_requested.connect(deleted.append)
     panel.force_delete_requested.connect(forced.append)
     panel.rebase_requested.connect(rebased.append)
+    panel.checkout_discarding_changes_requested.connect(discard_checkout.append)
 
     panel.delete_action.trigger()
     panel.force_delete_action.trigger()
     panel.rebase_action.trigger()
+    panel.checkout_discarding_changes_action.trigger()
 
     assert deleted == [branch]
     assert forced == [branch]
     assert rebased == [branch]
+    assert discard_checkout == [branch]
 
 
 def test_refs_panel_checks_out_branch_on_double_click(qtbot: QtBot) -> None:
