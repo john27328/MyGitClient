@@ -55,7 +55,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from mygitclient import __version__
+from mygitclient import __repository_url__, __version__
 from mygitclient.git.conflicts import conflict_marker_lines
 from mygitclient.git.models import (
     AmendDiffSnapshot,
@@ -714,7 +714,8 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About MyGitClient",
-            f"MyGitClient {__version__}\n\nA focused desktop Git client.",
+            f"MyGitClient {__version__}\n\nA focused desktop Git client.\n\n"
+            f'<a href="{__repository_url__}">GitHub</a>',
         )
 
     def _connect_services(self) -> None:

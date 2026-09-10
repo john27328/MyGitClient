@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
 
+from mygitclient import __repository_url__
 from mygitclient.git.models import (
     BranchesSnapshot,
     BranchInfo,
@@ -185,6 +186,27 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     assert not refresh_action.icon().isNull()
 
     window.close()
+
+
+def test_about_dialog_links_to_project_github(
+    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "about.ini"), QSettings.Format.IniFormat)
+    window = _TestMainWindow(settings, Theme.SYSTEM)
+    displayed: list[tuple[str, str]] = []
+
+    def show_about(_parent: QWidget, title: str, text: str) -> None:
+        displayed.append((title, text))
+
+    monkeypatch.setattr(QMessageBox, "about", staticmethod(show_about))
+    action = window.findChild(QAction, "aboutAction")
+    assert action is not None
+    action.trigger()
+
+    assert len(displayed) == 1
+    title, text = displayed[0]
+    assert title == "About MyGitClient"
+    assert f'<a href="{__repository_url__}">GitHub</a>' in text
 
 
 def test_start_review_asks_for_source_and_target_branch(
