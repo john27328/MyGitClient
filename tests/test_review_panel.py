@@ -52,6 +52,27 @@ def test_refreshing_review_files_does_not_reselect_the_current_file(
     assert selected == [change]
 
 
+def test_refreshing_review_files_preserves_scroll_position(qtbot: QtBot, tmp_path: Path) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    panel.resize(640, 360)
+    panel.show()
+    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
+    changes = tuple(CommitFileChange("M", f"src/file_{index:03}.py") for index in range(100))
+    panel.show_sessions((session,))
+    panel.select_session(session)
+    panel.show_files(session, changes)
+    scrollbar = panel.files.verticalScrollBar()
+    qtbot.waitUntil(lambda: scrollbar.maximum() > 0)
+    scrollbar.setValue(scrollbar.maximum() // 2)
+    expected = scrollbar.value()
+
+    panel.update_file_state(changes[0].path, total=1, checked=1)
+    qtbot.wait(10)
+
+    assert scrollbar.value() == expected
+
+
 def test_review_boundaries_are_shown_with_local_date_and_time(qtbot: QtBot) -> None:
     panel = ReviewPanel()
     qtbot.addWidget(panel)

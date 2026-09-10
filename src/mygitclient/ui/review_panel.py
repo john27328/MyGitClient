@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDateTime, QSignalBlocker, Qt, Signal, Slot
+from PySide6.QtCore import QDateTime, QSignalBlocker, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -34,6 +34,10 @@ class ReviewPanel(QWidget):
         self._files: tuple[CommitFileChange, ...] = ()
         self._states: dict[str, tuple[int, int]] = {}
         self._expanded_groups = {"Needs review", "Reviewed"}
+        self._pending_scroll_position: tuple[int, int] | None = None
+        self._scroll_restore_timer = QTimer(self)
+        self._scroll_restore_timer.setSingleShot(True)
+        self._scroll_restore_timer.timeout.connect(self._restore_file_scroll_position)
 
         self.start_button = QPushButton("Start review")
         self.start_button.setObjectName("startReviewButton")
@@ -248,6 +252,10 @@ class ReviewPanel(QWidget):
 
     def _render_files(self) -> None:
         selected_path = self.selected_file.path if self.selected_file is not None else ""
+        self._pending_scroll_position = (
+            self.files.verticalScrollBar().value(),
+            self.files.horizontalScrollBar().value(),
+        )
         blocker = QSignalBlocker(self.files)
         self.files.clear()
         pending: list[CommitFileChange] = []
@@ -270,3 +278,14 @@ class ReviewPanel(QWidget):
                 if change.path == selected_path:
                     self.files.setCurrentItem(item)
         del blocker
+        self._scroll_restore_timer.start(0)
+
+    @Slot()
+    def _restore_file_scroll_position(self) -> None:
+        position = self._pending_scroll_position
+        self._pending_scroll_position = None
+        if position is None:
+            return
+        vertical, horizontal = position
+        self.files.verticalScrollBar().setValue(vertical)
+        self.files.horizontalScrollBar().setValue(horizontal)
