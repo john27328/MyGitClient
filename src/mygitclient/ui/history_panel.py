@@ -194,6 +194,7 @@ class HistoryPanel(QWidget):
         self.files.setHeaderLabels(["Status", "File"])
         self.files.setColumnWidth(0, 80)
         self.files.setUniformRowHeights(False)
+        self.files.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.files.setExpandsOnDoubleClick(False)
         self.files.currentItemChanged.connect(self._file_changed)
         self.files.itemClicked.connect(self._file_clicked)

@@ -15,8 +15,8 @@ _INLINE_DIFF_STYLE = (
     "selection-color: palette(highlighted-text); }"
 )
 
-MAXIMUM_INLINE_HEIGHT = 420
-"""Tallest an expanded row may grow before it scrolls on its own."""
+MAXIMUM_INLINE_HEIGHT = 16_777_215
+"""Qt's widget size limit; rows grow to fit instead of adding a second vertical scrollbar."""
 
 
 class InlineDiffWidget(QPlainTextEdit):
@@ -42,7 +42,7 @@ class InlineDiffWidget(QPlainTextEdit):
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setFrameShape(QPlainTextEdit.Shape.NoFrame)
         self.setStyleSheet(_INLINE_DIFF_STYLE)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFont(_diff_font(settings))
         self._highlighter = DiffHighlighter(self)
         self._diff: UnifiedDiff | None = None
@@ -77,7 +77,8 @@ class InlineDiffWidget(QPlainTextEdit):
         rows = max(self.document().blockCount(), 1)
         line_height = QFontMetrics(self.font()).lineSpacing()
         margins = self.contentsMargins()
-        content = rows * line_height + margins.top() + margins.bottom() + 8
+        scrollbar = self.horizontalScrollBar().sizeHint().height()
+        content = rows * line_height + margins.top() + margins.bottom() + scrollbar + 8
         height = min(content, MAXIMUM_INLINE_HEIGHT)
         self.setFixedHeight(height)
 
