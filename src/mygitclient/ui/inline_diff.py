@@ -15,8 +15,8 @@ _INLINE_DIFF_STYLE = (
     "selection-color: palette(highlighted-text); }"
 )
 
-MAXIMUM_INLINE_HEIGHT = 16_777_215
-"""Qt's widget size limit; rows grow to fit instead of adding a second vertical scrollbar."""
+MAXIMUM_INLINE_LINES = 200
+"""Longest preview an expanded row shows; the Diff tab is for studying the whole file."""
 
 
 class InlineDiffWidget(QPlainTextEdit):
@@ -57,7 +57,7 @@ class InlineDiffWidget(QPlainTextEdit):
             self.setPlainText("Binary file — no textual diff.")
             self._highlighter.set_diff(None)
         else:
-            self.setPlainText(diff.display_text)
+            self.setPlainText(_preview_text(diff))
             self._highlighter.set_diff(diff)
         self._apply_content_height()
 
@@ -79,8 +79,18 @@ class InlineDiffWidget(QPlainTextEdit):
         margins = self.contentsMargins()
         scrollbar = self.horizontalScrollBar().sizeHint().height()
         content = rows * line_height + margins.top() + margins.bottom() + scrollbar + 8
-        height = min(content, MAXIMUM_INLINE_HEIGHT)
-        self.setFixedHeight(height)
+        self.setFixedHeight(content)
+
+
+def _preview_text(diff: UnifiedDiff) -> str:
+    """Cap a long diff so the row stays a preview with a pointer to the full view."""
+
+    rows = diff.display_text.split("\n")
+    if len(rows) <= MAXIMUM_INLINE_LINES:
+        return "\n".join(rows)
+    hidden = len(rows) - MAXIMUM_INLINE_LINES
+    notice = f"… {hidden} more lines hidden — double-click the file to open the full diff"
+    return "\n".join((*rows[:MAXIMUM_INLINE_LINES], notice))
 
 
 def _diff_font(settings: QSettings | None) -> QFont:

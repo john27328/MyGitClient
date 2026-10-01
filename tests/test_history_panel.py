@@ -242,18 +242,25 @@ def test_history_panel_clicking_a_file_toggles_its_inline_diff(qtbot: QtBot) -> 
     assert item.childCount() == 0
 
 
-def test_inline_diff_grows_to_fit_instead_of_adding_a_second_scrollbar(qtbot: QtBot) -> None:
+def test_inline_diff_is_a_capped_preview_without_its_own_scrollbar(qtbot: QtBot) -> None:
     from mygitclient.git.models import DiffLine, UnifiedDiff
-    from mygitclient.ui.inline_diff import InlineDiffWidget
+    from mygitclient.ui.inline_diff import MAXIMUM_INLINE_LINES, InlineDiffWidget
 
     widget = InlineDiffWidget()
     qtbot.addWidget(widget)
-    lines = tuple(DiffLine(f"+line {number}", "addition", None, number) for number in range(1, 301))
+    total = MAXIMUM_INLINE_LINES + 50
+    lines = tuple(DiffLine(f"+line {number}", "addition", None, number) for number in range(total))
     widget.set_diff(UnifiedDiff("a.py", False, lines))
     widget.show()
 
     assert widget.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-    assert widget.height() > 300 * widget.fontMetrics().lineSpacing()
+    assert widget.document().blockCount() == MAXIMUM_INLINE_LINES + 1
+    assert "50 more lines hidden" in widget.toPlainText().splitlines()[-1]
+    assert widget.height() > MAXIMUM_INLINE_LINES * widget.fontMetrics().lineSpacing()
+
+    short = UnifiedDiff("a.py", False, lines[:3])
+    widget.set_diff(short)
+    assert widget.document().blockCount() == 3
 
 
 def test_history_panel_persists_moved_commit_columns(qtbot: QtBot, tmp_path: Path) -> None:
