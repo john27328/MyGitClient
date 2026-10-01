@@ -408,6 +408,8 @@ class MainWindow(QMainWindow):
         self._workspace_tabs.addTab(self._history_panel, "History")
         self._workspace_tabs.addTab(self._study_page, "Diff")
         self._workspace_tabs.addTab(self._review_page, "Review")
+        self._review_panel.file_open_requested.connect(self._open_history_file)
+        self._review_panel.file_reveal_requested.connect(self._reveal_history_file)
         self._review_controller = ReviewController(
             self._settings,
             self._git,

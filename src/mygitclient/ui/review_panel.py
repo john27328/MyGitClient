@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDateTime, QSignalBlocker, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QDateTime, QPoint, QSignalBlocker, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSplitter,
     QTreeWidget,
@@ -25,6 +26,8 @@ class ReviewPanel(QWidget):
     session_selected = Signal(object)
     file_selected = Signal(object)
     mark_file_requested = Signal()
+    file_open_requested = Signal(object)
+    file_reveal_requested = Signal(object)
     boundary_selected = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -84,6 +87,8 @@ class ReviewPanel(QWidget):
         self.files.setHeaderLabels(["Review state", "File"])
         self.files.setColumnWidth(0, 150)
         self.files.setRootIsDecorated(True)
+        self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.files.customContextMenuRequested.connect(self._show_file_context_menu)
         self.files.currentItemChanged.connect(self._file_changed)
         self.files.itemExpanded.connect(self._group_expanded)
         self.files.itemCollapsed.connect(self._group_collapsed)
@@ -228,6 +233,24 @@ class ReviewPanel(QWidget):
         value = current.data(0, Qt.ItemDataRole.UserRole) if current is not None else None
         if isinstance(value, CommitFileChange):
             self.file_selected.emit(value)
+
+    @Slot(QPoint)
+    def _show_file_context_menu(self, position: QPoint) -> None:
+        item = self.files.itemAt(position)
+        if item is None:
+            return
+        change = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(change, CommitFileChange):
+            return
+        self.files.setCurrentItem(item)
+        menu = QMenu(self.files)
+        open_action = menu.addAction("Open")
+        reveal_action = menu.addAction("Show in File Manager")
+        chosen = menu.exec(self.files.viewport().mapToGlobal(position))
+        if chosen is open_action:
+            self.file_open_requested.emit(change)
+        elif chosen is reveal_action:
+            self.file_reveal_requested.emit(change)
 
     @Slot(int)
     def _boundary_changed(self, index: int) -> None:

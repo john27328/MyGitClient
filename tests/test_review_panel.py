@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, Qt
+from PySide6.QtCore import QDateTime, Qt, QTimer
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import CommitFileChange, CommitSummary
@@ -135,3 +137,47 @@ def test_review_session_displays_local_start_date_and_time(qtbot: QtBot, tmp_pat
     assert item is not None
     expected_time = QDateTime.fromString(session.start_at, Qt.DateFormat.ISODate).toLocalTime()
     assert expected_time.toString("dd.MM.yyyy HH:mm") in item.text(0)
+
+
+def test_review_file_context_menu_opens_and_reveals_the_file(qtbot: QtBot, tmp_path: Path) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    panel.resize(500, 400)
+    panel.show()
+    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
+    change = CommitFileChange("M", "src/example.py")
+    panel.show_sessions((session,))
+    panel.select_session(session)
+    panel.show_files(session, (change,))
+    group = panel.files.topLevelItem(0)
+    assert group is not None
+    file_item = group.child(0)
+    assert file_item is not None
+    opened: list[object] = []
+    revealed: list[object] = []
+    panel.file_open_requested.connect(opened.append)
+    panel.file_reveal_requested.connect(revealed.append)
+    labels: list[str] = []
+
+    def choose(index: int) -> None:
+        popup = QApplication.activePopupWidget()
+        if not isinstance(popup, QMenu):
+            return
+        try:
+            labels[:] = [action.text() for action in popup.actions()]
+            for _ in range(index + 1):
+                QTest.keyClick(popup, Qt.Key.Key_Down)
+            QTest.keyClick(popup, Qt.Key.Key_Return)
+        finally:
+            popup.close()
+
+    position = panel.files.visualItemRect(file_item).center()
+    QTimer.singleShot(0, lambda: choose(0))
+    panel.files.customContextMenuRequested.emit(position)
+    QTimer.singleShot(0, lambda: choose(1))
+    panel.files.customContextMenuRequested.emit(position)
+    panel.files.customContextMenuRequested.emit(panel.files.visualItemRect(group).center())
+
+    assert labels == ["Open", "Show in File Manager"]
+    assert opened == [change]
+    assert revealed == [change]
