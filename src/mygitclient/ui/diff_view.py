@@ -79,6 +79,7 @@ class DiffView(QWidget):
     hunk_requested = Signal(object, int)
     context_requested = Signal(int)
     close_requested = Signal()
+    panel_collapse_toggled = Signal(bool)
     stage_requested = Signal()
     stash_requested = Signal()
     unstage_requested = Signal()
@@ -303,9 +304,16 @@ class DiffView(QWidget):
         self.unstage_button.clicked.connect(self.unstage_requested)
         self.discard_button.clicked.connect(self.discard_requested)
 
+        self.panel_toggle_button = QToolButton()
+        self.panel_toggle_button.setObjectName("diffPanelToggleButton")
+        self.panel_toggle_button.setCheckable(True)
+        self.panel_toggle_button.toggled.connect(self._panel_toggle_changed)
+        self._update_panel_toggle(False)
+
         toolbar = QWidget()
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        toolbar_layout.addWidget(self.panel_toggle_button)
         toolbar_layout.addWidget(self.version_label)
         toolbar_layout.addWidget(self.version_combo)
         toolbar_layout.addStretch(1)
@@ -383,6 +391,19 @@ class DiffView(QWidget):
         button.setEnabled(False)
         button.hide()
         return button
+
+    @Slot(bool)
+    def _panel_toggle_changed(self, collapsed: bool) -> None:
+        self._update_panel_toggle(collapsed)
+        self.panel_collapse_toggled.emit(collapsed)
+
+    def _update_panel_toggle(self, collapsed: bool) -> None:
+        if collapsed:
+            self.panel_toggle_button.setText("⇥ Show panel")
+            self.panel_toggle_button.setToolTip("Show the file panel next to the diff")
+        else:
+            self.panel_toggle_button.setText("⇤ Hide panel")
+            self.panel_toggle_button.setToolTip("Hide the file panel so the diff fills the window")
 
     @Slot(str)
     def _version_text_changed(self, text: str) -> None:

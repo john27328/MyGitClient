@@ -801,3 +801,41 @@ def test_diff_display_toggles_are_persisted(qapp: QApplication, tmp_path: Path) 
     assert settings.value("diff/showWhitespace") is True
     assert settings.value("diff/ignoreWhitespace") is True
     window.close()
+
+
+def test_diff_panel_toggle_hides_the_file_panel_on_every_diff_page(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    settings = QSettings(str(tmp_path / "panel-toggle.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
+    window._workspace_container.show()  # pyright: ignore[reportPrivateUsage]
+    window.resize(1200, 700)
+    window.show()
+    pages = (
+        ("changesWorkspaceSplitter", "diffPanelToggleButton"),
+        ("studyWorkspaceSplitter", "studyDiffPanelToggleButton"),
+        ("reviewWorkspaceSplitter", "reviewDiffPanelToggleButton"),
+    )
+    for splitter_name, button_name in pages:
+        splitter = window.findChild(QSplitter, splitter_name)
+        button = window.findChild(QToolButton, button_name)
+        assert splitter is not None
+        assert button is not None
+        side_panel = splitter.widget(0)
+        diff_panel = splitter.widget(1)
+        assert side_panel is not None
+        assert diff_panel is not None
+        diff_panel.show()
+        splitter.show()
+        assert not button.isChecked()
+        assert button.text().endswith("Hide panel")
+
+        button.click()
+        assert not side_panel.isVisibleTo(splitter)
+        assert button.text().endswith("Show panel")
+
+        button.click()
+        assert side_panel.isVisibleTo(splitter)
+        assert button.text().endswith("Hide panel")
+    window.close()

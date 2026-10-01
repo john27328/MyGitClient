@@ -398,6 +398,12 @@ class MainWindow(QMainWindow):
             "reviewWorkspaceSplitter", self._review_panel, self._review_diff_container
         )
         self._study_page.splitterMoved.connect(self._study_splitter_moved)
+        for side_panel, view in (
+            (self._changes_container, self._diff_view),
+            (self._diff_study_panel, self._study_diff_view),
+            (self._review_panel, self._review_diff_view),
+        ):
+            self._link_panel_toggle(side_panel, view)
         self._workspace_tabs.addTab(self._changes_page, "Changes")
         self._workspace_tabs.addTab(self._history_panel, "History")
         self._workspace_tabs.addTab(self._study_page, "Diff")
@@ -940,6 +946,15 @@ class MainWindow(QMainWindow):
             self._history_panel.set_expanded_layout(False)
             page = self._changes_page if index == TAB_CHANGES else self._review_page
             self._ensure_workspace_page_sizes(page)
+
+    @staticmethod
+    def _link_panel_toggle(side_panel: QWidget, view: DiffView) -> None:
+        """Let the diff toolbar hide the file panel so the diff fills the whole page."""
+
+        def set_collapsed(collapsed: bool) -> None:
+            side_panel.setVisible(not collapsed)
+
+        view.panel_collapse_toggled.connect(set_collapsed)
 
     @staticmethod
     def _ensure_workspace_page_sizes(page: QSplitter) -> None:
@@ -3290,6 +3305,7 @@ class MainWindow(QMainWindow):
             path = self._selected_file_path(file)
             if path is None:
                 return
+            self._diff_view.panel_toggle_button.setChecked(False)
             self._conflict_editor.load_file(path, file.path)
             if self._repository is not None:
                 self._git.request_conflict_versions(self._repository, file)
