@@ -4,7 +4,6 @@ from PySide6.QtCore import QDateTime, QPoint, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QMenu,
     QPushButton,
@@ -18,15 +17,7 @@ from PySide6.QtWidgets import (
 from mygitclient.git.models import CommitFileChange, CommitSummary
 from mygitclient.workspace.reviews import ReviewSession
 
-
-def _state_badge(total: int, checked: int) -> tuple[str, str]:
-    """Compact review-state marker plus the full wording for its tooltip."""
-
-    if total == 0:
-        return "○", "Needs review"
-    if checked == total:
-        return "✓", f"Reviewed ({checked}/{total})"
-    return f"◐ {checked}/{total}", f"In progress: {checked} of {total} reviewed"
+_GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 class ReviewPanel(QWidget):
@@ -36,7 +27,7 @@ class ReviewPanel(QWidget):
     delete_requested = Signal(object)
     session_selected = Signal(object)
     file_selected = Signal(object)
-    mark_file_requested = Signal()
+    file_review_toggled = Signal(object, bool)
     file_open_requested = Signal(object)
     file_reveal_requested = Signal(object)
     boundary_selected = Signal(object)
@@ -46,7 +37,7 @@ class ReviewPanel(QWidget):
         self.setObjectName("reviewPanel")
         self._session: ReviewSession | None = None
         self._files: tuple[CommitFileChange, ...] = ()
-        self._states: dict[str, tuple[int, int]] = {}
+        self._states: dict[str, bool] = {}
         self._expanded_groups = {"Needs review", "Reviewed"}
         self._pending_scroll_position: tuple[int, int] | None = None
         self._scroll_restore_timer = QTimer(self)
@@ -95,19 +86,14 @@ class ReviewPanel(QWidget):
 
         self.files = QTreeWidget()
         self.files.setObjectName("reviewFilesTree")
-        self.files.setHeaderLabels(["State", "File"])
-        self.files.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.files.setHeaderHidden(True)
         self.files.setRootIsDecorated(True)
         self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files.customContextMenuRequested.connect(self._show_file_context_menu)
         self.files.currentItemChanged.connect(self._file_changed)
+        self.files.itemChanged.connect(self._file_check_changed)
         self.files.itemExpanded.connect(self._group_expanded)
         self.files.itemCollapsed.connect(self._group_collapsed)
-
-        self.mark_file_button = QPushButton("Mark file reviewed")
-        self.mark_file_button.setObjectName("markReviewFileButton")
-        self.mark_file_button.setEnabled(False)
-        self.mark_file_button.clicked.connect(self.mark_file_requested)
 
         files_container = QWidget()
         files_layout = QVBoxLayout(files_container)
@@ -115,7 +101,6 @@ class ReviewPanel(QWidget):
         files_layout.addWidget(self.context)
         files_layout.addLayout(boundary_layout)
         files_layout.addWidget(self.files, 1)
-        files_layout.addWidget(self.mark_file_button)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.setObjectName("reviewSplitter")
@@ -181,12 +166,9 @@ class ReviewPanel(QWidget):
         self._states = {path: state for path, state in self._states.items() if path in paths}
         self._render_files()
 
-    def update_file_state(self, path: str, total: int, checked: int) -> None:
-        self._states[path] = (total, checked)
+    def update_file_state(self, path: str, reviewed: bool) -> None:
+        self._states[path] = reviewed
         self._render_files()
-
-    def set_mark_file_enabled(self, enabled: bool) -> None:
-        self.mark_file_button.setEnabled(enabled)
 
     def show_boundaries(
         self, commits: tuple[CommitSummary, ...], selected_oid: str
@@ -224,7 +206,6 @@ class ReviewPanel(QWidget):
         self._files = ()
         self._states.clear()
         self.files.clear()
-        self.mark_file_button.setEnabled(False)
         if self._session is not None:
             self.context.setText(
                 f"{self._session.branch} from {self._session.displayed_start_oid[:8]} · "
@@ -263,6 +244,18 @@ class ReviewPanel(QWidget):
         elif chosen is reveal_action:
             self.file_reveal_requested.emit(change)
 
+    @Slot(QTreeWidgetItem, int)
+    def _file_check_changed(self, item: QTreeWidgetItem, _column: int) -> None:
+        change = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(change, CommitFileChange):
+            return
+        reviewed = item.checkState(0) == Qt.CheckState.Checked
+        if self._states.get(change.path, False) == reviewed:
+            return
+        self.files.setCurrentItem(item)
+        # The controller re-renders the list, which must not happen inside itemChanged.
+        QTimer.singleShot(0, lambda: self.file_review_toggled.emit(change, reviewed))
+
     @Slot(int)
     def _boundary_changed(self, index: int) -> None:
         value = self.boundary_combo.itemData(index)
@@ -276,13 +269,15 @@ class ReviewPanel(QWidget):
 
     @Slot(QTreeWidgetItem)
     def _group_expanded(self, item: QTreeWidgetItem) -> None:
-        if item.parent() is None:
-            self._expanded_groups.add(item.text(0))
+        title = item.data(0, _GROUP_ROLE)
+        if item.parent() is None and isinstance(title, str):
+            self._expanded_groups.add(title)
 
     @Slot(QTreeWidgetItem)
     def _group_collapsed(self, item: QTreeWidgetItem) -> None:
-        if item.parent() is None:
-            self._expanded_groups.discard(item.text(0))
+        title = item.data(0, _GROUP_ROLE)
+        if item.parent() is None and isinstance(title, str):
+            self._expanded_groups.discard(title)
 
     def _render_files(self) -> None:
         selected_path = self.selected_file.path if self.selected_file is not None else ""
@@ -295,20 +290,23 @@ class ReviewPanel(QWidget):
         pending: list[CommitFileChange] = []
         reviewed: list[CommitFileChange] = []
         for change in self._files:
-            total, checked = self._states.get(change.path, (0, 0))
-            (reviewed if total > 0 and total == checked else pending).append(change)
-        for _title, values in (("Needs review", pending), ("Reviewed", reviewed)):
-            group = QTreeWidgetItem([_title, str(len(values))])
-            group.setFirstColumnSpanned(True)
+            (reviewed if self._states.get(change.path, False) else pending).append(change)
+        for title, values in (("Needs review", pending), ("Reviewed", reviewed)):
+            group = QTreeWidgetItem([f"{title} · {len(values)}"])
+            group.setData(0, _GROUP_ROLE, title)
             self.files.addTopLevelItem(group)
-            group.setExpanded(_title in self._expanded_groups)
+            group.setExpanded(title in self._expanded_groups)
             for change in values:
-                total, checked = self._states.get(change.path, (0, 0))
-                state, state_tooltip = _state_badge(total, checked)
-                item = QTreeWidgetItem([state, change.path])
-                item.setToolTip(0, state_tooltip)
+                item = QTreeWidgetItem([change.path])
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    0,
+                    Qt.CheckState.Checked
+                    if self._states.get(change.path, False)
+                    else Qt.CheckState.Unchecked,
+                )
                 item.setData(0, Qt.ItemDataRole.UserRole, change)
-                item.setToolTip(1, change.original_path or change.path)
+                item.setToolTip(0, change.original_path or change.path)
                 group.addChild(item)
                 if change.path == selected_path:
                     self.files.setCurrentItem(item)

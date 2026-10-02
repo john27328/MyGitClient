@@ -66,11 +66,12 @@ class ReviewController(QObject):
         self._review_boundaries: dict[str, tuple[CommitSummary, ...]] = {}
         self._active: ReviewSession | None = None
         self._diff: UnifiedDiff | None = None
+        self._pending_mark: str | None = None
         panel.start_requested.connect(self.start)
         panel.delete_requested.connect(self.delete)
         panel.session_selected.connect(self.select_session)
         panel.file_selected.connect(self.select_file)
-        panel.mark_file_requested.connect(self.mark_file)
+        panel.file_review_toggled.connect(self.set_file_reviewed)
         panel.boundary_selected.connect(self.select_boundary)
 
     def activate_repository(self, repository: Path) -> None:
@@ -94,10 +95,7 @@ class ReviewController(QObject):
             )
 
     def update_selection_actions(self) -> bool:
-        if self._tabs.currentIndex() != self._review_tab:
-            return False
-        self._panel.set_mark_file_enabled(self._active is not None and self._diff is not None)
-        return True
+        return self._tabs.currentIndex() == self._review_tab
 
     def handle_stage_requested(self) -> bool:
         if self._tabs.currentIndex() != self._review_tab:
@@ -211,6 +209,8 @@ class ReviewController(QObject):
     def select_file(self, value: object) -> None:
         if self._active is None or not isinstance(value, CommitFileChange):
             return
+        if self._pending_mark != value.path:
+            self._pending_mark = None
         self._git.request_ref_comparison_diff(
             self._active.repository,
             self._active.base_oid,
@@ -275,12 +275,14 @@ class ReviewController(QObject):
         if self._tabs.currentIndex() != self._review_tab:
             return True
         self._diff = value.diff
-        reviewed = self._store.reviewed_file(self._active, value.diff.path)
-        self._panel.update_file_state(
-            value.diff.path,
-            1,
-            1 if reviewed == review_file_fingerprint(value.diff) else 0,
-        )
+        if self._pending_mark == value.diff.path:
+            self._pending_mark = None
+            self.mark_file()
+        else:
+            reviewed = self._store.reviewed_file(self._active, value.diff.path)
+            self._panel.update_file_state(
+                value.diff.path, reviewed == review_file_fingerprint(value.diff)
+            )
         self._diff_container.setCurrentWidget(self._diff_view)
         self._diff_view.display_diff(
             value.diff,
@@ -293,7 +295,6 @@ class ReviewController(QObject):
             whole_file_staged=False,
             interactive=False,
         )
-        self._panel.set_mark_file_enabled(True)
         return True
 
     @Slot()
@@ -303,5 +304,21 @@ class ReviewController(QObject):
         self._store.set_reviewed_file(
             self._active, self._diff.path, review_file_fingerprint(self._diff)
         )
-        self._panel.update_file_state(self._diff.path, 1, 1)
+        self._panel.update_file_state(self._diff.path, True)
         self.status_changed.emit("File marked reviewed")
+
+    @Slot(object, bool)
+    def set_file_reviewed(self, value: object, reviewed: bool) -> None:
+        if self._active is None or not isinstance(value, CommitFileChange):
+            return
+        if not reviewed:
+            self._pending_mark = None
+            self._store.clear_reviewed_file(self._active, value.path)
+            self._panel.update_file_state(value.path, False)
+            self.status_changed.emit("Review mark removed")
+        elif self._diff is not None and self._diff.path == value.path:
+            self.mark_file()
+        else:
+            # The fingerprint needs the file's diff; mark it as soon as that arrives.
+            self._pending_mark = value.path
+            self.select_file(value)

@@ -73,6 +73,9 @@ class ReviewStore:
     def set_reviewed_file(self, session: ReviewSession, path: str, fingerprint: str) -> None:
         self._settings.setValue(self._reviewed_file_key(session, path), fingerprint)
 
+    def clear_reviewed_file(self, session: ReviewSession, path: str) -> None:
+        self._settings.remove(self._reviewed_file_key(session, path))
+
     def _read(self) -> tuple[ReviewSession, ...]:
         value = self._settings.value(_SESSIONS_KEY, "[]")
         if not isinstance(value, str):

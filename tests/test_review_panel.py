@@ -24,7 +24,7 @@ def test_review_group_expansion_survives_file_list_refresh(qtbot: QtBot, tmp_pat
 
     assert pending is not None
     pending.setExpanded(False)
-    panel.update_file_state(change.path, total=2, checked=1)
+    panel.update_file_state(change.path, True)
 
     refreshed_pending = panel.files.topLevelItem(0)
     assert refreshed_pending is not None
@@ -69,7 +69,7 @@ def test_refreshing_review_files_preserves_scroll_position(qtbot: QtBot, tmp_pat
     scrollbar.setValue(scrollbar.maximum() // 2)
     expected = scrollbar.value()
 
-    panel.update_file_state(changes[0].path, total=1, checked=1)
+    panel.update_file_state(changes[0].path, True)
     qtbot.wait(10)
 
     assert scrollbar.value() == expected
@@ -107,16 +107,41 @@ def test_review_boundaries_are_shown_with_local_date_and_time(qtbot: QtBot) -> N
     assert selected == [commits[1]]
 
 
-def test_review_panel_can_mark_the_current_file(qtbot: QtBot) -> None:
+def test_review_file_checkbox_requests_review_state_change(qtbot: QtBot, tmp_path: Path) -> None:
     panel = ReviewPanel()
     qtbot.addWidget(panel)
-    requested: list[bool] = []
-    panel.mark_file_requested.connect(lambda: requested.append(True))
+    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
+    change = CommitFileChange("M", "src/example.py")
+    panel.show_sessions((session,))
+    panel.select_session(session)
+    panel.show_files(session, (change,))
+    group = panel.files.topLevelItem(0)
+    assert group is not None
+    item = group.child(0)
+    assert item is not None
+    assert item.checkState(0) == Qt.CheckState.Unchecked
+    toggled: list[tuple[object, bool]] = []
 
-    panel.set_mark_file_enabled(True)
-    panel.mark_file_button.click()
+    def record(value: object, reviewed: bool) -> None:
+        toggled.append((value, reviewed))
 
-    assert requested == [True]
+    panel.file_review_toggled.connect(record)
+
+    item.setCheckState(0, Qt.CheckState.Checked)
+    qtbot.waitUntil(lambda: len(toggled) == 1)
+
+    assert toggled == [(change, True)]
+    assert panel.selected_file == change
+    panel.update_file_state(change.path, True)
+    reviewed_group = panel.files.topLevelItem(1)
+    assert reviewed_group is not None
+    reviewed_item = reviewed_group.child(0)
+    assert reviewed_item is not None
+    assert reviewed_item.checkState(0) == Qt.CheckState.Checked
+
+    reviewed_item.setCheckState(0, Qt.CheckState.Unchecked)
+    qtbot.waitUntil(lambda: len(toggled) == 2)
+    assert toggled[1] == (change, False)
 
 
 def test_review_session_displays_local_start_date_and_time(qtbot: QtBot, tmp_path: Path) -> None:
@@ -183,24 +208,29 @@ def test_review_file_context_menu_opens_and_reveals_the_file(qtbot: QtBot, tmp_p
     assert revealed == [change]
 
 
-def test_review_state_column_uses_compact_markers(qtbot: QtBot, tmp_path: Path) -> None:
+def test_review_files_are_grouped_by_checkbox_state_without_counts_per_file(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
     panel = ReviewPanel()
     qtbot.addWidget(panel)
     session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
-    files = tuple(CommitFileChange("M", name) for name in ("new.py", "partial.py", "done.py"))
+    files = tuple(CommitFileChange("M", name) for name in ("new.py", "done.py"))
     panel.show_sessions((session,))
     panel.select_session(session)
     panel.show_files(session, files)
-    panel.update_file_state("partial.py", total=3, checked=1)
-    panel.update_file_state("done.py", total=2, checked=2)
+    panel.update_file_state("done.py", True)
 
     pending = panel.files.topLevelItem(0)
     reviewed = panel.files.topLevelItem(1)
     assert pending is not None
     assert reviewed is not None
-    assert [(pending.child(i) or pending).text(0) for i in range(pending.childCount())] == [
-        "○",
-        "◐ 1/3",
-    ]
-    assert (pending.child(0) or pending).toolTip(0) == "Needs review"
-    assert (reviewed.child(0) or reviewed).text(0) == "✓"
+    assert panel.files.isHeaderHidden()
+    assert pending.text(0) == "Needs review \u00b7 1"
+    assert reviewed.text(0) == "Reviewed \u00b7 1"
+    pending_file = pending.child(0)
+    reviewed_file = reviewed.child(0)
+    assert pending_file is not None
+    assert reviewed_file is not None
+    assert pending_file.text(0) == "new.py"
+    assert reviewed_file.text(0) == "done.py"
+    assert reviewed_file.checkState(0) == Qt.CheckState.Checked
