@@ -12,25 +12,6 @@ from mygitclient.ui.review_panel import ReviewPanel
 from mygitclient.workspace.reviews import ReviewSession
 
 
-def test_review_group_expansion_survives_file_list_refresh(qtbot: QtBot, tmp_path: Path) -> None:
-    panel = ReviewPanel()
-    qtbot.addWidget(panel)
-    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
-    change = CommitFileChange("M", "src/example.py")
-    panel.show_sessions((session,))
-    panel.select_session(session)
-    panel.show_files(session, (change,))
-    pending = panel.files.topLevelItem(0)
-
-    assert pending is not None
-    pending.setExpanded(False)
-    panel.update_file_state(change.path, True)
-
-    refreshed_pending = panel.files.topLevelItem(0)
-    assert refreshed_pending is not None
-    assert not refreshed_pending.isExpanded()
-
-
 def test_refreshing_review_files_does_not_reselect_the_current_file(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
@@ -43,10 +24,8 @@ def test_refreshing_review_files_does_not_reselect_the_current_file(
     panel.show_sessions((session,))
     panel.select_session(session)
     panel.show_files(session, (change,))
-    group = panel.files.topLevelItem(0)
+    item = panel.files.topLevelItem(0)
 
-    assert group is not None
-    item = group.child(0)
     assert item is not None
     panel.files.setCurrentItem(item)
     panel.show_files(session, (change,))
@@ -115,9 +94,7 @@ def test_review_file_checkbox_requests_review_state_change(qtbot: QtBot, tmp_pat
     panel.show_sessions((session,))
     panel.select_session(session)
     panel.show_files(session, (change,))
-    group = panel.files.topLevelItem(0)
-    assert group is not None
-    item = group.child(0)
+    item = panel.files.topLevelItem(0)
     assert item is not None
     assert item.checkState(0) == Qt.CheckState.Unchecked
     toggled: list[tuple[object, bool]] = []
@@ -133,9 +110,7 @@ def test_review_file_checkbox_requests_review_state_change(qtbot: QtBot, tmp_pat
     assert toggled == [(change, True)]
     assert panel.selected_file == change
     panel.update_file_state(change.path, True)
-    reviewed_group = panel.files.topLevelItem(1)
-    assert reviewed_group is not None
-    reviewed_item = reviewed_group.child(0)
+    reviewed_item = panel.files.topLevelItem(0)
     assert reviewed_item is not None
     assert reviewed_item.checkState(0) == Qt.CheckState.Checked
 
@@ -174,9 +149,7 @@ def test_review_file_context_menu_opens_and_reveals_the_file(qtbot: QtBot, tmp_p
     panel.show_sessions((session,))
     panel.select_session(session)
     panel.show_files(session, (change,))
-    group = panel.files.topLevelItem(0)
-    assert group is not None
-    file_item = group.child(0)
+    file_item = panel.files.topLevelItem(0)
     assert file_item is not None
     opened: list[object] = []
     revealed: list[object] = []
@@ -201,36 +174,32 @@ def test_review_file_context_menu_opens_and_reveals_the_file(qtbot: QtBot, tmp_p
     panel.files.customContextMenuRequested.emit(position)
     QTimer.singleShot(0, lambda: choose(1))
     panel.files.customContextMenuRequested.emit(position)
-    panel.files.customContextMenuRequested.emit(panel.files.visualItemRect(group).center())
+    panel.files.customContextMenuRequested.emit(panel.files.viewport().rect().bottomRight())
 
     assert labels == ["Open", "Show in File Manager"]
     assert opened == [change]
     assert revealed == [change]
 
 
-def test_review_files_are_grouped_by_checkbox_state_without_counts_per_file(
+def test_review_files_are_a_flat_checkbox_list_that_keeps_its_order(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
     panel = ReviewPanel()
     qtbot.addWidget(panel)
     session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
-    files = tuple(CommitFileChange("M", name) for name in ("new.py", "done.py"))
+    files = tuple(CommitFileChange("M", name) for name in ("a.py", "b.py", "c.py"))
     panel.show_sessions((session,))
     panel.select_session(session)
     panel.show_files(session, files)
-    panel.update_file_state("done.py", True)
+    panel.update_file_state("a.py", True)
 
-    pending = panel.files.topLevelItem(0)
-    reviewed = panel.files.topLevelItem(1)
-    assert pending is not None
-    assert reviewed is not None
+    items = [panel.files.topLevelItem(index) for index in range(panel.files.topLevelItemCount())]
     assert panel.files.isHeaderHidden()
-    assert pending.text(0) == "Needs review \u00b7 1"
-    assert reviewed.text(0) == "Reviewed \u00b7 1"
-    pending_file = pending.child(0)
-    reviewed_file = reviewed.child(0)
-    assert pending_file is not None
-    assert reviewed_file is not None
-    assert pending_file.text(0) == "new.py"
-    assert reviewed_file.text(0) == "done.py"
-    assert reviewed_file.checkState(0) == Qt.CheckState.Checked
+    assert not panel.files.rootIsDecorated()
+    assert [item.text(0) for item in items if item is not None] == ["a.py", "b.py", "c.py"]
+    assert [item.childCount() for item in items if item is not None] == [0, 0, 0]
+    assert [item.checkState(0) for item in items if item is not None] == [
+        Qt.CheckState.Checked,
+        Qt.CheckState.Unchecked,
+        Qt.CheckState.Unchecked,
+    ]

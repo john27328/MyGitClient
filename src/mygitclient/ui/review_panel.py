@@ -17,8 +17,6 @@ from PySide6.QtWidgets import (
 from mygitclient.git.models import CommitFileChange, CommitSummary
 from mygitclient.workspace.reviews import ReviewSession
 
-_GROUP_ROLE = Qt.ItemDataRole.UserRole + 1
-
 
 class ReviewPanel(QWidget):
     """The local self-review navigator; Git orchestration remains in MainWindow."""
@@ -38,7 +36,6 @@ class ReviewPanel(QWidget):
         self._session: ReviewSession | None = None
         self._files: tuple[CommitFileChange, ...] = ()
         self._states: dict[str, bool] = {}
-        self._expanded_groups = {"Needs review", "Reviewed"}
         self._pending_scroll_position: tuple[int, int] | None = None
         self._scroll_restore_timer = QTimer(self)
         self._scroll_restore_timer.setSingleShot(True)
@@ -87,13 +84,11 @@ class ReviewPanel(QWidget):
         self.files = QTreeWidget()
         self.files.setObjectName("reviewFilesTree")
         self.files.setHeaderHidden(True)
-        self.files.setRootIsDecorated(True)
+        self.files.setRootIsDecorated(False)
         self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files.customContextMenuRequested.connect(self._show_file_context_menu)
         self.files.currentItemChanged.connect(self._file_changed)
         self.files.itemChanged.connect(self._file_check_changed)
-        self.files.itemExpanded.connect(self._group_expanded)
-        self.files.itemCollapsed.connect(self._group_collapsed)
 
         files_container = QWidget()
         files_layout = QVBoxLayout(files_container)
@@ -267,18 +262,6 @@ class ReviewPanel(QWidget):
         if self._session is not None:
             self.delete_requested.emit(self._session)
 
-    @Slot(QTreeWidgetItem)
-    def _group_expanded(self, item: QTreeWidgetItem) -> None:
-        title = item.data(0, _GROUP_ROLE)
-        if item.parent() is None and isinstance(title, str):
-            self._expanded_groups.add(title)
-
-    @Slot(QTreeWidgetItem)
-    def _group_collapsed(self, item: QTreeWidgetItem) -> None:
-        title = item.data(0, _GROUP_ROLE)
-        if item.parent() is None and isinstance(title, str):
-            self._expanded_groups.discard(title)
-
     def _render_files(self) -> None:
         selected_path = self.selected_file.path if self.selected_file is not None else ""
         self._pending_scroll_position = (
@@ -287,29 +270,20 @@ class ReviewPanel(QWidget):
         )
         blocker = QSignalBlocker(self.files)
         self.files.clear()
-        pending: list[CommitFileChange] = []
-        reviewed: list[CommitFileChange] = []
         for change in self._files:
-            (reviewed if self._states.get(change.path, False) else pending).append(change)
-        for title, values in (("Needs review", pending), ("Reviewed", reviewed)):
-            group = QTreeWidgetItem([f"{title} · {len(values)}"])
-            group.setData(0, _GROUP_ROLE, title)
-            self.files.addTopLevelItem(group)
-            group.setExpanded(title in self._expanded_groups)
-            for change in values:
-                item = QTreeWidgetItem([change.path])
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(
-                    0,
-                    Qt.CheckState.Checked
-                    if self._states.get(change.path, False)
-                    else Qt.CheckState.Unchecked,
-                )
-                item.setData(0, Qt.ItemDataRole.UserRole, change)
-                item.setToolTip(0, change.original_path or change.path)
-                group.addChild(item)
-                if change.path == selected_path:
-                    self.files.setCurrentItem(item)
+            item = QTreeWidgetItem([change.path])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                0,
+                Qt.CheckState.Checked
+                if self._states.get(change.path, False)
+                else Qt.CheckState.Unchecked,
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, change)
+            item.setToolTip(0, change.original_path or change.path)
+            self.files.addTopLevelItem(item)
+            if change.path == selected_path:
+                self.files.setCurrentItem(item)
         del blocker
         self._scroll_restore_timer.start(0)
 
