@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QSettings, Qt, Signal, Slot
+from PySide6.QtCore import QByteArray, QDateTime, QSettings, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
@@ -85,22 +85,10 @@ class DiffStudyPanel(QWidget):
         self.files.setRootIsDecorated(False)
         self.files.currentItemChanged.connect(self._file_changed)
 
-        self.commit_details_label = QLabel("Select a commit to view its details.")
-        self.commit_details_label.setObjectName("diffStudyCommitDetailsLabel")
-        self.commit_details_label.setWordWrap(True)
-        self.commit_details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-
-        files_container = QWidget()
-        files_layout = QVBoxLayout(files_container)
-        files_layout.setContentsMargins(0, 6, 0, 0)
-        files_layout.setSpacing(6)
-        files_layout.addWidget(self.commit_details_label)
-        files_layout.addWidget(self.files, 1)
-
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.setObjectName("diffStudySplitter")
         self.splitter.addWidget(commits_container)
-        self.splitter.addWidget(files_container)
+        self.splitter.addWidget(self.files)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([440, 260])
@@ -144,7 +132,6 @@ class DiffStudyPanel(QWidget):
         self._comparison_refs = None
         self._selected_stash = None
         self.context_label.setText("Select a commit to study its diff.")
-        self.commit_details_label.setText("Select a commit to view its details.")
 
     def select_commit(self, oid: str) -> bool:
         """Move the cursor onto ``oid``; returns whether that commit was listed."""
@@ -181,7 +168,6 @@ class DiffStudyPanel(QWidget):
             f"{snapshot.base_ref} … {snapshot.compare_ref} · "
             f"{len(snapshot.files)} changed file(s)"
         )
-        self.commit_details_label.setText("Comparing the selected refs.")
         self._populate(snapshot.files)
 
     def show_stash(self, stash: StashInfo) -> None:
@@ -190,14 +176,12 @@ class DiffStudyPanel(QWidget):
         self.commits.clearSelection()
         self.files.clear()
         self.context_label.setText(f"{stash.ref} · {stash.subject}")
-        self.commit_details_label.setText(f"Stash: {stash.ref}")
 
     def clear_comparison(self) -> None:
         self._comparison_refs = None
         self._selected_stash = None
         self.files.clear()
         self.context_label.setText("Select a commit to study its diff.")
-        self.commit_details_label.setText("Select a commit to view its details.")
 
     def select_file(self, path: str) -> bool:
         for index in range(self.files.topLevelItemCount()):
@@ -243,13 +227,19 @@ class DiffStudyPanel(QWidget):
             return
         self._comparison_refs = None
         self._selected_stash = None
-        self.context_label.setText(f"Commit {commit.oid[:8]} · {commit.subject}")
+        authored_at = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
+        date = (
+            authored_at.toLocalTime().toString("dd.MM.yyyy HH:mm")
+            if authored_at.isValid()
+            else commit.authored_at
+        )
         parents = ", ".join(parent[:8] for parent in commit.parent_oids) or "None (root)"
-        self.commit_details_label.setText(
-            f"{commit.subject}\n\n"
+        self.context_label.setText(
+            f"{commit.oid[:8]} · {commit.subject}\n{commit.author_name} · {date}"
+        )
+        self.context_label.setToolTip(
             f"Commit: {commit.oid}\n"
             f"Author: {commit.author_name} <{commit.author_email}>\n"
-            f"Date: {commit.authored_at}\n"
             f"Parents: {parents}"
         )
         self.files.clear()

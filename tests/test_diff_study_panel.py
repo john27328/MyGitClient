@@ -25,10 +25,9 @@ def test_selected_commit_shows_details_above_files(qtbot: QtBot) -> None:
 
     panel.commits.setCurrentItem(item)
 
-    assert panel.commit_details_label.text() == (
-        "Add commit details\n\n"
-        "Commit: 0123456789abcdef\n"
-        "Author: Test Author <author@example.invalid>\n"
-        "Date: 2026-08-24T14:00:00+03:00\n"
-        "Parents: fedcba98"
-    )
+    header = panel.context_label.text().split("\n")
+    assert header[0] == "01234567 \u00b7 Add commit details"
+    assert header[1].startswith("Test Author \u00b7 ")
+    assert panel.context_label.text().count("Add commit details") == 1
+    assert "0123456789abcdef" in panel.context_label.toolTip()
+    assert "Parents: fedcba98" in panel.context_label.toolTip()
