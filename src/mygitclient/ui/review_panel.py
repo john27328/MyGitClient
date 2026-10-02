@@ -4,6 +4,7 @@ from PySide6.QtCore import QDateTime, QPoint, QSignalBlocker, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMenu,
     QPushButton,
@@ -16,6 +17,16 @@ from PySide6.QtWidgets import (
 
 from mygitclient.git.models import CommitFileChange, CommitSummary
 from mygitclient.workspace.reviews import ReviewSession
+
+
+def _state_badge(total: int, checked: int) -> tuple[str, str]:
+    """Compact review-state marker plus the full wording for its tooltip."""
+
+    if total == 0:
+        return "○", "Needs review"
+    if checked == total:
+        return "✓", f"Reviewed ({checked}/{total})"
+    return f"◐ {checked}/{total}", f"In progress: {checked} of {total} reviewed"
 
 
 class ReviewPanel(QWidget):
@@ -84,8 +95,8 @@ class ReviewPanel(QWidget):
 
         self.files = QTreeWidget()
         self.files.setObjectName("reviewFilesTree")
-        self.files.setHeaderLabels(["Review state", "File"])
-        self.files.setColumnWidth(0, 150)
+        self.files.setHeaderLabels(["State", "File"])
+        self.files.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.files.setRootIsDecorated(True)
         self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files.customContextMenuRequested.connect(self._show_file_context_menu)
@@ -293,8 +304,9 @@ class ReviewPanel(QWidget):
             group.setExpanded(_title in self._expanded_groups)
             for change in values:
                 total, checked = self._states.get(change.path, (0, 0))
-                state = f"✓ {checked}/{total}" if total else "Needs review"
+                state, state_tooltip = _state_badge(total, checked)
                 item = QTreeWidgetItem([state, change.path])
+                item.setToolTip(0, state_tooltip)
                 item.setData(0, Qt.ItemDataRole.UserRole, change)
                 item.setToolTip(1, change.original_path or change.path)
                 group.addChild(item)

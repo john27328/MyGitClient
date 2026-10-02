@@ -181,3 +181,26 @@ def test_review_file_context_menu_opens_and_reveals_the_file(qtbot: QtBot, tmp_p
     assert labels == ["Open", "Show in File Manager"]
     assert opened == [change]
     assert revealed == [change]
+
+
+def test_review_state_column_uses_compact_markers(qtbot: QtBot, tmp_path: Path) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
+    files = tuple(CommitFileChange("M", name) for name in ("new.py", "partial.py", "done.py"))
+    panel.show_sessions((session,))
+    panel.select_session(session)
+    panel.show_files(session, files)
+    panel.update_file_state("partial.py", total=3, checked=1)
+    panel.update_file_state("done.py", total=2, checked=2)
+
+    pending = panel.files.topLevelItem(0)
+    reviewed = panel.files.topLevelItem(1)
+    assert pending is not None
+    assert reviewed is not None
+    assert [(pending.child(i) or pending).text(0) for i in range(pending.childCount())] == [
+        "○",
+        "◐ 1/3",
+    ]
+    assert (pending.child(0) or pending).toolTip(0) == "Needs review"
+    assert (reviewed.child(0) or reviewed).text(0) == "✓"
