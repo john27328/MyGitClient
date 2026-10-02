@@ -73,13 +73,19 @@ class ReviewPanel(QWidget):
         self.boundary_label.setObjectName("reviewBoundaryLabel")
         self.boundary_combo = QComboBox()
         self.boundary_combo.setObjectName("reviewBoundaryCombo")
+        # A long commit subject must not set the panel's minimum width.
+        self.boundary_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.boundary_combo.setMinimumContentsLength(12)
         self.boundary_combo.currentIndexChanged.connect(self._boundary_changed)
         self.boundary_label.hide()
         self.boundary_combo.hide()
-        boundary_layout = QHBoxLayout()
+        boundary_layout = QVBoxLayout()
         boundary_layout.setContentsMargins(0, 0, 0, 0)
+        boundary_layout.setSpacing(2)
         boundary_layout.addWidget(self.boundary_label)
-        boundary_layout.addWidget(self.boundary_combo, 1)
+        boundary_layout.addWidget(self.boundary_combo)
 
         self.files = QTreeWidget()
         self.files.setObjectName("reviewFilesTree")
@@ -170,15 +176,25 @@ class ReviewPanel(QWidget):
     ) -> None:
         blocker = QSignalBlocker(self.boundary_combo)
         self.boundary_combo.clear()
+        labels: list[str] = []
         for commit in commits:
             timestamp = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
             label = f"{timestamp.toLocalTime().toString('dd.MM.yyyy HH:mm')} · {commit.subject}"
+            labels.append(label)
             self.boundary_combo.addItem(label, commit)
+            self.boundary_combo.setItemData(
+                self.boundary_combo.count() - 1, label, Qt.ItemDataRole.ToolTipRole
+            )
         selected_index = next(
             (index for index, commit in enumerate(commits) if commit.oid == selected_oid),
             0,
         )
         self.boundary_combo.setCurrentIndex(selected_index)
+        widest = max(
+            (self.boundary_combo.fontMetrics().horizontalAdvance(label) for label in labels),
+            default=0,
+        )
+        self.boundary_combo.view().setMinimumWidth(widest + 40)
         del blocker
         visible = bool(commits)
         self.boundary_label.setVisible(visible)

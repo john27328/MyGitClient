@@ -203,3 +203,26 @@ def test_review_files_are_a_flat_checkbox_list_that_keeps_its_order(
         Qt.CheckState.Unchecked,
         Qt.CheckState.Unchecked,
     ]
+
+
+def test_long_boundary_commit_subject_does_not_widen_the_review_panel(qtbot: QtBot) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    commits = tuple(
+        CommitSummary(
+            oid=str(index) * 40,
+            parent_oids=(),
+            author_name="Author",
+            author_email="author@example.invalid",
+            authored_at="2026-10-02T11:18:00+03:00",
+            subject="A very long commit subject " * 8,
+        )
+        for index in range(2)
+    )
+
+    panel.show_boundaries(commits, commits[0].oid)
+
+    assert panel.minimumSizeHint().width() < 500
+    assert "A very long commit subject" in panel.boundary_combo.itemData(
+        0, Qt.ItemDataRole.ToolTipRole
+    )
