@@ -2736,6 +2736,10 @@ class MainWindow(QMainWindow):
             return
         self._status_runner = None
         status_value = value.status
+        detached = status_value.branch.head is None and status_value.branch.oid is not None
+        self._history_panel.refs_panel.show_detached_head(
+            status_value.branch.oid if detached else None
+        )
         if status_value == self._repository_status and (
             not self._amend.isChecked() or not self._amend_render_pending
         ):

@@ -311,3 +311,34 @@ def test_refs_panel_nests_recursive_submodules(qtbot: QtBot, tmp_path: Path) -> 
     assert parent_item.text(0) == "library"
     assert parent_item.childCount() == 1
     assert cast(QTreeWidgetItem, parent_item.child(0)).text(0) == "codec"
+
+
+def test_refs_panel_lists_a_detached_head_as_the_current_entry(qtbot: QtBot) -> None:
+    panel = RefsPanel()
+    qtbot.addWidget(panel)
+    feature = BranchInfo("refs/heads/feature", "feature", "2" * 40, False)
+    panel.show_branches(BranchesSnapshot(Path("repository"), (feature,)))
+    panel.tree.setCurrentItem(
+        cast(QTreeWidgetItem, cast(QTreeWidgetItem, panel.tree.topLevelItem(0)).child(0))
+    )
+    selected: list[object] = []
+    panel.refs_selected.connect(selected.append)
+
+    panel.show_detached_head("a" * 40)
+
+    branches = panel.tree.topLevelItem(0)
+    assert branches is not None
+    head = cast(QTreeWidgetItem, branches.child(0))
+    assert head.text(0) == "HEAD · detached at aaaaaaaa  ✓"
+    assert head.font(0).bold()
+    assert cast(QTreeWidgetItem, branches.child(1)).text(0).startswith("feature")
+    assert panel.selected_ref == "refs/heads/feature"
+    assert selected == []
+
+    panel.tree.setCurrentItem(head)
+    assert selected == [("HEAD",)]
+
+    panel.show_detached_head(None)
+    branches = panel.tree.topLevelItem(0)
+    assert branches is not None
+    assert branches.childCount() == 1

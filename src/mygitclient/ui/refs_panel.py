@@ -60,6 +60,7 @@ class RefsPanel(QWidget):
         self._tags: tuple[TagInfo, ...] = ()
         self._stashes: tuple[StashInfo, ...] = ()
         self._linked_repositories: tuple[LinkedRepository, ...] = ()
+        self._detached_oid = ""
         self._selected_ref = ""
 
         self.filter_edit = QLineEdit()
@@ -176,7 +177,17 @@ class RefsPanel(QWidget):
         self._linked_repositories = repositories
         self._rebuild()
 
+    def show_detached_head(self, oid: str | None) -> None:
+        """List a checked-out commit as the current "branch" while HEAD is detached."""
+
+        oid = oid or ""
+        if oid == self._detached_oid:
+            return
+        self._detached_oid = oid
+        self._rebuild()
+
     def reset(self) -> None:
+        self._detached_oid = ""
         self._branches = ()
         self._tags = ()
         self._stashes = ()
@@ -198,6 +209,17 @@ class RefsPanel(QWidget):
         selected_item: QTreeWidgetItem | None = None
         current_item: QTreeWidgetItem | None = None
         remote_roots: dict[str, QTreeWidgetItem] = {}
+        if self._detached_oid:
+            head_item = QTreeWidgetItem([f"HEAD · detached at {self._detached_oid[:8]}  ✓"])
+            head_item.setData(0, REF_ROLE, "HEAD")
+            head_item.setToolTip(0, f"HEAD is detached at {self._detached_oid}")
+            head_font = QFont(head_item.font(0))
+            head_font.setBold(True)
+            head_item.setFont(0, head_font)
+            local_root.addChild(head_item)
+            if previous_ref == "HEAD":
+                selected_item = head_item
+            current_item = head_item
         for branch in self._branches:
             label = self._branch_label(branch)
             item = QTreeWidgetItem([label])
