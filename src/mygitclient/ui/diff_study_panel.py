@@ -16,7 +16,6 @@ from mygitclient.git.models import (
     CommitFilesSnapshot,
     CommitPage,
     CommitSummary,
-    RefComparisonSnapshot,
     StashFilesSnapshot,
     StashInfo,
 )
@@ -38,7 +37,6 @@ class DiffStudyPanel(QWidget):
     load_more_requested = Signal()
     commit_selected = Signal(object)
     file_selected = Signal(object, object)
-    comparison_file_selected = Signal(str, str, object)
     stash_file_selected = Signal(object, object)
 
     def __init__(
@@ -49,7 +47,6 @@ class DiffStudyPanel(QWidget):
         super().__init__(parent)
         self.setObjectName("diffStudyPanel")
         self._settings = settings
-        self._comparison_refs: tuple[str, str] | None = None
         self._selected_stash: StashInfo | None = None
 
         self.context_label = QLabel("Select a commit to study its diff.")
@@ -129,7 +126,6 @@ class DiffStudyPanel(QWidget):
     def clear_commits(self) -> None:
         self.commits.clear()
         self.files.clear()
-        self._comparison_refs = None
         self._selected_stash = None
         self.context_label.setText("Select a commit to study its diff.")
 
@@ -160,28 +156,11 @@ class DiffStudyPanel(QWidget):
             return
         self._populate(snapshot.files)
 
-    def show_comparison(self, snapshot: RefComparisonSnapshot) -> None:
-        self._comparison_refs = (snapshot.base_ref, snapshot.compare_ref)
-        self._selected_stash = None
-        self.commits.clearSelection()
-        self.context_label.setText(
-            f"{snapshot.base_ref} … {snapshot.compare_ref} · "
-            f"{len(snapshot.files)} changed file(s)"
-        )
-        self._populate(snapshot.files)
-
     def show_stash(self, stash: StashInfo) -> None:
         self._selected_stash = stash
-        self._comparison_refs = None
         self.commits.clearSelection()
         self.files.clear()
         self.context_label.setText(f"{stash.ref} · {stash.subject}")
-
-    def clear_comparison(self) -> None:
-        self._comparison_refs = None
-        self._selected_stash = None
-        self.files.clear()
-        self.context_label.setText("Select a commit to study its diff.")
 
     def select_file(self, path: str) -> bool:
         for index in range(self.files.topLevelItemCount()):
@@ -225,7 +204,6 @@ class DiffStudyPanel(QWidget):
         commit = current.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(commit, CommitSummary):
             return
-        self._comparison_refs = None
         self._selected_stash = None
         authored_at = QDateTime.fromString(commit.authored_at, Qt.DateFormat.ISODate)
         date = (
@@ -253,10 +231,6 @@ class DiffStudyPanel(QWidget):
             return
         change = current.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(change, CommitFileChange):
-            return
-        if self._comparison_refs is not None:
-            base_ref, compare_ref = self._comparison_refs
-            self.comparison_file_selected.emit(base_ref, compare_ref, change)
             return
         if self._selected_stash is not None:
             self.stash_file_selected.emit(self._selected_stash, change)

@@ -7,7 +7,6 @@ from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
-    QComboBox,
     QLineEdit,
     QMenu,
     QTreeWidget,
@@ -62,20 +61,12 @@ class RefsPanel(QWidget):
         self._stashes: tuple[StashInfo, ...] = ()
         self._linked_repositories: tuple[LinkedRepository, ...] = ()
         self._selected_ref = ""
-        self._comparison_ref = ""
 
         self.filter_edit = QLineEdit()
         self.filter_edit.setObjectName("refsFilterEdit")
         self.filter_edit.setPlaceholderText("Filter branches and tags…")
         self.filter_edit.setClearButtonEnabled(True)
         self.filter_edit.textChanged.connect(self._apply_filter)
-
-        self.compare_combo = QComboBox()
-        self.compare_combo.setObjectName("historyCompareRefCombo")
-        self.compare_combo.setToolTip(
-            "Show commits reachable from one additional branch in the same history."
-        )
-        self.compare_combo.currentIndexChanged.connect(self._comparison_changed)
 
         self.autostash = QCheckBox("Auto-stash when switching branches")
         self.autostash.setObjectName("checkoutAutostashCheckBox")
@@ -109,9 +100,6 @@ class RefsPanel(QWidget):
         self.copy_branch_action = self.context_menu.addAction("Copy branch name")
         self.copy_branch_action.setObjectName("copyBranchNameAction")
         self.copy_branch_action.triggered.connect(self._copy_branch_name)
-        self.compare_upstream_action = self.context_menu.addAction("Compare with upstream")
-        self.compare_upstream_action.setObjectName("compareBranchWithUpstreamAction")
-        self.compare_upstream_action.triggered.connect(self._compare_with_upstream)
         self.publish_branch_action = self.context_menu.addAction("Publish to origin")
         self.publish_branch_action.setObjectName("publishBranchAction")
         self.publish_branch_action.triggered.connect(self._publish_selected)
@@ -161,7 +149,6 @@ class RefsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 8, 0)
         layout.addWidget(self.filter_edit)
-        layout.addWidget(self.compare_combo)
         layout.addWidget(self.autostash)
         layout.addWidget(self.tree, 1)
 
@@ -171,8 +158,6 @@ class RefsPanel(QWidget):
 
     @property
     def selected_refs(self) -> tuple[str, ...]:
-        if self._comparison_ref:
-            return (self._selected_ref, self._comparison_ref)
         return (self._selected_ref,) if self._selected_ref else ()
 
     def show_branches(self, snapshot: BranchesSnapshot) -> None:
@@ -197,9 +182,7 @@ class RefsPanel(QWidget):
         self._stashes = ()
         self._linked_repositories = ()
         self._selected_ref = ""
-        self._comparison_ref = ""
         self.filter_edit.clear()
-        self.compare_combo.clear()
         self.tree.clear()
 
     def _rebuild(self) -> None:
@@ -300,12 +283,7 @@ class RefsPanel(QWidget):
             selected_ref = selected_item.data(0, REF_ROLE)
             if isinstance(selected_ref, str) and selected_ref != self._selected_ref:
                 self._selected_ref = selected_ref
-                if self._comparison_ref == selected_ref:
-                    self._comparison_ref = ""
-                self._rebuild_compare_combo()
                 self.refs_selected.emit(self.selected_refs)
-            else:
-                self._rebuild_compare_combo()
 
     @staticmethod
     def _branch_label(branch: BranchInfo) -> str:
@@ -358,35 +336,7 @@ class RefsPanel(QWidget):
         ref = current.data(0, REF_ROLE)
         if isinstance(ref, str) and ref != self._selected_ref:
             self._selected_ref = ref
-            if self._comparison_ref == ref:
-                self._comparison_ref = ""
-            self._rebuild_compare_combo()
             self.refs_selected.emit(self.selected_refs)
-
-    def _rebuild_compare_combo(self) -> None:
-        blocker = QSignalBlocker(self.compare_combo)
-        self.compare_combo.clear()
-        self.compare_combo.addItem("No comparison", "")
-        selected_index = 0
-        for branch in self._branches:
-            if branch.full_name == self._selected_ref:
-                continue
-            self.compare_combo.addItem(branch.name, branch.full_name)
-            if branch.full_name == self._comparison_ref:
-                selected_index = self.compare_combo.count() - 1
-        if selected_index == 0:
-            self._comparison_ref = ""
-        self.compare_combo.setCurrentIndex(selected_index)
-        del blocker
-
-    @Slot(int)
-    def _comparison_changed(self, index: int) -> None:
-        value = self.compare_combo.itemData(index)
-        comparison = value if isinstance(value, str) else ""
-        if comparison == self._comparison_ref:
-            return
-        self._comparison_ref = comparison
-        self.refs_selected.emit(self.selected_refs)
 
     @Slot(str)
     def _apply_filter(self, text: str) -> None:
@@ -442,8 +392,6 @@ class RefsPanel(QWidget):
         self.checkout_discarding_changes_action.setVisible(branch is not None)
         self.checkout_discarding_changes_action.setEnabled(checkout)
         self.copy_branch_action.setVisible(branch is not None)
-        upstream_ref = self._upstream_ref(branch)
-        self.compare_upstream_action.setVisible(upstream_ref is not None)
         self.publish_branch_action.setVisible(
             branch is not None and not branch.remote and branch.upstream is None
         )
@@ -518,30 +466,6 @@ class RefsPanel(QWidget):
         branch = self._selected_value()
         if isinstance(branch, BranchInfo) and not branch.remote and branch.upstream is None:
             self.publish_branch_requested.emit(branch)
-
-    @Slot()
-    def _compare_with_upstream(self) -> None:
-        value = self._selected_value()
-        branch = value if isinstance(value, BranchInfo) else None
-        upstream_ref = self._upstream_ref(branch)
-        if branch is None or upstream_ref is None:
-            return
-        self._selected_ref = branch.full_name
-        self._comparison_ref = upstream_ref
-        self._rebuild_compare_combo()
-        self.refs_selected.emit(self.selected_refs)
-
-    def _upstream_ref(self, branch: BranchInfo | None) -> str | None:
-        if branch is None or branch.remote or branch.upstream is None:
-            return None
-        return next(
-            (
-                candidate.full_name
-                for candidate in self._branches
-                if candidate.remote and candidate.name == branch.upstream
-            ),
-            None,
-        )
 
     @Slot()
     def _rename_selected(self) -> None:

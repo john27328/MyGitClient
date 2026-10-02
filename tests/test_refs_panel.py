@@ -54,13 +54,6 @@ def test_refs_panel_groups_filters_and_selects_refs(qtbot: QtBot) -> None:
     assert tags.isHidden()
 
     panel.filter_edit.clear()
-    feature_index = panel.compare_combo.findData("refs/heads/feature")
-    assert feature_index > 0
-    panel.compare_combo.setCurrentIndex(feature_index)
-    assert panel.selected_refs == ("refs/heads/main", "refs/heads/feature")
-    assert selected[-1] == ("refs/heads/main", "refs/heads/feature")
-
-    panel.compare_combo.setCurrentIndex(0)
     assert panel.selected_refs == ("refs/heads/main",)
 
 
@@ -186,7 +179,7 @@ def test_refs_panel_exposes_remote_delete_and_copy_actions(qtbot: QtBot) -> None
     assert deleted == [branch]
 
 
-def test_refs_panel_creates_publishes_and_compares_from_context(qtbot: QtBot) -> None:
+def test_refs_panel_creates_and_publishes_from_context(qtbot: QtBot) -> None:
     panel = RefsPanel()
     qtbot.addWidget(panel)
     local = BranchInfo(
@@ -213,13 +206,11 @@ def test_refs_panel_creates_publishes_and_compares_from_context(qtbot: QtBot) ->
     panel.tree.setCurrentItem(cast(QTreeWidgetItem, branches.child(0)))
     panel.create_branch_from_action.trigger()
     panel.create_worktree_action.trigger()
-    panel.compare_upstream_action.trigger()
     panel.tree.setCurrentItem(cast(QTreeWidgetItem, branches.child(1)))
     panel.publish_branch_action.trigger()
 
     assert created == [local]
     assert worktrees == [local]
-    assert ("refs/heads/feature", "refs/remotes/origin/feature") in selected
     assert published == [unpublished]
 
 

@@ -75,8 +75,6 @@ from mygitclient.git.models import (
     IncomingCommitsSnapshot,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
-    RefComparisonDiffSnapshot,
-    RefComparisonSnapshot,
     ReflogSnapshot,
     RepositoryOperation,
     RepositoryOperationSnapshot,
@@ -320,9 +318,6 @@ class MainWindow(QMainWindow):
         self._diff_study_panel.commit_selected.connect(self._history_commit_selected)
         self._diff_study_panel.file_selected.connect(self._history_file_selected)
         self._diff_study_panel.stash_file_selected.connect(self._history_stash_file_selected)
-        self._diff_study_panel.comparison_file_selected.connect(
-            self._history_comparison_file_selected
-        )
 
         self._review_panel = ReviewPanel()
 
@@ -733,9 +728,7 @@ class MainWindow(QMainWindow):
         self._git.repository_operation_ready.connect(self._show_repository_operation)
         self._git.history_ready.connect(self._show_history)
         self._git.review_commits_ready.connect(self._review_controller.handle_review_commits)
-        self._git.comparison_ready.connect(self._show_ref_comparison)
         self._git.comparison_ready.connect(self._review_controller.handle_comparison)
-        self._git.comparison_diff_ready.connect(self._show_ref_comparison_diff)
         self._git.comparison_diff_ready.connect(self._review_controller.handle_comparison_diff)
         self._git.branches_ready.connect(self._show_branches)
         self._git.incoming_commits_ready.connect(self._show_incoming_commits)
@@ -1011,7 +1004,7 @@ class MainWindow(QMainWindow):
                 return
             selected_refs.append(ref)
         refs = tuple(selected_refs)
-        if not refs or len(refs) > 2:
+        if not refs:
             return
         if refs == self._history_refs:
             return
@@ -1020,12 +1013,7 @@ class MainWindow(QMainWindow):
         self._history_panel.set_loading(True)
         self._status_label.setText(f"Loading history for {' + '.join(refs)}…")
         self._history_runner = self._git.request_history(self._repository, refs=self._history_refs)
-        if len(refs) == 2:
-            self._status_label.setText(f"Comparing {refs[0]} with {refs[1]}…")
-            self._git.request_ref_comparison(self._repository, refs[0], refs[1])
-        else:
-            self._history_panel.clear_comparison()
-            self._diff_study_panel.clear_comparison()
+        self._diff_study_panel.clear_commits()
 
     @Slot(object)
     def _show_history(self, value: object) -> None:
@@ -1290,8 +1278,6 @@ class MainWindow(QMainWindow):
             self._inline_diff_inflight.add(key)
 
     def _inline_diff_key(self, change: CommitFileChange) -> InlineDiffKey | None:
-        if len(self._history_refs) == 2:
-            return ("comparison", "\0".join(self._history_refs), change.path)
         stash = self._history_panel.selected_stash
         if stash is not None:
             return ("stash", stash.oid, change.path)
@@ -1305,17 +1291,6 @@ class MainWindow(QMainWindow):
         if repository is None:
             return False
         source, identity, _path = key
-        if source == "comparison":
-            base_ref, compare_ref = identity.split("\0", maxsplit=1)
-            self._git.request_ref_comparison_diff(
-                repository,
-                base_ref,
-                compare_ref,
-                change.path,
-                ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-                context_lines=DIFF_CONTEXT_LINES,
-            )
-            return True
         if source == "stash":
             stash = self._history_panel.selected_stash
             if stash is None or stash.oid != identity:
@@ -1511,67 +1486,6 @@ class MainWindow(QMainWindow):
             else commit_value.oid
         )
         self._git.request_restore_commit_file(self._repository, revision, path)
-
-    @Slot(str, str, object)
-    def _history_comparison_file_selected(
-        self, base_ref: str, compare_ref: str, file_value: object
-    ) -> None:
-        if (
-            self._repository is None
-            or self._history_repository != self._repository
-            or not isinstance(file_value, CommitFileChange)
-        ):
-            return
-        self._status_label.setText(f"Comparing {file_value.path}…")
-        self._git.request_ref_comparison_diff(
-            self._repository,
-            base_ref,
-            compare_ref,
-            file_value.path,
-            ignore_whitespace=self._ignore_whitespace_button.isChecked(),
-            context_lines=self._diff_context_lines,
-        )
-
-    @Slot(object)
-    def _show_ref_comparison(self, value: object) -> None:
-        if (
-            not isinstance(value, RefComparisonSnapshot)
-            or value.repository != self._repository
-            or self._history_refs != (value.base_ref, value.compare_ref)
-        ):
-            return
-        self._history_panel.show_comparison(value)
-        self._diff_study_panel.show_comparison(value)
-        self._apply_pending_study_selection()
-        self._status_label.setText(f"{len(value.files)} file(s) differ between the selected refs")
-
-    @Slot(object)
-    def _show_ref_comparison_diff(self, value: object) -> None:
-        if (
-            not isinstance(value, RefComparisonDiffSnapshot)
-            or value.repository != self._repository
-            or self._history_refs != (value.base_ref, value.compare_ref)
-        ):
-            return
-        if self._deliver_inline_diff(
-            ("comparison", f"{value.base_ref}\0{value.compare_ref}", value.diff.path), value.diff
-        ):
-            return
-        if self._workspace_tabs.currentIndex() != TAB_DIFF:
-            return
-        blocker = QSignalBlocker(self._study_diff_view.version_combo)
-        self._study_diff_view.version_combo.clear()
-        self._study_diff_view.version_combo.addItem(f"{value.base_ref}…{value.compare_ref}", None)
-        del blocker
-        self._study_diff_view.refresh_version_selector()
-        self._study_diff_view.display_diff(
-            value.diff,
-            selection_key=None,
-            preserve_scroll=False,
-            whole_file_staged=False,
-            interactive=False,
-        )
-        self._status_label.setText(f"Showing comparison diff for {value.diff.path}")
 
     @Slot(object)
     def _show_commit_diff(self, value: object) -> None:
@@ -3947,9 +3861,6 @@ class MainWindow(QMainWindow):
             return
         file = item.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(file, CommitFileChange):
-            return
-        if len(self._history_refs) == 2:
-            self._history_comparison_file_selected(*self._history_refs, file)
             return
         commit = self._diff_study_panel.selected_commit
         if commit is not None:

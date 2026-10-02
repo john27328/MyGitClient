@@ -42,7 +42,6 @@ from mygitclient.git.models import (
     CommitPage,
     CommitSummary,
     IncomingCommitsSnapshot,
-    RefComparisonSnapshot,
     StashFilesSnapshot,
     StashInfo,
     TagsSnapshot,
@@ -111,7 +110,6 @@ class HistoryPanel(QWidget):
     load_more_requested = Signal()
     commit_selected = Signal(object)
     file_selected = Signal(object, object)
-    comparison_file_selected = Signal(str, str, object)
     cherry_pick_requested = Signal(object)
     revert_requested = Signal(object)
     checkout_commit_requested = Signal(object)
@@ -203,7 +201,6 @@ class HistoryPanel(QWidget):
         self.files.itemCollapsed.connect(self._file_collapsed)
         self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files.customContextMenuRequested.connect(self._show_file_context_menu)
-        self._comparison_refs: tuple[str, str] | None = None
         self._selected_stash: StashInfo | None = None
         self._branch_labels: dict[str, list[tuple[str, str]]] = {}
         self._tag_labels: dict[str, list[tuple[str, str]]] = {}
@@ -306,7 +303,6 @@ class HistoryPanel(QWidget):
         self.tree.clear()
         self._clear_files()
         self.details_label.setText("Select a commit to view its details.")
-        self._comparison_refs = None
         self._selected_stash = None
         self.load_more_button.hide()
         self._update_filter_count()
@@ -578,7 +574,6 @@ class HistoryPanel(QWidget):
 
     def show_stash(self, stash: StashInfo) -> None:
         self._selected_stash = stash
-        self._comparison_refs = None
         self.tree.clearSelection()
         self._clear_files()
         self.details_label.setText(f"{stash.subject}\n\nStash: {stash.ref}\nCommit: {stash.oid}")
@@ -591,32 +586,9 @@ class HistoryPanel(QWidget):
             self._add_file_item(change)
         self._finish_file_list()
 
-    def show_comparison(self, snapshot: RefComparisonSnapshot) -> None:
-        self._comparison_refs = (snapshot.base_ref, snapshot.compare_ref)
-        self._selected_stash = None
-        self.tree.clearSelection()
-        self._clear_files()
-        self.details_label.setText(
-            f"Comparing {snapshot.base_ref} → {snapshot.compare_ref}\n\n"
-            f"{len(snapshot.files)} changed file(s). Select a file to view its diff."
-        )
-        for change in snapshot.files:
-            self._add_file_item(change)
-        self._finish_file_list()
-
-    def clear_comparison(self) -> None:
-        self._comparison_refs = None
-        self._selected_stash = None
-        self._clear_files()
-        self.details_label.setText("Select a commit to view its details.")
-
     @property
     def selected_stash(self) -> StashInfo | None:
         return self._selected_stash
-
-    @property
-    def comparison_refs(self) -> tuple[str, str] | None:
-        return self._comparison_refs
 
     @property
     def selected_commit(self) -> CommitSummary | None:
@@ -693,7 +665,6 @@ class HistoryPanel(QWidget):
         commit = current.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(commit, CommitSummary):
             return
-        self._comparison_refs = None
         self._selected_stash = None
         parents = ", ".join(parent[:8] for parent in commit.parent_oids) or "None (root)"
         self.details_label.setText(
@@ -714,10 +685,6 @@ class HistoryPanel(QWidget):
             return
         change = current.data(0, Qt.ItemDataRole.UserRole)
         if not isinstance(change, CommitFileChange):
-            return
-        if self._comparison_refs is not None:
-            base_ref, compare_ref = self._comparison_refs
-            self.comparison_file_selected.emit(base_ref, compare_ref, change)
             return
         if self._selected_stash is not None:
             self.stash_file_selected.emit(self._selected_stash, change)
@@ -740,7 +707,7 @@ class HistoryPanel(QWidget):
         reveal_action = menu.addAction("Show in File Manager")
         restore_at = restore_before = None
         commit = self.selected_commit
-        if commit is not None and self._comparison_refs is None:
+        if commit is not None:
             menu.addSeparator()
             restore_menu = menu.addMenu("Restore file to")
             restore_at = restore_menu.addAction("State at commit…")
