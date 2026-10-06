@@ -213,6 +213,7 @@ class CommitSummary:
     author_email: str
     authored_at: str
     subject: str
+    body: str = ""
 
 
 @dataclass(frozen=True, slots=True)

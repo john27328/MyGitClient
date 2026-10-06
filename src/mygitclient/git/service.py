@@ -61,6 +61,8 @@ from mygitclient.git.parsers import (
 from mygitclient.git.runner import GitRunner
 
 HISTORY_PAGE_SIZE = 1000
+COMMIT_LOG_FORMAT = "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%b"
+"""Record layout that :func:`~mygitclient.git.parsers.parse_commit_log` reads."""
 
 
 @dataclass(slots=True)
@@ -1126,7 +1128,7 @@ class GitService(QObject):
             f"--skip={offset}",
             f"--max-count={limit + 1}",
             "--date=iso-strict",
-            "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+            COMMIT_LOG_FORMAT,
             *revisions,
         )
         runner.run(GitCommand(arguments, repository, "read commit history"))
@@ -1149,7 +1151,7 @@ class GitService(QObject):
                     "log",
                     f"--max-count={limit}",
                     "--date=iso-strict",
-                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    COMMIT_LOG_FORMAT,
                     branch,
                     "--not",
                     target_branch,
@@ -1188,7 +1190,7 @@ class GitService(QObject):
                     "log",
                     f"--max-count={limit + 1}",
                     "--date=iso-strict",
-                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    COMMIT_LOG_FORMAT,
                     f"{branch_ref}..{upstream_ref}",
                 ),
                 repository,
@@ -2667,7 +2669,7 @@ class GitService(QObject):
                     "log",
                     "--reverse",
                     "--date=iso-strict",
-                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    COMMIT_LOG_FORMAT,
                     f"{workflow.target.full_name}..HEAD",
                 ),
                 "read commits to rebase",
@@ -2740,7 +2742,7 @@ class GitService(QObject):
                     "log",
                     "--reverse",
                     "--date=iso-strict",
-                    "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s",
+                    COMMIT_LOG_FORMAT,
                     f"HEAD..{workflow.target.full_name}",
                 ),
                 "read incoming merge commits",

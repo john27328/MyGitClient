@@ -215,7 +215,9 @@ class DiffStudyPanel(QWidget):
         self.context_label.setText(
             f"{commit.oid[:8]} · {commit.subject}\n{commit.author_name} · {date}"
         )
+        description = f"{commit.body}\n\n" if commit.body else ""
         self.context_label.setToolTip(
+            f"{description}"
             f"Commit: {commit.oid}\n"
             f"Author: {commit.author_name} <{commit.author_email}>\n"
             f"Parents: {parents}"

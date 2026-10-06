@@ -133,9 +133,9 @@ def parse_commit_log(output: bytes) -> tuple[CommitSummary, ...]:
         if not raw_record:
             continue
         fields = raw_record.split(b"\x00")
-        if len(fields) != 6:
+        if len(fields) not in (6, 7):
             raise GitParseError("Malformed commit history record")
-        oid, parents, name, email, authored_at, subject = (
+        oid, parents, name, email, authored_at, subject, *rest = (
             value.decode("utf-8", errors="surrogateescape") for value in fields
         )
         commits.append(
@@ -146,6 +146,7 @@ def parse_commit_log(output: bytes) -> tuple[CommitSummary, ...]:
                 author_email=email,
                 authored_at=authored_at,
                 subject=subject,
+                body=rest[0].strip() if rest else "",
             )
         )
     return tuple(commits)

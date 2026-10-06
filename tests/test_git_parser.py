@@ -97,6 +97,21 @@ def test_parse_commit_log_preserves_commit_metadata() -> None:
     assert commits[1].parent_oids == ()
 
 
+def test_parse_commit_log_reads_the_commit_description() -> None:
+    output = (
+        b"\x1e0123456789\x00\x00Ada\x00ada@example.com\x002026-07-16T12:30:00+03:00\x00"
+        b"Fix crash\x00Explain why.\n\nSecond paragraph.\n"
+        b"\x1eabcdef0123\x00\x00Linus\x00linus@example.com\x002026-07-15T09:00:00+03:00\x00"
+        b"No body\x00\n"
+    )
+
+    commits = parse_commit_log(output)
+
+    assert commits[0].subject == "Fix crash"
+    assert commits[0].body == "Explain why.\n\nSecond paragraph."
+    assert commits[1].body == ""
+
+
 def test_parse_unified_diff_classifies_lines() -> None:
     output = (
         b"diff --git a/example.txt b/example.txt\n"

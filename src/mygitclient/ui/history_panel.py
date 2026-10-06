@@ -667,8 +667,10 @@ class HistoryPanel(QWidget):
             return
         self._selected_stash = None
         parents = ", ".join(parent[:8] for parent in commit.parent_oids) or "None (root)"
+        description = f"{commit.body}\n\n" if commit.body else ""
         self.details_label.setText(
             f"{commit.subject}\n\n"
+            f"{description}"
             f"Commit: {commit.oid}\n"
             f"Author: {commit.author_name} <{commit.author_email}>\n"
             f"Date: {commit.authored_at}\n"

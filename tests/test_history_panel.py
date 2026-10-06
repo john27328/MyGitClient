@@ -407,3 +407,25 @@ def test_history_panel_shows_commit_details_and_emits_file_selection(
     assert "Update documentation" in panel.details_label.text()
     assert commit.oid in panel.details_label.text()
     assert selected_files == [(commit, change)]
+
+
+def test_history_panel_shows_the_commit_description(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    commit = CommitSummary(
+        "a" * 40,
+        (),
+        "Ada",
+        "ada@example.invalid",
+        "2026-10-06T12:00:00+03:00",
+        "Fix crash",
+        "Explain why it crashed.",
+    )
+    panel.show_page(CommitPage(Path("repository"), (commit,), 0, False))
+
+    item = panel.tree.topLevelItem(0)
+    assert item is not None
+    panel.tree.setCurrentItem(item)
+
+    text = panel.details_label.text()
+    assert text.startswith("Fix crash\n\nExplain why it crashed.\n\nCommit: ")
