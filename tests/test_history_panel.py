@@ -429,3 +429,54 @@ def test_history_panel_shows_the_commit_description(qtbot: QtBot) -> None:
 
     text = panel.details_label.text()
     assert text.startswith("Fix crash\n\nExplain why it crashed.\n\nCommit: ")
+
+
+def test_history_context_menu_offers_edit_message_for_a_single_non_merge_commit(
+    qtbot: QtBot,
+) -> None:
+    from PySide6.QtCore import QTimer
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    panel.resize(900, 400)
+    panel.show()
+    ordinary = CommitSummary(
+        "a" * 40, ("b" * 40,), "Ada", "ada@example.invalid", "2026-10-06T12:00:00+03:00", "Fix"
+    )
+    merge = CommitSummary(
+        "c" * 40,
+        ("a" * 40, "d" * 40),
+        "Ada",
+        "ada@example.invalid",
+        "2026-10-06T12:01:00+03:00",
+        "Merge",
+    )
+    panel.show_page(CommitPage(Path("repository"), (ordinary, merge), 0, False))
+    requested: list[object] = []
+    panel.edit_message_requested.connect(requested.append)
+    states: list[bool] = []
+
+    def choose_edit() -> None:
+        popup = QApplication.activePopupWidget()
+        if not isinstance(popup, QMenu):
+            return
+        try:
+            action = next(a for a in popup.actions() if a.text().startswith("Edit message"))
+            states.append(action.isEnabled())
+            if action.isEnabled():
+                popup.setActiveAction(action)
+                QTest.keyClick(popup, Qt.Key.Key_Return)
+        finally:
+            popup.close()
+
+    for row in (0, 1):
+        item = panel.tree.topLevelItem(row)
+        assert item is not None
+        position = panel.tree.visualItemRect(item).center()
+        QTimer.singleShot(0, choose_edit)
+        panel.tree.customContextMenuRequested.emit(position)
+
+    assert states == [True, False]
+    assert requested == [ordinary]

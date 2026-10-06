@@ -112,6 +112,7 @@ class HistoryPanel(QWidget):
     file_selected = Signal(object, object)
     cherry_pick_requested = Signal(object)
     revert_requested = Signal(object)
+    edit_message_requested = Signal(object)
     checkout_commit_requested = Signal(object)
     stash_file_selected = Signal(object, object)
     file_open_requested = Signal(object)
@@ -633,6 +634,9 @@ class HistoryPanel(QWidget):
         revert_action = menu.addAction(revert_label)
         revert_action.setObjectName("historyRevertAction")
         revert_action.setEnabled(all(len(commit.parent_oids) <= 1 for commit in commits))
+        edit_action = menu.addAction("Edit message\u2026")
+        edit_action.setObjectName("historyEditMessageAction")
+        edit_action.setEnabled(len(commits) == 1 and len(commits[0].parent_oids) <= 1)
         menu.addSeparator()
         author = commits[0]
         author_menu = menu.addMenu(f"Author: {author.author_name}")
@@ -648,6 +652,8 @@ class HistoryPanel(QWidget):
             self.cherry_pick_requested.emit(commits)
         elif chosen is revert_action:
             self.revert_requested.emit(tuple(reversed(commits)))
+        elif chosen is edit_action:
+            self.edit_message_requested.emit(commits[0])
         elif chosen is color_action:
             initial = self._author_color(author) or self.palette().highlight().color()
             color = QColorDialog.getColor(initial, self, f"Color for {author.author_name}")

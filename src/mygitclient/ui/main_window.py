@@ -99,6 +99,7 @@ from mygitclient.github.tokens import GitHubTokenStore, TokenStoreError
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
 from mygitclient.ui.changes_panel import ChangesPanel
+from mygitclient.ui.commit_message_dialog import CommitMessageDialog
 from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.conflict_editor import ConflictEditor
 from mygitclient.ui.diff_study_panel import DiffStudyPanel
@@ -273,6 +274,7 @@ class MainWindow(QMainWindow):
         self._history_panel.commit_selected.connect(self._history_commit_selected)
         self._history_panel.cherry_pick_requested.connect(self._preview_cherry_pick)
         self._history_panel.revert_requested.connect(self._preview_revert)
+        self._history_panel.edit_message_requested.connect(self._edit_commit_message)
         self._history_panel.checkout_commit_requested.connect(self._checkout_commit)
         # Single-click selection in History only expands an inline diff (see
         # file_diff_requested below) — it no longer drives the shared DiffView, so
@@ -1980,6 +1982,51 @@ class MainWindow(QMainWindow):
         self._interactive_rebase_pending = False
         self._status_label.setText(f"Preparing rebase of {current_branch} onto {value.name}…")
         self._git.request_rebase_preview(self._repository, value)
+
+    @Slot(object)
+    def _edit_commit_message(self, value: object) -> None:
+        repository = self._repository
+        status = self._repository_status
+        if repository is None or status is None or not isinstance(value, CommitSummary):
+            return
+        branch = status.branch.head
+        if branch is None or status.branch.oid is None:
+            QMessageBox.information(
+                self, "Edit message", "Check out a local branch before editing a commit message."
+            )
+            return
+        if self._repository_operation is not None:
+            QMessageBox.information(
+                self, "Edit message", "Finish the current Git operation first."
+            )
+            return
+        dialog = CommitMessageDialog(value.subject, value.body, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if (dialog.subject, dialog.description) == (value.subject, value.body):
+            self._status_label.setText("Commit message unchanged")
+            return
+        if value.oid == status.branch.oid:
+            self._status_label.setText("Updating the commit message…")
+            self._git.request_commit(
+                repository, dialog.subject, dialog.description, amend=True, message_only=True
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Rewrite history?",
+            f"Changing the message of {value.oid[:8]} rewrites it and every later commit on "
+            f"{branch}.\n\nIf the branch was already pushed, it will need a force push "
+            f"(with lease).\nThe previous HEAD stays available through the reflog.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._rewrite_recovery_head = status.branch.oid
+        text = dialog.subject if not dialog.description else (
+            f"{dialog.subject}\n\n{dialog.description}"
+        )
+        self._status_label.setText(f"Rewriting {value.oid[:8]}…")
+        self._git.request_reword_commit(repository, value, text, autostash=bool(status.files))
 
     @Slot(object)
     def _preview_interactive_rebase(self, value: object) -> None:

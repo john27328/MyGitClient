@@ -238,7 +238,7 @@ class GitService(QObject):
         self._revert_workflows: dict[GitRunner, _RevertWorkflow] = {}
         self._rebase_preview_workflows: dict[GitRunner, _RebasePreviewWorkflow] = {}
         self._latest_rebase_preview_request: dict[Path, int] = {}
-        self._rebase_requests: dict[GitRunner, tuple[Path, BranchInfo]] = {}
+        self._rebase_requests: dict[GitRunner, tuple[Path, BranchInfo | None]] = {}
         self._merge_preview_workflows: dict[GitRunner, _MergePreviewWorkflow] = {}
         self._latest_merge_preview_request: dict[Path, int] = {}
         self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
@@ -939,6 +939,43 @@ class GitService(QObject):
         )
         return runner
 
+    def request_reword_commit(
+        self, repository: Path, commit: CommitSummary, message: str, *, autostash: bool
+    ) -> GitRunner:
+        """Replace one commit's message and replay the commits after it unchanged."""
+
+        if len(commit.parent_oids) > 1:
+            raise ValueError("Merge commits cannot be reworded")
+        state = resolve_git_dir(repository) / "mygitclient-rebase-state"
+        if state.exists():
+            shutil.rmtree(state)
+        state.mkdir(parents=True)
+        (state / "message-0.txt").write_text(message.rstrip() + "\n", encoding="utf-8")
+        helper = Path(__file__).with_name("rebase_editor.py")
+        python = str(Path(sys.executable))
+        environment = (
+            ("MYGITCLIENT_REBASE_STATE", str(state)),
+            ("MYGITCLIENT_REWORD_OID", commit.oid),
+            ("GIT_SEQUENCE_EDITOR", f'"{python}" "{helper}" reword-first'),
+            ("GIT_EDITOR", "true"),
+        )
+        arguments = ["rebase", "-i", "--rebase-merges"]
+        if autostash:
+            arguments.append("--autostash")
+        arguments.append(commit.parent_oids[0] if commit.parent_oids else "--root")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._rebase_requests[runner] = (repository, None)
+        runner.completed.connect(self._handle_rebase)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(
+                tuple(arguments), repository, f"edit message of {commit.oid[:8]}", environment
+            ),
+        )
+        return runner
+
     def request_merge_preview(self, repository: Path, target: BranchInfo) -> GitRunner:
         if target.current:
             raise ValueError("Cannot merge a branch into itself")
@@ -1621,11 +1658,20 @@ class GitService(QObject):
         )
 
     def request_commit(
-        self, repository: Path, message: str, description: str, *, amend: bool
+        self,
+        repository: Path,
+        message: str,
+        description: str,
+        *,
+        amend: bool,
+        message_only: bool = False,
     ) -> GitRunner:
         arguments = ["commit"]
         if amend:
             arguments.append("--amend")
+        if message_only:
+            # Keep whatever is staged out of the amended commit.
+            arguments.append("--only")
         arguments.extend(("-F", "-"))
         commit_text = message if not description else f"{message}\n\n{description}"
         runner = GitRunner(parent=self)

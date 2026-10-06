@@ -1909,3 +1909,149 @@ def test_submodule_commands_are_scoped_to_selected_path(
         ("submodule", "update", "--recursive", "--", "plugins/module"),
         ("submodule", "sync", "--recursive", "--", "plugins/module"),
     ]
+
+
+def _rev(repository: Path, revision: str = "HEAD") -> str:
+    return subprocess.check_output(
+        ["git", "rev-parse", revision], cwd=repository, text=True
+    ).strip()
+
+
+def _commit_file(repository: Path, name: str, message: str) -> None:
+    (repository / name).write_text(f"{name}\n", encoding="utf-8")
+    _git(repository, "add", name)
+    _git(repository, "commit", "-m", message)
+
+
+def test_reword_head_changes_only_the_message_and_ignores_staged_files(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "first.txt", "first")
+    (tmp_path / "staged.txt").write_text("staged\n", encoding="utf-8")
+    _git(tmp_path, "add", "staged.txt")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=10000):
+        service.request_commit(
+            tmp_path, "better subject", "A description.", amend=True, message_only=True
+        )
+
+    message = subprocess.check_output(
+        ["git", "log", "-1", "--format=%B"], cwd=tmp_path, text=True
+    ).strip()
+    assert message == "better subject\n\nA description."
+    committed = subprocess.check_output(
+        ["git", "show", "--name-only", "--format=", "HEAD"], cwd=tmp_path, text=True
+    ).split()
+    assert committed == ["first.txt"]
+    staged = subprocess.check_output(
+        ["git", "diff", "--cached", "--name-only"], cwd=tmp_path, text=True
+    ).split()
+    assert staged == ["staged.txt"]
+
+
+def test_reword_commit_rewrites_an_older_commit_and_keeps_later_ones(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _commit_file(tmp_path, "first.txt", "first")
+    first = _summary(tmp_path, "HEAD")
+    _commit_file(tmp_path, "second.txt", "second")
+    _commit_file(tmp_path, "third.txt", "third")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=15000):
+        service.request_reword_commit(
+            tmp_path, first, "first, explained\n\nWith a description.", autostash=False
+        )
+
+    subjects = subprocess.check_output(
+        ["git", "log", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert subjects == ["third", "second", "first, explained", "base"]
+    body = subprocess.check_output(
+        ["git", "log", "-1", "--format=%b", "HEAD~2"], cwd=tmp_path, text=True
+    ).strip()
+    assert body == "With a description."
+    files = sorted(path.name for path in tmp_path.glob("*.txt"))
+    assert files == ["base.txt", "first.txt", "second.txt", "third.txt"]
+    assert not (tmp_path / ".git" / "mygitclient-rebase-state").exists()
+
+
+def test_reword_commit_rewrites_the_root_commit(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "root.txt", "root")
+    root = _summary(tmp_path, "HEAD")
+    _commit_file(tmp_path, "next.txt", "next")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=15000):
+        service.request_reword_commit(tmp_path, root, "initial commit", autostash=False)
+
+    subjects = subprocess.check_output(
+        ["git", "log", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert subjects == ["next", "initial commit"]
+
+
+def test_reword_commit_refuses_a_commit_that_is_not_on_the_current_branch(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _git(tmp_path, "switch", "-c", "other")
+    _commit_file(tmp_path, "other.txt", "other work")
+    other = _summary(tmp_path, "HEAD")
+    _git(tmp_path, "switch", "main")
+    _commit_file(tmp_path, "main.txt", "main work")
+    head_before = _rev(tmp_path)
+    service = GitService()
+    errors: list[str] = []
+    service.operation_failed.connect(errors.append)
+
+    with qtbot.waitSignal(service.operation_failed, timeout=15000):
+        service.request_reword_commit(tmp_path, other, "hijacked", autostash=False)
+
+    assert _rev(tmp_path) == head_before
+    assert _rev(tmp_path, "other") == other.oid
+    subjects = subprocess.check_output(
+        ["git", "log", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert subjects == ["main work", "base"]
+    assert errors
+
+
+def test_reword_commit_keeps_merge_commits_after_it(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _commit_file(tmp_path, "first.txt", "first")
+    first = _summary(tmp_path, "HEAD")
+    _git(tmp_path, "switch", "-c", "side")
+    _commit_file(tmp_path, "side.txt", "side work")
+    _git(tmp_path, "switch", "main")
+    _commit_file(tmp_path, "main.txt", "main work")
+    _git(tmp_path, "merge", "--no-ff", "-m", "merge side", "side")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=20000):
+        service.request_reword_commit(tmp_path, first, "first, reworded", autostash=False)
+
+    merges = subprocess.check_output(
+        ["git", "log", "--merges", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert merges == ["merge side"]
+    subjects = subprocess.check_output(
+        ["git", "log", "--format=%s"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert "first, reworded" in subjects
+    assert "first" not in subjects
+    assert {"side work", "main work", "base"} <= set(subjects)
+    files = sorted(path.name for path in tmp_path.glob("*.txt"))
+    assert files == ["base.txt", "first.txt", "main.txt", "side.txt"]
