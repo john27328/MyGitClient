@@ -456,7 +456,7 @@ class HistoryPanel(QWidget):
             widget = self._inline_widget(item)
             if widget is None:
                 return
-            widget.set_diff(diff)
+            widget.set_diff(diff, change.status)
             self._size_inline_row(item, widget)
             return
 

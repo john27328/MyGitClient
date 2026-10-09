@@ -51,10 +51,10 @@ class InlineDiffWidget(QPlainTextEdit):
     def diff(self) -> UnifiedDiff | None:
         return self._diff
 
-    def set_diff(self, diff: UnifiedDiff) -> None:
+    def set_diff(self, diff: UnifiedDiff, status: str = "") -> None:
         self._diff = diff
         if diff.binary:
-            self.setPlainText("Binary file — no textual diff.")
+            self.setPlainText(_binary_summary(status))
             self._highlighter.set_diff(None)
         else:
             text, kinds = _preview(diff)
@@ -82,6 +82,19 @@ class InlineDiffWidget(QPlainTextEdit):
         scrollbar = self.horizontalScrollBar().sizeHint().height()
         content = rows * line_height + margins.top() + margins.bottom() + scrollbar + 8
         self.setFixedHeight(content)
+
+
+_BINARY_SUMMARIES = {
+    "A": "Binary file added",
+    "D": "Binary file deleted",
+    "R": "Binary file renamed",
+    "C": "Binary file copied",
+    "M": "Binary file modified",
+}
+
+
+def _binary_summary(status: str) -> str:
+    return _BINARY_SUMMARIES.get(status[:1], "Binary file changed")
 
 
 def _preview(diff: UnifiedDiff) -> tuple[str, tuple[DiffLineKind, ...]]:

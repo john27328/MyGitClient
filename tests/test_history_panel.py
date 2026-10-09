@@ -509,3 +509,25 @@ def test_inline_diff_hides_git_file_header_and_labels_hunks(qtbot: QtBot) -> Non
     assert "@@" not in text
     assert text.splitlines()[0] == "── Old lines 204–206 · New lines 204–207 ──"
     assert "│ +new" in text
+
+
+def test_inline_diff_summarises_binary_files_by_change_status(qtbot: QtBot) -> None:
+    from mygitclient.git.models import UnifiedDiff
+    from mygitclient.ui.inline_diff import InlineDiffWidget
+
+    widget = InlineDiffWidget()
+    qtbot.addWidget(widget)
+    binary = UnifiedDiff("logo.png", False, binary=True)
+
+    summaries = {}
+    for status in ("A", "D", "M", "R100", ""):
+        widget.set_diff(binary, status)
+        summaries[status] = widget.toPlainText()
+
+    assert summaries == {
+        "A": "Binary file added",
+        "D": "Binary file deleted",
+        "M": "Binary file modified",
+        "R100": "Binary file renamed",
+        "": "Binary file changed",
+    }
