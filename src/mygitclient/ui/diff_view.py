@@ -1104,24 +1104,7 @@ class DiffView(QWidget):
 
     @staticmethod
     def _hunk_label(diff: UnifiedDiff, line: DiffLine | None) -> str:
-        if line is None:
-            return ""
-        hunk = next((candidate for candidate in diff.hunks if candidate.header == line.text), None)
-        if hunk is None:
-            return line.text
-        old_end = hunk.old_start + max(hunk.old_count - 1, 0)
-        new_end = hunk.new_start + max(hunk.new_count - 1, 0)
-        old_range = (
-            str(hunk.old_start)
-            if old_end == hunk.old_start
-            else f"{hunk.old_start}–{old_end}"
-        )
-        new_range = (
-            str(hunk.new_start)
-            if new_end == hunk.new_start
-            else f"{hunk.new_start}–{new_end}"
-        )
-        return f"── Old lines {old_range} · New lines {new_range} ──"
+        return diff.hunk_label(line)
 
     def _scroll_positions(self) -> tuple[int, int, int, int, int]:
         return (

@@ -480,3 +480,32 @@ def test_history_context_menu_offers_edit_message_for_a_single_non_merge_commit(
 
     assert states == [True, False]
     assert requested == [ordinary]
+
+
+def test_inline_diff_hides_git_file_header_and_labels_hunks(qtbot: QtBot) -> None:
+    from mygitclient.git.parsers import parse_unified_diff
+    from mygitclient.ui.inline_diff import InlineDiffWidget
+
+    raw = (
+        b"diff --git a/a.py b/a.py\n"
+        b"index 4f2d4c2..b699293 100644\n"
+        b"--- a/a.py\n"
+        b"+++ b/a.py\n"
+        b"@@ -204,3 +204,4 @@ def run():\n"
+        b" keep\n"
+        b"-old\n"
+        b"+new\n"
+        b"+extra\n"
+    )
+    widget = InlineDiffWidget()
+    qtbot.addWidget(widget)
+
+    widget.set_diff(parse_unified_diff(raw, "a.py", staged=False))
+
+    text = widget.toPlainText()
+    assert "diff --git" not in text
+    assert "index 4f2d4c2" not in text
+    assert "+++ b/a.py" not in text
+    assert "@@" not in text
+    assert text.splitlines()[0] == "── Old lines 204–206 · New lines 204–207 ──"
+    assert "│ +new" in text

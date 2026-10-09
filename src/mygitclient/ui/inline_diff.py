@@ -6,7 +6,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
 
-from mygitclient.git.models import UnifiedDiff
+from mygitclient.git.models import DiffLineKind, UnifiedDiff
 from mygitclient.ui.diff_highlighter import DiffHighlighter
 
 _INLINE_DIFF_STYLE = (
@@ -57,8 +57,10 @@ class InlineDiffWidget(QPlainTextEdit):
             self.setPlainText("Binary file — no textual diff.")
             self._highlighter.set_diff(None)
         else:
-            self.setPlainText(_preview_text(diff))
+            text, kinds = _preview(diff)
+            self.setPlainText(text)
             self._highlighter.set_diff(diff)
+            self._highlighter.set_line_kinds(kinds)
         self._apply_content_height()
 
     def set_placeholder(self, message: str) -> None:
@@ -82,15 +84,33 @@ class InlineDiffWidget(QPlainTextEdit):
         self.setFixedHeight(content)
 
 
-def _preview_text(diff: UnifiedDiff) -> str:
-    """Cap a long diff so the row stays a preview with a pointer to the full view."""
+def _preview(diff: UnifiedDiff) -> tuple[str, tuple[DiffLineKind, ...]]:
+    """Readable rows for the diff, capped so the row stays a preview.
 
-    rows = diff.display_text.split("\n")
-    if len(rows) <= MAXIMUM_INLINE_LINES:
-        return "\n".join(rows)
-    hidden = len(rows) - MAXIMUM_INLINE_LINES
-    notice = f"… {hidden} more lines hidden — double-click the file to open the full diff"
-    return "\n".join((*rows[:MAXIMUM_INLINE_LINES], notice))
+    Git's ``diff --git``/``index``/``---``/``+++`` lines are left out and hunk headers get
+    the same wording as the main diff view, so the highlighter's kinds follow the shown rows.
+    """
+
+    lines = diff.readable_lines
+    old_width = max((len(str(line.old_line)) for line in lines if line.old_line), default=1)
+    new_width = max((len(str(line.new_line)) for line in lines if line.new_line), default=1)
+    rows: list[str] = []
+    kinds: list[DiffLineKind] = []
+    for line in lines:
+        if line.kind == "hunk":
+            rows.append(diff.hunk_label(line))
+        else:
+            old_number = str(line.old_line) if line.old_line is not None else ""
+            new_number = str(line.new_line) if line.new_line is not None else ""
+            rows.append(f"{old_number:>{old_width}} {new_number:>{new_width}} │ {line.text}")
+        kinds.append(line.kind)
+    if len(rows) > MAXIMUM_INLINE_LINES:
+        hidden = len(rows) - MAXIMUM_INLINE_LINES
+        rows = rows[:MAXIMUM_INLINE_LINES]
+        kinds = kinds[:MAXIMUM_INLINE_LINES]
+        rows.append(f"… {hidden} more lines hidden — double-click the file to open the full diff")
+        kinds.append("context")
+    return "\n".join(rows), tuple(kinds)
 
 
 def _diff_font(settings: QSettings | None) -> QFont:

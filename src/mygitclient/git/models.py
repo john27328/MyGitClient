@@ -444,6 +444,32 @@ class UnifiedDiff:
     def text(self) -> str:
         return "\n".join(line.text for line in self.lines)
 
+    def hunk_label(self, line: DiffLine | None) -> str:
+        """Readable replacement for a raw ``@@ -a,b +c,d @@`` header line."""
+
+        if line is None:
+            return ""
+        hunk = next((candidate for candidate in self.hunks if candidate.header == line.text), None)
+        if hunk is None:
+            return line.text
+        old_end = hunk.old_start + max(hunk.old_count - 1, 0)
+        new_end = hunk.new_start + max(hunk.new_count - 1, 0)
+        old_range = (
+            str(hunk.old_start) if old_end == hunk.old_start else f"{hunk.old_start}–{old_end}"
+        )
+        new_range = (
+            str(hunk.new_start) if new_end == hunk.new_start else f"{hunk.new_start}–{new_end}"
+        )
+        return f"── Old lines {old_range} · New lines {new_range} ──"
+
+    @property
+    def readable_lines(self) -> tuple[DiffLine, ...]:
+        """Lines worth showing: Git's file header and metadata are dropped when hunks exist."""
+
+        if not self.hunks:
+            return self.lines
+        return tuple(line for line in self.lines if line.kind not in {"header", "metadata"})
+
     @property
     def display_text(self) -> str:
         old_width = max(
