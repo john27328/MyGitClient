@@ -429,6 +429,61 @@ def test_history_panel_shows_the_commit_description(qtbot: QtBot) -> None:
 
     text = panel.details_label.text()
     assert text.startswith("Fix crash\n\nExplain why it crashed.\n\nCommit: ")
+    assert panel.description_toggle_button.isHidden()
+
+
+def test_history_panel_collapses_a_long_commit_description(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    body = "\n".join(f"Line {number}" for number in range(1, 21))
+    commit = CommitSummary(
+        "b" * 40,
+        (),
+        "Ada",
+        "ada@example.invalid",
+        "2026-10-06T12:00:00+03:00",
+        "Long story",
+        body,
+    )
+    panel.show_page(CommitPage(Path("repository"), (commit,), 0, False))
+    item = panel.tree.topLevelItem(0)
+    assert item is not None
+    panel.tree.setCurrentItem(item)
+
+    text = panel.details_label.text()
+    assert "Line 6…\n\nCommit: " in text
+    assert "Line 7" not in text
+    assert not panel.description_toggle_button.isHidden()
+    assert panel.description_toggle_button.text() == "Show more"
+
+    panel.description_toggle_button.click()
+
+    assert f"{body}\n\nCommit: " in panel.details_label.text()
+    assert panel.description_toggle_button.text() == "Show less"
+
+    panel.description_toggle_button.click()
+
+    assert "Line 7" not in panel.details_label.text()
+    assert panel.description_toggle_button.text() == "Show more"
+
+
+def test_history_panel_shortens_one_very_long_description_line(qtbot: QtBot) -> None:
+    panel = HistoryPanel()
+    qtbot.addWidget(panel)
+    commit = CommitSummary(
+        "c" * 40, (), "Ada", "ada@example.invalid", "2026-10-06T12:00:00+03:00", "Wall", "x" * 5000
+    )
+    panel.show_page(CommitPage(Path("repository"), (commit,), 0, False))
+    item = panel.tree.topLevelItem(0)
+    assert item is not None
+    panel.tree.setCurrentItem(item)
+
+    assert len(panel.details_label.text()) < 1000
+    assert not panel.description_toggle_button.isHidden()
+
+    panel.clear_commits()
+
+    assert panel.description_toggle_button.isHidden()
 
 
 def test_history_context_menu_offers_edit_message_for_a_single_non_merge_commit(

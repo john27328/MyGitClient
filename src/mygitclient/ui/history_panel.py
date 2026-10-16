@@ -56,6 +56,10 @@ BADGES_ROLE = int(Qt.ItemDataRole.UserRole) + 3
 MAXIMUM_EXPAND_ALL = 50
 """Expand All stops here so a thousand-file commit cannot stall on Git reads."""
 
+DESCRIPTION_PREVIEW_LINES = 6
+DESCRIPTION_PREVIEW_CHARACTERS = 600
+"""A longer commit description is shortened behind a Show more button."""
+
 
 class RefBadgesDelegate(QStyledItemDelegate):
     def paint(
@@ -183,6 +187,14 @@ class HistoryPanel(QWidget):
         self.details_label.setObjectName("commitDetailsLabel")
         self.details_label.setWordWrap(True)
         self.details_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.description_toggle_button = QPushButton("Show more")
+        self.description_toggle_button.setObjectName("historyDescriptionToggleButton")
+        self.description_toggle_button.setFlat(True)
+        self.description_toggle_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.description_toggle_button.clicked.connect(self._toggle_description)
+        self.description_toggle_button.hide()
+        self._details_commit: CommitSummary | None = None
+        self._description_expanded = False
         self.expand_all_button = QPushButton("Expand All")
         self.expand_all_button.setObjectName("historyExpandAllButton")
         self.expand_all_button.setToolTip("Show every changed file's diff inline")
@@ -211,7 +223,11 @@ class HistoryPanel(QWidget):
         details_layout.setContentsMargins(0, 8, 0, 0)
         details_header = QHBoxLayout()
         details_header.setContentsMargins(0, 0, 0, 0)
-        details_header.addWidget(self.details_label, 1)
+        details_text = QVBoxLayout()
+        details_text.setContentsMargins(0, 0, 0, 0)
+        details_text.addWidget(self.details_label)
+        details_text.addWidget(self.description_toggle_button, 0, Qt.AlignmentFlag.AlignLeft)
+        details_header.addLayout(details_text, 1)
         details_header.addWidget(self.expand_all_button, 0, Qt.AlignmentFlag.AlignTop)
         details_layout.addLayout(details_header)
         details_layout.addWidget(self.files, 1)
@@ -303,7 +319,7 @@ class HistoryPanel(QWidget):
         self.filter_edit.clear()
         self.tree.clear()
         self._clear_files()
-        self.details_label.setText("Select a commit to view its details.")
+        self._show_details_message("Select a commit to view its details.")
         self._selected_stash = None
         self.load_more_button.hide()
         self._update_filter_count()
@@ -577,7 +593,9 @@ class HistoryPanel(QWidget):
         self._selected_stash = stash
         self.tree.clearSelection()
         self._clear_files()
-        self.details_label.setText(f"{stash.subject}\n\nStash: {stash.ref}\nCommit: {stash.oid}")
+        self._show_details_message(
+            f"{stash.subject}\n\nStash: {stash.ref}\nCommit: {stash.oid}"
+        )
 
     def show_stash_files(self, snapshot: StashFilesSnapshot) -> None:
         if self._selected_stash != snapshot.stash:
@@ -672,8 +690,30 @@ class HistoryPanel(QWidget):
         if not isinstance(commit, CommitSummary):
             return
         self._selected_stash = None
+        self._details_commit = commit
+        self._description_expanded = False
+        self._render_commit_details()
+        self._clear_files()
+        self.commit_selected.emit(commit)
+
+    def _show_details_message(self, text: str) -> None:
+        self._details_commit = None
+        self.description_toggle_button.hide()
+        self.details_label.setText(text)
+
+    def _render_commit_details(self) -> None:
+        commit = self._details_commit
+        if commit is None:
+            return
+        body, shortened = commit.body, False
+        if not self._description_expanded:
+            body, shortened = _description_preview(commit.body)
+        self.description_toggle_button.setVisible(shortened or self._description_expanded)
+        self.description_toggle_button.setText(
+            "Show less" if self._description_expanded else "Show more"
+        )
         parents = ", ".join(parent[:8] for parent in commit.parent_oids) or "None (root)"
-        description = f"{commit.body}\n\n" if commit.body else ""
+        description = f"{body}\n\n" if body else ""
         self.details_label.setText(
             f"{commit.subject}\n\n"
             f"{description}"
@@ -682,8 +722,11 @@ class HistoryPanel(QWidget):
             f"Date: {commit.authored_at}\n"
             f"Parents: {parents}"
         )
-        self._clear_files()
-        self.commit_selected.emit(commit)
+
+    @Slot()
+    def _toggle_description(self) -> None:
+        self._description_expanded = not self._description_expanded
+        self._render_commit_details()
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
     def _file_changed(
@@ -853,3 +896,13 @@ class HistoryPanel(QWidget):
             widest = max(widest, len(before), len(lanes))
         width = max(60, widest * CommitGraphDelegate.lane_width + 16)
         self.tree.setColumnWidth(0, width)
+
+
+def _description_preview(body: str) -> tuple[str, bool]:
+    """Return the start of a commit description and whether it had to be shortened."""
+    lines = body.splitlines()
+    preview = "\n".join(lines[:DESCRIPTION_PREVIEW_LINES])
+    preview = preview[:DESCRIPTION_PREVIEW_CHARACTERS].rstrip()
+    if preview == "\n".join(lines).rstrip():
+        return body, False
+    return f"{preview}…", True
