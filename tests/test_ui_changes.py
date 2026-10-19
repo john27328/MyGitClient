@@ -306,6 +306,50 @@ def test_split_commit_clears_diff_when_file_leaves_both_trees(
     window.close()
 
 
+def test_commit_with_nothing_staged_commits_every_change(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "--initial-branch=main"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "MyGitClient Test"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True
+    )
+    tracked = repository / "tracked.txt"
+    tracked.write_text("content\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=repository, check=True)
+    tracked.write_text("changed\n", encoding="utf-8")
+    (repository / "new.txt").write_text("new\n", encoding="utf-8")
+    settings = QSettings(str(tmp_path / "commit-all.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    changes = window.findChild(QTreeWidget, "changesTree")
+    message = window.findChild(QPlainTextEdit, "commitMessageEdit")
+    commit_button = window.findChild(QPushButton, "commitButton")
+    assert changes is not None and message is not None and commit_button is not None
+
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 2, timeout=5000)
+    assert commit_button.isEnabled()
+    assert commit_button.text() == "Commit All"
+    assert message.toPlainText() != ""
+    message.setPlainText("commit everything")
+    commit_button.click()
+
+    qtbot.waitUntil(lambda: changes.topLevelItemCount() == 0, timeout=5000)
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert sorted(committed.stdout.split()) == ["new.txt", "tracked.txt"]
+    qtbot.waitUntil(lambda: commit_button.text() == "Commit", timeout=5000)
+    window.close()
+
+
 def test_commit_and_amend_from_commit_panel(
     qapp: QApplication, qtbot: QtBot, tmp_path: Path
 ) -> None:

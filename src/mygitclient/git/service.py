@@ -245,6 +245,7 @@ class GitService(QObject):
         self._reflog_requests: dict[GitRunner, Path] = {}
         self._conflict_versions_workflows: dict[GitRunner, _ConflictVersionsWorkflow] = {}
         self._conflict_side_workflows: dict[GitRunner, _ConflictSideWorkflow] = {}
+        self._commit_after_stage: dict[GitRunner, tuple[Path, str]] = {}
         self._latest_conflict_versions_request: dict[tuple[Path, str], int] = {}
         self._operation_queue = GitOperationQueue(self)
         self._operation_queue.changed.connect(self.queue_changed)
@@ -1665,7 +1666,9 @@ class GitService(QObject):
         *,
         amend: bool,
         message_only: bool = False,
+        stage_all: bool = False,
     ) -> GitRunner:
+        """Create a commit; ``stage_all`` first stages every change, untracked files included."""
         arguments = ["commit"]
         if amend:
             arguments.append("--amend")
@@ -1674,6 +1677,27 @@ class GitService(QObject):
             arguments.append("--only")
         arguments.extend(("-F", "-"))
         commit_text = message if not description else f"{message}\n\n{description}"
+        if stage_all:
+            runner = GitRunner(parent=self)
+            self._runners.add(runner)
+            self._commit_after_stage[runner] = (repository, commit_text)
+            runner.completed.connect(self._handle_commit_stage_all)
+            runner.failed_to_start.connect(self._handle_start_error)
+            self._operation_queue.enqueue(
+                runner,
+                GitCommand(("add", "-A", "--", "."), repository, "stage all files for commit"),
+            )
+            return runner
+        return self._enqueue_commit(repository, tuple(arguments), commit_text)
+
+    def _enqueue_commit(
+        self,
+        repository: Path,
+        arguments: tuple[str, ...],
+        commit_text: str,
+        *,
+        continuation: bool = False,
+    ) -> GitRunner:
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "commit"
@@ -1681,10 +1705,31 @@ class GitService(QObject):
         runner.failed_to_start.connect(self._handle_start_error)
         self._operation_queue.enqueue(
             runner,
-            GitCommand(tuple(arguments), repository, "create commit"),
+            GitCommand(arguments, repository, "create commit"),
             f"{commit_text}\n".encode("utf-8", errors="surrogateescape"),
+            continuation=continuation,
         )
         return runner
+
+    @Slot(object)
+    def _handle_commit_stage_all(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        pending = self._commit_after_stage.pop(runner, None)
+        self._release_runner(runner)
+        if pending is None or not isinstance(result, GitResult):
+            return
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(
+                format_git_error(result.error_text, operation=result.command.operation)
+            )
+            return
+        repository, commit_text = pending
+        self._enqueue_commit(repository, ("commit", "-F", "-"), commit_text, continuation=True)
 
     def request_hunk(
         self, repository: Path, diff: UnifiedDiff, hunk_index: int, *, stage: bool
@@ -2077,6 +2122,7 @@ class GitService(QObject):
         self._merge_preview_workflows.pop(runner, None)
         self._reflog_requests.pop(runner, None)
         self._conflict_versions_workflows.pop(runner, None)
+        self._commit_after_stage.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(f"Could not {checkout.step} during checkout: {message}")
             return

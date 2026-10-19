@@ -2862,8 +2862,10 @@ class MainWindow(QMainWindow):
         self._update_commit_controls()
 
     def _update_generated_commit_text(self, status: RepositoryStatus) -> None:
-        staged = [file for file in status.files if file.is_staged]
-        changes = [(_commit_change_label(file), file.path) for file in staged]
+        included = [file for file in status.files if file.is_staged]
+        if _commits_all_changes(status):
+            included = [file for file in status.files if file.has_worktree_change]
+        changes = [(_commit_change_label(file), file.path) for file in included]
         message, description = generated_commit_text(changes)
 
         current_message = self._commit_message.toPlainText()
@@ -3112,14 +3114,22 @@ class MainWindow(QMainWindow):
         amend = self._amend.isChecked()
         has_staged = status is not None and any(file.is_staged for file in status.files)
         has_head = status is not None and status.branch.oid is not None
-        allowed = bool(message) and ((amend and has_head) or (not amend and has_staged))
+        commit_all = not amend and _commits_all_changes(status)
+        has_changes = has_staged or commit_all
+        allowed = bool(message) and ((amend and has_head) or (not amend and has_changes))
         self._commit_button.setEnabled(allowed)
+        self._commit_button.setText("Commit All" if commit_all else "Commit")
+        self._commit_button.setToolTip(
+            "Nothing is staged: stage every change, including new files, and commit"
+            if commit_all
+            else ""
+        )
         if not message:
             self._commit_error.setText("Enter a commit message.")
         elif amend and not has_head:
             self._commit_error.setText("There is no commit to amend.")
-        elif not amend and not has_staged:
-            self._commit_error.setText("Stage at least one change.")
+        elif not amend and not has_changes:
+            self._commit_error.setText("There are no changes to commit.")
         else:
             self._commit_error.clear()
 
@@ -3228,7 +3238,14 @@ class MainWindow(QMainWindow):
             return
         self._changes_container.setEnabled(False)
         self._status_label.setText("Creating commit…")
-        self._git.request_commit(repository, message, description, amend=self._amend.isChecked())
+        amend = self._amend.isChecked()
+        self._git.request_commit(
+            repository,
+            message,
+            description,
+            amend=amend,
+            stage_all=not amend and _commits_all_changes(self._repository_status),
+        )
 
     @Slot()
     def _selected_file_changed(self) -> None:
@@ -4042,10 +4059,19 @@ def format_operation_duration(milliseconds: int) -> str:
 
 
 def _commit_change_label(file: FileStatus) -> str:
+    status = file.index_status if file.is_staged else file.worktree_status
     return {
         "A": "Add",
+        "?": "Add",
         "D": "Delete",
         "R": "Rename",
         "C": "Copy",
         "T": "Change type of",
-    }.get(file.index_status, "Update")
+    }.get(status, "Update")
+
+
+def _commits_all_changes(status: RepositoryStatus | None) -> bool:
+    """Whether Commit should stage everything first because nothing is staged yet."""
+    if status is None or any(file.is_staged or file.unmerged for file in status.files):
+        return False
+    return any(file.has_worktree_change for file in status.files)

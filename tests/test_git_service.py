@@ -1952,6 +1952,29 @@ def test_reword_head_changes_only_the_message_and_ignores_staged_files(
     assert staged == ["staged.txt"]
 
 
+def test_commit_with_stage_all_includes_modified_deleted_and_untracked_files(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "first.txt", "first")
+    _commit_file(tmp_path, "gone.txt", "gone")
+    (tmp_path / "first.txt").write_text("changed\n", encoding="utf-8")
+    (tmp_path / "gone.txt").unlink()
+    (tmp_path / "new.txt").write_text("new\n", encoding="utf-8")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=10000):
+        service.request_commit(tmp_path, "everything", "", amend=False, stage_all=True)
+
+    committed = subprocess.check_output(
+        ["git", "show", "--name-status", "--format=", "HEAD"], cwd=tmp_path, text=True
+    ).splitlines()
+    assert committed == ["M\tfirst.txt", "D\tgone.txt", "A\tnew.txt"]
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=tmp_path, text=True)
+    assert status == ""
+
+
 def test_reword_commit_rewrites_an_older_commit_and_keeps_later_ones(
     qtbot: QtBot, tmp_path: Path
 ) -> None:
