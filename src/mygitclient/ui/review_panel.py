@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDateTime, QPoint, QSignalBlocker, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QDateTime, QPoint, QRectF, QSignalBlocker, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -8,6 +9,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSplitter,
+    QStyle,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -16,6 +18,43 @@ from PySide6.QtWidgets import (
 
 from mygitclient.git.models import CommitFileChange, CommitSummary
 from mygitclient.workspace.reviews import ReviewSession
+
+_STATUS_NAMES = {
+    "A": "Added",
+    "C": "Copied",
+    "D": "Deleted",
+    "M": "Modified",
+    "R": "Renamed",
+    "T": "Type changed",
+    "U": "Unmerged",
+}
+
+# (light theme, dark theme) colours per status letter; others use the palette text colour.
+_STATUS_COLORS = {
+    "A": ("#2e7d32", "#7bc67e"),
+    "C": ("#6a3fb5", "#b79cf0"),
+    "D": ("#c62828", "#ef7a7a"),
+    "M": ("#1f5fbf", "#7aa7ef"),
+    "R": ("#6a3fb5", "#b79cf0"),
+    "T": ("#b26a00", "#e8a94a"),
+    "U": ("#b26a00", "#e8a94a"),
+}
+
+
+def review_status_letter(change: CommitFileChange) -> str:
+    return change.status[:1].upper() or "?"
+
+
+def review_status_name(change: CommitFileChange) -> str:
+    letter = review_status_letter(change)
+    return _STATUS_NAMES.get(letter, change.status)
+
+
+def review_status_color(change: CommitFileChange, dark: bool) -> QColor | None:
+    colors = _STATUS_COLORS.get(review_status_letter(change))
+    if colors is None:
+        return None
+    return QColor(colors[1] if dark else colors[0])
 
 
 class ReviewPanel(QWidget):
@@ -36,6 +75,7 @@ class ReviewPanel(QWidget):
         self._session: ReviewSession | None = None
         self._files: tuple[CommitFileChange, ...] = ()
         self._states: dict[str, bool] = {}
+        self._status_icons: dict[tuple[str, str], QIcon] = {}
         self._pending_scroll_position: tuple[int, int] | None = None
         self._scroll_restore_timer = QTimer(self)
         self._scroll_restore_timer.setSingleShot(True)
@@ -286,9 +326,15 @@ class ReviewPanel(QWidget):
         )
         blocker = QSignalBlocker(self.files)
         self.files.clear()
+        dark = self.files.palette().base().color().lightness() < 128
         for change in self._files:
             item = QTreeWidgetItem([change.path])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            letter = review_status_letter(change)
+            color = review_status_color(change, dark)
+            if color is not None and letter != "M":
+                item.setForeground(0, QBrush(color))
+            item.setIcon(0, self._status_icon(letter, color))
             item.setCheckState(
                 0,
                 Qt.CheckState.Checked
@@ -296,12 +342,45 @@ class ReviewPanel(QWidget):
                 else Qt.CheckState.Unchecked,
             )
             item.setData(0, Qt.ItemDataRole.UserRole, change)
-            item.setToolTip(0, change.original_path or change.path)
+            tooltip = f"{review_status_name(change)}: {change.path}"
+            if change.original_path is not None:
+                tooltip += f"\nfrom {change.original_path}"
+            item.setToolTip(0, tooltip)
             self.files.addTopLevelItem(item)
             if change.path == selected_path:
                 self.files.setCurrentItem(item)
         del blocker
         self._scroll_restore_timer.start(0)
+
+    def _status_icon(self, letter: str, color: QColor | None) -> QIcon:
+        key = (letter, color.name() if color is not None else "")
+        cached = self._status_icons.get(key)
+        if cached is not None:
+            return cached
+        size = self.files.iconSize().height()
+        if size <= 0:
+            size = self.files.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize)
+        ratio = self.devicePixelRatioF()
+        pixmap = QPixmap(round(size * ratio), round(size * ratio))
+        pixmap.setDevicePixelRatio(ratio)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        fill = color if color is not None else self.files.palette().text().color()
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(fill)
+        rect = QRectF(1, 1, size - 2, size - 2)
+        painter.drawRoundedRect(rect, 3, 3)
+        font = QFont(self.files.font())
+        font.setBold(True)
+        font.setPixelSize(max(8, size - 6))
+        painter.setFont(font)
+        painter.setPen(QColor("#ffffff") if fill.lightness() < 160 else QColor("#000000"))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, letter)
+        painter.end()
+        icon = QIcon(pixmap)
+        self._status_icons[key] = icon
+        return icon
 
     @Slot()
     def _restore_file_scroll_position(self) -> None:

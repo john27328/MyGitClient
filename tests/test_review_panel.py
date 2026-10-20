@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import CommitFileChange, CommitSummary
-from mygitclient.ui.review_panel import ReviewPanel
+from mygitclient.ui.review_panel import ReviewPanel, review_status_color
 from mygitclient.workspace.reviews import ReviewSession
 
 
@@ -226,3 +226,39 @@ def test_long_boundary_commit_subject_does_not_widen_the_review_panel(qtbot: QtB
     assert "A very long commit subject" in panel.boundary_combo.itemData(
         0, Qt.ItemDataRole.ToolTipRole
     )
+
+
+def test_review_files_show_change_status_with_colour(qtbot: QtBot, tmp_path: Path) -> None:
+    panel = ReviewPanel()
+    qtbot.addWidget(panel)
+    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
+    files = (
+        CommitFileChange("M", "changed.py"),
+        CommitFileChange("A", "added.py"),
+        CommitFileChange("D", "deleted.py"),
+        CommitFileChange("R100", "new.py", "old.py"),
+    )
+    panel.show_sessions((session,))
+    panel.select_session(session)
+    panel.show_files(session, files)
+
+    items = [panel.files.topLevelItem(index) for index in range(panel.files.topLevelItemCount())]
+    changed, added, deleted, renamed = (item for item in items if item is not None)
+    dark = panel.files.palette().base().color().lightness() < 128
+
+    assert [item.text(0) for item in (changed, added, deleted, renamed)] == [
+        "changed.py",
+        "added.py",
+        "deleted.py",
+        "new.py",
+    ]
+    assert all(not item.icon(0).isNull() for item in (changed, added, deleted, renamed))
+    assert changed.foreground(0).style() == Qt.BrushStyle.NoBrush
+    deleted_color = review_status_color(files[2], dark)
+    added_color = review_status_color(files[1], dark)
+    assert deleted_color is not None and added_color is not None
+    assert deleted.foreground(0).color() == deleted_color
+    assert added.foreground(0).color() == added_color
+    assert deleted_color.red() > deleted_color.green()
+    assert deleted.toolTip(0) == "Deleted: deleted.py"
+    assert renamed.toolTip(0) == "Renamed: new.py\nfrom old.py"
