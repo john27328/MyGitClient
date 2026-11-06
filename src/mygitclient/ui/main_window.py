@@ -107,6 +107,7 @@ from mygitclient.ui.diff_view import DiffView
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.interactive_rebase import InteractiveRebaseDialog
+from mygitclient.ui.message_boxes import show_message
 from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
 from mygitclient.ui.review_controller import ReviewController
@@ -320,8 +321,11 @@ class MainWindow(QMainWindow):
         self._diff_study_panel.commit_selected.connect(self._history_commit_selected)
         self._diff_study_panel.file_selected.connect(self._history_file_selected)
         self._diff_study_panel.stash_file_selected.connect(self._history_stash_file_selected)
+        self._diff_study_panel.file_open_requested.connect(self._open_history_file)
+        self._diff_study_panel.file_reveal_requested.connect(self._reveal_history_file)
+        self._diff_study_panel.file_restore_requested.connect(self._restore_history_file)
 
-        self._review_panel = ReviewPanel()
+        self._review_panel = ReviewPanel(self._settings)
 
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.setObjectName("workspaceTabs")
@@ -661,6 +665,11 @@ class MainWindow(QMainWindow):
         self._push_button.setMenu(push_menu)
         toolbar.addWidget(self._push_button)
         self._update_sync_indicators()
+        self._new_branch_action = QAction(load_icon("branch.svg"), "New Branch", self)
+        self._new_branch_action.setObjectName("newBranchAction")
+        self._new_branch_action.setToolTip("Create a branch from the current HEAD and switch to it")
+        self._new_branch_action.triggered.connect(self._create_branch)
+        toolbar.addAction(self._new_branch_action)
         self._cancel_action = QAction(load_icon("cancel.svg"), "Cancel", self)
         self._cancel_action.setObjectName("cancelOperationsAction")
         self._operation_queue_menu = QMenu(self)
@@ -2393,6 +2402,13 @@ class MainWindow(QMainWindow):
         self._git.request_stashes(self._repository)
         self._status_label.setText(f"Refreshing {self._repository.name}…")
         self._status_runner = self._git.request_status(self._repository)
+        if self._history_refs:
+            # A full reload also rebuilds the commit graph, e.g. after outside Git changes.
+            self._history_panel.clear_commits()
+            self._history_panel.set_loading(True)
+            self._history_runner = self._git.request_history(
+                self._repository, refs=self._history_refs
+            )
         self._review_controller.refresh()
 
     @Slot()
@@ -3951,7 +3967,7 @@ class MainWindow(QMainWindow):
         self._git_error_dialog_open = True
         self._last_git_error_at = now
         try:
-            QMessageBox.critical(self, "Git error", message)
+            show_message(self, QMessageBox.Icon.Critical, "Git error", message)
         finally:
             self._git_error_dialog_open = False
             self._last_git_error_at = monotonic()

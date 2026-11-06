@@ -1,8 +1,18 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QByteArray, QDateTime, QSettings, Qt, Signal, Slot
+from PySide6.QtCore import (
+    QByteArray,
+    QDateTime,
+    QPoint,
+    QSettings,
+    QSignalBlocker,
+    Qt,
+    Signal,
+    Slot,
+)
 from PySide6.QtWidgets import (
     QLabel,
+    QMenu,
     QPushButton,
     QSplitter,
     QTreeWidget,
@@ -19,6 +29,7 @@ from mygitclient.git.models import (
     StashFilesSnapshot,
     StashInfo,
 )
+from mygitclient.ui.change_file_tree import ChangeFileTree, FileViewModeCombo, file_view_mode_row
 
 _CONTEXT_LABEL_STYLE = (
     "QLabel { padding: 4px 6px; background: palette(alternate-base); "
@@ -38,6 +49,9 @@ class DiffStudyPanel(QWidget):
     commit_selected = Signal(object)
     file_selected = Signal(object, object)
     stash_file_selected = Signal(object, object)
+    file_open_requested = Signal(object)
+    file_reveal_requested = Signal(object)
+    file_restore_requested = Signal(object, object, bool)
 
     def __init__(
         self,
@@ -48,6 +62,7 @@ class DiffStudyPanel(QWidget):
         self.setObjectName("diffStudyPanel")
         self._settings = settings
         self._selected_stash: StashInfo | None = None
+        self._files: tuple[CommitFileChange, ...] = ()
 
         self.context_label = QLabel("Select a commit to study its diff.")
         self.context_label.setObjectName("diffStudyContextLabel")
@@ -75,17 +90,27 @@ class DiffStudyPanel(QWidget):
         commits_layout.addWidget(self.commits, 1)
         commits_layout.addWidget(self.load_more_button)
 
-        self.files = QTreeWidget()
+        self.view_mode = FileViewModeCombo(settings, "diff/filesViewMode")
+        self.view_mode.setObjectName("diffStudyFilesViewModeCombo")
+        self.view_mode.mode_changed.connect(self._view_mode_changed)
+        self.files = ChangeFileTree()
         self.files.setObjectName("diffStudyFilesTree")
-        self.files.setHeaderLabels(["Status", "File"])
-        self.files.setColumnWidth(0, 60)
-        self.files.setRootIsDecorated(False)
+        self.files.set_tree_mode(self.view_mode.tree_mode)
         self.files.currentItemChanged.connect(self._file_changed)
+        self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.files.customContextMenuRequested.connect(self._show_file_context_menu)
+
+        files_container = QWidget()
+        files_layout = QVBoxLayout(files_container)
+        files_layout.setContentsMargins(0, 2, 0, 0)
+        files_layout.setSpacing(2)
+        files_layout.addLayout(file_view_mode_row(self.view_mode))
+        files_layout.addWidget(self.files, 1)
 
         self.splitter = QSplitter(Qt.Orientation.Vertical)
         self.splitter.setObjectName("diffStudySplitter")
         self.splitter.addWidget(commits_container)
-        self.splitter.addWidget(self.files)
+        self.splitter.addWidget(files_container)
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setSizes([440, 260])
@@ -126,6 +151,7 @@ class DiffStudyPanel(QWidget):
     def clear_commits(self) -> None:
         self.commits.clear()
         self.files.clear()
+        self._files = ()
         self._selected_stash = None
         self.context_label.setText("Select a commit to study its diff.")
 
@@ -160,38 +186,28 @@ class DiffStudyPanel(QWidget):
         self._selected_stash = stash
         self.commits.clearSelection()
         self.files.clear()
+        self._files = ()
         self.context_label.setText(f"{stash.ref} · {stash.subject}")
 
     def select_file(self, path: str) -> bool:
-        for index in range(self.files.topLevelItemCount()):
-            item = self.files.topLevelItem(index)
-            if item is None:
-                continue
-            change = item.data(0, Qt.ItemDataRole.UserRole)
-            if isinstance(change, CommitFileChange) and change.path == path:
-                self.files.setCurrentItem(item)
-                self.files.scrollToItem(item)
-                return True
-        return False
+        return self.files.select_path(path)
 
     def select_first_file(self) -> bool:
-        if self.files.topLevelItemCount() == 0:
-            return False
-        item = self.files.topLevelItem(0)
-        if item is None:
-            return False
-        self.files.setCurrentItem(item)
-        return True
+        return self.files.select_first_file()
 
     def _populate(self, files: tuple[CommitFileChange, ...]) -> None:
-        self.files.clear()
-        for change in files:
-            item = QTreeWidgetItem([change.status, change.path])
-            item.setData(0, Qt.ItemDataRole.UserRole, change)
-            if change.original_path is not None:
-                item.setToolTip(1, f"Renamed from {change.original_path}")
-            self.files.addTopLevelItem(item)
-        self.files.resizeColumnToContents(0)
+        self._files = files
+        # The main window picks the file to show next, so nothing is pre-selected here.
+        self.files.show_changes(files, restore_selection=False)
+
+    @Slot(bool)
+    def _view_mode_changed(self, tree_mode: bool) -> None:
+        self.files.set_tree_mode(tree_mode)
+        blocker = QSignalBlocker(self.files)
+        self.files.show_changes(self._files)
+        del blocker
+        if (item := self.files.currentItem()) is not None:
+            self.files.scrollToItem(item)
 
     # -- Signals ------------------------------------------------------------
 
@@ -223,6 +239,7 @@ class DiffStudyPanel(QWidget):
             f"Parents: {parents}"
         )
         self.files.clear()
+        self._files = ()
         self.commit_selected.emit(commit)
 
     @Slot(QTreeWidgetItem, QTreeWidgetItem)
@@ -240,6 +257,35 @@ class DiffStudyPanel(QWidget):
         commit = self.selected_commit
         if commit is not None:
             self.file_selected.emit(commit, change)
+
+    @Slot(QPoint)
+    def _show_file_context_menu(self, position: QPoint) -> None:
+        item = self.files.itemAt(position)
+        if item is None:
+            return
+        change = self.files.change(item)
+        if change is None:
+            return
+        self.files.setCurrentItem(item)
+        menu = QMenu(self.files)
+        open_action = menu.addAction("Open")
+        reveal_action = menu.addAction("Show in File Manager")
+        restore_at = restore_before = None
+        commit = self.selected_commit if self._selected_stash is None else None
+        if commit is not None:
+            menu.addSeparator()
+            restore_menu = menu.addMenu("Restore file to")
+            restore_at = restore_menu.addAction("State at commit…")
+            restore_before = restore_menu.addAction("State before commit…")
+        chosen = menu.exec(self.files.viewport().mapToGlobal(position))
+        if chosen is open_action:
+            self.file_open_requested.emit(change)
+        elif chosen is reveal_action:
+            self.file_reveal_requested.emit(change)
+        elif chosen is restore_at and commit is not None:
+            self.file_restore_requested.emit(commit, change, False)
+        elif chosen is restore_before and commit is not None:
+            self.file_restore_requested.emit(commit, change, True)
 
     # -- Persistence --------------------------------------------------------
 

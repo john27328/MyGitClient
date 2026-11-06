@@ -933,6 +933,107 @@ def test_branches_tab_can_checkout_and_create_branch(
     window.close()
 
 
+def test_toolbar_new_branch_creates_and_switches(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    repository = tmp_path / "toolbar-branch"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    (repository / "tracked.txt").write_text("content\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=MyGitClient Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+    settings = QSettings(str(tmp_path / "toolbar-branch.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    toolbar = window.findChild(QToolBar, "repositoryToolbar")
+    action = window.findChild(QAction, "newBranchAction")
+    assert toolbar is not None
+    assert action is not None
+    assert action in toolbar.actions()
+    window.show()
+    window.open_repository(repository)
+    qtbot.waitUntil(
+        lambda: window.windowTitle().startswith("toolbar-branch — main —"), timeout=5000
+    )
+
+    def branch_name_dialog(*_args: object) -> tuple[str, bool]:
+        return " topic ", True
+
+    monkeypatch.setattr(QInputDialog, "getText", branch_name_dialog)
+    action.trigger()
+
+    qtbot.waitUntil(
+        lambda: window.windowTitle().startswith("toolbar-branch — topic —"), timeout=5000
+    )
+    window.close()
+
+
+def test_refresh_reloads_history_after_an_outside_commit(
+    qapp: QApplication, qtbot: QtBot, tmp_path: Path
+) -> None:
+    repository = tmp_path / "refresh-history"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    )
+
+    def commit(message: str) -> None:
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=MyGitClient Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+
+    commit("initial")
+    settings = QSettings(str(tmp_path / "refresh-history.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    history = window.findChild(HistoryPanel)
+    refresh = window.findChild(QAction, "refreshAction")
+    assert history is not None
+    assert refresh is not None
+    window.show()
+    window.open_repository(repository)
+    qtbot.waitUntil(lambda: history.commit_count == 1, timeout=5000)
+
+    commit("made outside the app")
+    refresh.trigger()
+
+    qtbot.waitUntil(lambda: history.commit_count == 2, timeout=5000)
+    window.close()
+
+
 def test_external_checkout_is_detected_by_poll_and_refresh(
     qtbot: QtBot, tmp_path: Path
 ) -> None:

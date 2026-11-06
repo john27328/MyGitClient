@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, Qt, QTimer
+from PySide6.QtCore import QDateTime, QSettings, Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMenu
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import CommitFileChange, CommitSummary
-from mygitclient.ui.review_panel import ReviewPanel, review_status_color
+from mygitclient.ui.change_file_tree import status_color
+from mygitclient.ui.review_panel import ReviewPanel
 from mygitclient.workspace.reviews import ReviewSession
 
 
@@ -254,11 +255,41 @@ def test_review_files_show_change_status_with_colour(qtbot: QtBot, tmp_path: Pat
     ]
     assert all(not item.icon(0).isNull() for item in (changed, added, deleted, renamed))
     assert changed.foreground(0).style() == Qt.BrushStyle.NoBrush
-    deleted_color = review_status_color(files[2], dark)
-    added_color = review_status_color(files[1], dark)
+    deleted_color = status_color(files[2], dark)
+    added_color = status_color(files[1], dark)
     assert deleted_color is not None and added_color is not None
     assert deleted.foreground(0).color() == deleted_color
     assert added.foreground(0).color() == added_color
     assert deleted_color.red() > deleted_color.green()
     assert deleted.toolTip(0) == "Deleted: deleted.py"
     assert renamed.toolTip(0) == "Renamed: new.py\nfrom old.py"
+
+
+def test_review_files_switch_to_tree_and_keep_review_marks(qtbot: QtBot, tmp_path: Path) -> None:
+    settings = QSettings(str(tmp_path / "review.ini"), QSettings.Format.IniFormat)
+    panel = ReviewPanel(settings)
+    qtbot.addWidget(panel)
+    session = ReviewSession(tmp_path, "refs/heads/topic", "a" * 40, "Start point")
+    files = (CommitFileChange("M", "src/a.py"), CommitFileChange("D", "src/b.py"))
+    panel.show_sessions((session,))
+    panel.select_session(session)
+    panel.show_files(session, files)
+    panel.update_file_state("src/a.py", True)
+    first = panel.files.topLevelItem(0)
+    assert first is not None
+    panel.files.setCurrentItem(first)
+
+    panel.view_mode.setCurrentIndex(panel.view_mode.findData("tree"))
+
+    folder = panel.files.topLevelItem(0)
+    assert folder is not None
+    assert panel.files.topLevelItemCount() == 1
+    assert folder.text(0) == "src"
+    assert not folder.flags() & Qt.ItemFlag.ItemIsUserCheckable
+    assert [item.text(0) for item in panel.files.file_items()] == ["a.py", "b.py"]
+    assert [item.checkState(0) for item in panel.files.file_items()] == [
+        Qt.CheckState.Checked,
+        Qt.CheckState.Unchecked,
+    ]
+    assert panel.selected_file == files[0]
+    assert settings.value("review/filesViewMode") == "tree"

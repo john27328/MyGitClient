@@ -59,6 +59,7 @@ from mygitclient.ui.github_repositories_dialog import GitHubRepositoriesDialog
 from mygitclient.ui.github_sign_in_dialog import GitHubSignInDialog
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.main_window import MainWindow
+from mygitclient.ui.message_boxes import show_message
 from mygitclient.workspace import WorkspaceManager, find_repository_root
 
 
@@ -314,7 +315,7 @@ class AppShell(QMainWindow):
     @Slot(str)
     def _clone_failed(self, message: str) -> None:
         self._close_clone_progress()
-        QMessageBox.warning(self, "Clone failed", message)
+        show_message(self, QMessageBox.Icon.Warning, "Clone failed", message)
 
     @Slot()
     def _clone_cancelled(self) -> None:
@@ -865,7 +866,7 @@ class AppShell(QMainWindow):
     @Slot(str)
     def _github_publish_failed(self, message: str) -> None:
         self._pending_github_publish = None
-        QMessageBox.warning(self, "Could not publish to GitHub", message)
+        show_message(self, QMessageBox.Icon.Warning, "Could not publish to GitHub", message)
 
     @Slot(object)
     def _open_github_repository(self, repository_value: object) -> None:

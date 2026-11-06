@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QDateTime, QPoint, QRectF, QSignalBlocker, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QDateTime, QPoint, QSettings, QSignalBlocker, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -9,7 +8,6 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QSplitter,
-    QStyle,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -17,44 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from mygitclient.git.models import CommitFileChange, CommitSummary
+from mygitclient.ui.change_file_tree import ChangeFileTree, FileViewModeCombo, file_view_mode_row
 from mygitclient.workspace.reviews import ReviewSession
-
-_STATUS_NAMES = {
-    "A": "Added",
-    "C": "Copied",
-    "D": "Deleted",
-    "M": "Modified",
-    "R": "Renamed",
-    "T": "Type changed",
-    "U": "Unmerged",
-}
-
-# (light theme, dark theme) colours per status letter; others use the palette text colour.
-_STATUS_COLORS = {
-    "A": ("#2e7d32", "#7bc67e"),
-    "C": ("#6a3fb5", "#b79cf0"),
-    "D": ("#c62828", "#ef7a7a"),
-    "M": ("#1f5fbf", "#7aa7ef"),
-    "R": ("#6a3fb5", "#b79cf0"),
-    "T": ("#b26a00", "#e8a94a"),
-    "U": ("#b26a00", "#e8a94a"),
-}
-
-
-def review_status_letter(change: CommitFileChange) -> str:
-    return change.status[:1].upper() or "?"
-
-
-def review_status_name(change: CommitFileChange) -> str:
-    letter = review_status_letter(change)
-    return _STATUS_NAMES.get(letter, change.status)
-
-
-def review_status_color(change: CommitFileChange, dark: bool) -> QColor | None:
-    colors = _STATUS_COLORS.get(review_status_letter(change))
-    if colors is None:
-        return None
-    return QColor(colors[1] if dark else colors[0])
 
 
 class ReviewPanel(QWidget):
@@ -69,13 +31,14 @@ class ReviewPanel(QWidget):
     file_reveal_requested = Signal(object)
     boundary_selected = Signal(object)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, settings: QSettings | None = None, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("reviewPanel")
         self._session: ReviewSession | None = None
         self._files: tuple[CommitFileChange, ...] = ()
         self._states: dict[str, bool] = {}
-        self._status_icons: dict[tuple[str, str], QIcon] = {}
         self._pending_scroll_position: tuple[int, int] | None = None
         self._scroll_restore_timer = QTimer(self)
         self._scroll_restore_timer.setSingleShot(True)
@@ -127,10 +90,12 @@ class ReviewPanel(QWidget):
         boundary_layout.addWidget(self.boundary_label)
         boundary_layout.addWidget(self.boundary_combo)
 
-        self.files = QTreeWidget()
+        self.view_mode = FileViewModeCombo(settings, "review/filesViewMode")
+        self.view_mode.setObjectName("reviewFilesViewModeCombo")
+        self.view_mode.mode_changed.connect(self._view_mode_changed)
+        self.files = ChangeFileTree()
         self.files.setObjectName("reviewFilesTree")
-        self.files.setHeaderHidden(True)
-        self.files.setRootIsDecorated(False)
+        self.files.set_tree_mode(self.view_mode.tree_mode)
         self.files.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.files.customContextMenuRequested.connect(self._show_file_context_menu)
         self.files.currentItemChanged.connect(self._file_changed)
@@ -139,7 +104,7 @@ class ReviewPanel(QWidget):
         files_container = QWidget()
         files_layout = QVBoxLayout(files_container)
         files_layout.setContentsMargins(0, 0, 0, 0)
-        files_layout.addWidget(self.context)
+        files_layout.addLayout(file_view_mode_row(self.view_mode, self.context))
         files_layout.addLayout(boundary_layout)
         files_layout.addWidget(self.files, 1)
 
@@ -161,11 +126,7 @@ class ReviewPanel(QWidget):
 
     @property
     def selected_file(self) -> CommitFileChange | None:
-        item = self.files.currentItem()
-        if item is None:
-            return None
-        value = item.data(0, Qt.ItemDataRole.UserRole)
-        return value if isinstance(value, CommitFileChange) else None
+        return self.files.selected_change
 
     def show_sessions(self, sessions: tuple[ReviewSession, ...]) -> None:
         selected_key = self._session.key if self._session is not None else ""
@@ -318,69 +279,33 @@ class ReviewPanel(QWidget):
         if self._session is not None:
             self.delete_requested.emit(self._session)
 
+    @Slot(bool)
+    def _view_mode_changed(self, tree_mode: bool) -> None:
+        self.files.set_tree_mode(tree_mode)
+        self._render_files()
+        if (item := self.files.currentItem()) is not None:
+            self.files.scrollToItem(item)
+            self._scroll_restore_timer.stop()
+            self._pending_scroll_position = None
+
     def _render_files(self) -> None:
-        selected_path = self.selected_file.path if self.selected_file is not None else ""
         self._pending_scroll_position = (
             self.files.verticalScrollBar().value(),
             self.files.horizontalScrollBar().value(),
         )
         blocker = QSignalBlocker(self.files)
-        self.files.clear()
-        dark = self.files.palette().base().color().lightness() < 128
-        for change in self._files:
-            item = QTreeWidgetItem([change.path])
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            letter = review_status_letter(change)
-            color = review_status_color(change, dark)
-            if color is not None and letter != "M":
-                item.setForeground(0, QBrush(color))
-            item.setIcon(0, self._status_icon(letter, color))
-            item.setCheckState(
-                0,
-                Qt.CheckState.Checked
-                if self._states.get(change.path, False)
-                else Qt.CheckState.Unchecked,
-            )
-            item.setData(0, Qt.ItemDataRole.UserRole, change)
-            tooltip = f"{review_status_name(change)}: {change.path}"
-            if change.original_path is not None:
-                tooltip += f"\nfrom {change.original_path}"
-            item.setToolTip(0, tooltip)
-            self.files.addTopLevelItem(item)
-            if change.path == selected_path:
-                self.files.setCurrentItem(item)
+        self.files.show_changes(self._files, self._configure_file_item)
         del blocker
         self._scroll_restore_timer.start(0)
 
-    def _status_icon(self, letter: str, color: QColor | None) -> QIcon:
-        key = (letter, color.name() if color is not None else "")
-        cached = self._status_icons.get(key)
-        if cached is not None:
-            return cached
-        size = self.files.iconSize().height()
-        if size <= 0:
-            size = self.files.style().pixelMetric(QStyle.PixelMetric.PM_SmallIconSize)
-        ratio = self.devicePixelRatioF()
-        pixmap = QPixmap(round(size * ratio), round(size * ratio))
-        pixmap.setDevicePixelRatio(ratio)
-        pixmap.fill(Qt.GlobalColor.transparent)
-        fill = color if color is not None else self.files.palette().text().color()
-        painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(fill)
-        rect = QRectF(1, 1, size - 2, size - 2)
-        painter.drawRoundedRect(rect, 3, 3)
-        font = QFont(self.files.font())
-        font.setBold(True)
-        font.setPixelSize(max(8, size - 6))
-        painter.setFont(font)
-        painter.setPen(QColor("#ffffff") if fill.lightness() < 160 else QColor("#000000"))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, letter)
-        painter.end()
-        icon = QIcon(pixmap)
-        self._status_icons[key] = icon
-        return icon
+    def _configure_file_item(self, item: QTreeWidgetItem, change: CommitFileChange) -> None:
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(
+            0,
+            Qt.CheckState.Checked
+            if self._states.get(change.path, False)
+            else Qt.CheckState.Unchecked,
+        )
 
     @Slot()
     def _restore_file_scroll_position(self) -> None:
