@@ -184,6 +184,15 @@ class RebasePreviewSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class RebaseRangeSnapshot:
+    """Commits from ``start`` up to HEAD (oldest first) for a rebase that starts there."""
+
+    repository: Path
+    start: CommitSummary
+    commits: tuple[CommitSummary, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RebaseTodoItem:
     action: Literal["pick", "reword", "edit", "squash", "fixup", "drop"]
     oid: str

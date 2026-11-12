@@ -110,6 +110,15 @@ class RefBadgesDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+def is_commit_chain(commits: tuple[CommitSummary, ...]) -> bool:
+    """Whether ``commits`` (oldest first) follow each other directly, as squash needs."""
+
+    return len(commits) > 1 and all(
+        later.parent_oids == (earlier.oid,)
+        for earlier, later in zip(commits, commits[1:], strict=False)
+    )
+
+
 class HistoryPanel(QWidget):
     load_more_requested = Signal()
     commit_selected = Signal(object)
@@ -117,6 +126,9 @@ class HistoryPanel(QWidget):
     cherry_pick_requested = Signal(object)
     revert_requested = Signal(object)
     edit_message_requested = Signal(object)
+    drop_commits_requested = Signal(object)
+    squash_commits_requested = Signal(object)
+    interactive_rebase_from_requested = Signal(object)
     checkout_commit_requested = Signal(object)
     stash_file_selected = Signal(object, object)
     file_open_requested = Signal(object)
@@ -627,6 +639,14 @@ class HistoryPanel(QWidget):
         rows.sort(key=lambda entry: entry[0], reverse=True)
         return tuple(commit for _row, commit in rows)
 
+    def _loaded_commit(self, oid: str) -> CommitSummary | None:
+        for row in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(row)
+            value = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+            if isinstance(value, CommitSummary) and value.oid == oid:
+                return value
+        return None
+
     @Slot(QPoint)
     def _show_commit_context_menu(self, position: QPoint) -> None:
         item = self.tree.itemAt(position)
@@ -655,6 +675,40 @@ class HistoryPanel(QWidget):
         edit_action = menu.addAction("Edit message\u2026")
         edit_action.setObjectName("historyEditMessageAction")
         edit_action.setEnabled(len(commits) == 1 and len(commits[0].parent_oids) <= 1)
+        count = len(commits)
+        no_merges = all(len(commit.parent_oids) <= 1 for commit in commits)
+        drop_action = menu.addAction(
+            "Drop commit…" if count == 1 else f"Drop {count} commits…"
+        )
+        drop_action.setObjectName("historyDropCommitsAction")
+        drop_action.setEnabled(no_merges)
+        squash_commits = commits
+        if count == 1:
+            parent = (
+                self._loaded_commit(commits[0].parent_oids[0])
+                if len(commits[0].parent_oids) == 1
+                else None
+            )
+            squash_commits = (parent, commits[0]) if parent is not None else ()
+            squash_action = menu.addAction("Squash into previous commit…")
+            squash_action.setToolTip(
+                "Combine this commit with the commit before it"
+                if parent is not None
+                else "The previous commit is not loaded or is a merge"
+            )
+        else:
+            squash_action = menu.addAction(f"Squash {count} commits…")
+            squash_action.setToolTip("Combine adjacent commits into one")
+        squash_action.setObjectName("historySquashCommitsAction")
+        squash_action.setEnabled(
+            all(len(commit.parent_oids) <= 1 for commit in squash_commits)
+            and is_commit_chain(squash_commits)
+        )
+        rebase_action = menu.addAction("Interactive rebase from here…")
+        rebase_action.setObjectName("historyInteractiveRebaseAction")
+        rebase_action.setToolTip("Reorder, edit, squash or drop this commit and the ones after it")
+        rebase_action.setEnabled(count == 1 and len(commits[0].parent_oids) <= 1)
+        menu.setToolTipsVisible(True)
         menu.addSeparator()
         author = commits[0]
         author_menu = menu.addMenu(f"Author: {author.author_name}")
@@ -672,6 +726,12 @@ class HistoryPanel(QWidget):
             self.revert_requested.emit(tuple(reversed(commits)))
         elif chosen is edit_action:
             self.edit_message_requested.emit(commits[0])
+        elif chosen is drop_action:
+            self.drop_commits_requested.emit(commits)
+        elif chosen is squash_action:
+            self.squash_commits_requested.emit(squash_commits)
+        elif chosen is rebase_action:
+            self.interactive_rebase_from_requested.emit(commits[0])
         elif chosen is color_action:
             initial = self._author_color(author) or self.palette().highlight().color()
             color = QColorDialog.getColor(initial, self, f"Color for {author.author_name}")

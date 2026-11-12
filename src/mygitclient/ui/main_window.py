@@ -75,6 +75,7 @@ from mygitclient.git.models import (
     IncomingCommitsSnapshot,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
+    RebaseRangeSnapshot,
     ReflogSnapshot,
     RepositoryOperation,
     RepositoryOperationSnapshot,
@@ -104,7 +105,7 @@ from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.conflict_editor import ConflictEditor
 from mygitclient.ui.diff_study_panel import DiffStudyPanel
 from mygitclient.ui.diff_view import DiffView
-from mygitclient.ui.history_panel import HistoryPanel
+from mygitclient.ui.history_panel import HistoryPanel, is_commit_chain
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.interactive_rebase import InteractiveRebaseDialog
 from mygitclient.ui.message_boxes import show_message
@@ -276,6 +277,11 @@ class MainWindow(QMainWindow):
         self._history_panel.cherry_pick_requested.connect(self._preview_cherry_pick)
         self._history_panel.revert_requested.connect(self._preview_revert)
         self._history_panel.edit_message_requested.connect(self._edit_commit_message)
+        self._history_panel.drop_commits_requested.connect(self._drop_commits)
+        self._history_panel.squash_commits_requested.connect(self._squash_commits)
+        self._history_panel.interactive_rebase_from_requested.connect(
+            self._interactive_rebase_from
+        )
         self._history_panel.checkout_commit_requested.connect(self._checkout_commit)
         # Single-click selection in History only expands an inline diff (see
         # file_diff_requested below) — it no longer drives the shared DiffView, so
@@ -747,6 +753,7 @@ class MainWindow(QMainWindow):
         self._git.cherry_pick_preview_ready.connect(self._show_cherry_pick_preview)
         self._git.revert_preview_ready.connect(self._show_revert_preview)
         self._git.rebase_preview_ready.connect(self._show_rebase_preview)
+        self._git.rebase_range_ready.connect(self._show_rebase_range)
         self._git.merge_preview_ready.connect(self._show_merge_preview)
         self._git.reflog_ready.connect(self._show_reflog)
         self._git.conflict_versions_ready.connect(self._show_conflict_versions)
@@ -2037,6 +2044,156 @@ class MainWindow(QMainWindow):
         self._status_label.setText(f"Rewriting {value.oid[:8]}…")
         self._git.request_reword_commit(repository, value, text, autostash=bool(status.files))
 
+    def _rewritable_commits(
+        self, value: object, title: str
+    ) -> tuple[Path, RepositoryStatus, str, tuple[CommitSummary, ...]] | None:
+        """Check that ``value`` holds commits the current branch can rewrite."""
+
+        repository = self._repository
+        status = self._repository_status
+        if repository is None or status is None or not isinstance(value, tuple):
+            return None
+        raw_commits = cast(tuple[object, ...], value)
+        if not raw_commits or not all(isinstance(item, CommitSummary) for item in raw_commits):
+            return None
+        commits = cast(tuple[CommitSummary, ...], raw_commits)
+        branch = status.branch.head
+        if branch is None or branch in {"(detached)", "HEAD"} or status.branch.oid is None:
+            QMessageBox.information(self, title, "Check out a local branch first.")
+            return None
+        if self._repository_operation is not None:
+            QMessageBox.information(self, title, "Finish the current Git operation first.")
+            return None
+        if any(len(commit.parent_oids) > 1 for commit in commits):
+            QMessageBox.information(self, title, "Merge commits cannot be changed this way.")
+            return None
+        return repository, status, branch, commits
+
+    @staticmethod
+    def _commit_list_text(commits: tuple[CommitSummary, ...]) -> str:
+        shown = [f"• {commit.oid[:8]} {commit.subject}" for commit in reversed(commits[-10:])]
+        if len(commits) > 10:
+            shown.append(f"… and {len(commits) - 10} more")
+        return "\n".join(shown)
+
+    @Slot(object)
+    def _drop_commits(self, value: object) -> None:
+        checked = self._rewritable_commits(value, "Drop commits")
+        if checked is None:
+            return
+        repository, status, branch, commits = checked
+        count = "this commit" if len(commits) == 1 else f"these {len(commits)} commits"
+        answer = QMessageBox.warning(
+            self,
+            "Drop commits",
+            f"Remove {count} from {branch}?\n\n{self._commit_list_text(commits)}\n\n"
+            "Their changes disappear from the branch; later commits are replayed on top. "
+            "If the branch was already pushed, it will need a force push (with lease).\n"
+            "The previous HEAD stays available through the reflog.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._rewrite_recovery_head = status.branch.oid or ""
+        self._status_label.setText(f"Dropping {len(commits)} commit(s)…")
+        self._git.request_drop_commits(repository, commits, autostash=bool(status.files))
+
+    @Slot(object)
+    def _squash_commits(self, value: object) -> None:
+        checked = self._rewritable_commits(value, "Squash commits")
+        if checked is None:
+            return
+        repository, status, branch, commits = checked
+        if not is_commit_chain(commits):
+            QMessageBox.information(
+                self,
+                "Squash commits",
+                "Select two or more commits that directly follow each other.",
+            )
+            return
+        oldest = commits[0]
+        description = "\n\n".join(
+            part
+            for part in (
+                oldest.body,
+                *(
+                    f"{commit.subject}\n\n{commit.body}" if commit.body else commit.subject
+                    for commit in commits[1:]
+                ),
+            )
+            if part
+        )
+        dialog = CommitMessageDialog(oldest.subject, description, self)
+        dialog.setWindowTitle(f"Squash {len(commits)} commits")
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Rewrite history?",
+            f"Combine these {len(commits)} commits on {branch} into one?\n\n"
+            f"{self._commit_list_text(commits)}\n\n"
+            "Later commits are replayed on top. If the branch was already pushed, it will "
+            "need a force push (with lease).\nThe previous HEAD stays available through the "
+            "reflog.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        text = dialog.subject if not dialog.description else (
+            f"{dialog.subject}\n\n{dialog.description}"
+        )
+        self._rewrite_recovery_head = status.branch.oid or ""
+        self._status_label.setText(f"Squashing {len(commits)} commits…")
+        self._git.request_squash_commits(
+            repository, commits, text, autostash=bool(status.files)
+        )
+
+    @Slot(object)
+    def _interactive_rebase_from(self, value: object) -> None:
+        checked = self._rewritable_commits((value,), "Interactive rebase")
+        if checked is None:
+            return
+        repository, _status, _branch, commits = checked
+        self._status_label.setText(f"Reading commits after {commits[0].oid[:8]}…")
+        self._git.request_rebase_range(repository, commits[0])
+
+    @Slot(object)
+    def _show_rebase_range(self, value: object) -> None:
+        if not isinstance(value, RebaseRangeSnapshot) or value.repository != self._repository:
+            return
+        status = self._repository_status
+        if status is None or status.branch.oid is None:
+            return
+        if any(len(commit.parent_oids) > 1 for commit in value.commits):
+            QMessageBox.information(
+                self,
+                "Interactive rebase",
+                "The history after this commit contains merge commits. "
+                "Rebase from a commit after the last merge instead.",
+            )
+            self._status_label.setText("Interactive rebase cancelled")
+            return
+        editor = InteractiveRebaseDialog(value.commits, self)
+        editor.setWindowTitle(f"Interactive rebase from {value.start.oid[:8]}")
+        if editor.exec() != QDialog.DialogCode.Accepted:
+            self._status_label.setText("Interactive rebase cancelled")
+            return
+        dirty = bool(status.files)
+        if dirty:
+            answer = QMessageBox.question(
+                self,
+                "Stash local changes?",
+                "The working tree is dirty. Stash and restore its changes automatically?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._status_label.setText("Interactive rebase cancelled")
+                return
+        self._rewrite_recovery_head = status.branch.oid
+        self._status_label.setText(f"Interactively rebasing from {value.start.oid[:8]}…")
+        self._git.request_interactive_rebase_from(
+            value.repository, value.start, editor.items(), autostash=dirty
+        )
+
     @Slot(object)
     def _preview_interactive_rebase(self, value: object) -> None:
         self._interactive_rebase_pending = True
@@ -2048,7 +2205,7 @@ class MainWindow(QMainWindow):
         if self._repository is None or not isinstance(value, BranchInfo) or value.current:
             return
         self._history_panel.refs_panel.setEnabled(False)
-        self._status_label.setText(f"Preparing merge from {value.name}вЂ¦")
+        self._status_label.setText(f"Preparing merge from {value.name}…")
         self._git.request_merge_preview(self._repository, value)
 
     @Slot(object)
@@ -2100,7 +2257,7 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Merge cancelled")
             return
         self._history_panel.refs_panel.setEnabled(False)
-        self._status_label.setText(f"Merging {value.target.name}вЂ¦")
+        self._status_label.setText(f"Merging {value.target.name}…")
         self._git.request_merge(value.repository, value.target, autostash=dirty)
 
     @Slot(object)
@@ -2130,12 +2287,8 @@ class MainWindow(QMainWindow):
         if status is None or status.branch.head is None:
             return
         if not value.commits:
-            QMessageBox.information(
-                self,
-                "Nothing to rebase",
-                f"The current branch has no commits to replay onto {value.target.name}.",
-            )
-            self._status_label.setText("Nothing to rebase")
+            self._interactive_rebase_pending = False
+            self._fast_forward_by_rebase(value, status.branch.head, dirty=bool(status.files))
             return
         dirty = bool(status.files)
         self._rewrite_recovery_head = value.head_oid
@@ -2155,7 +2308,7 @@ class MainWindow(QMainWindow):
                     self._status_label.setText("Interactive rebase cancelled")
                     return
             self._history_panel.refs_panel.setEnabled(False)
-            self._status_label.setText(f"Interactively rebasing onto {value.target.name}вЂ¦")
+            self._status_label.setText(f"Interactively rebasing onto {value.target.name}…")
             self._git.request_interactive_rebase(
                 value.repository,
                 value.target,
@@ -2226,6 +2379,37 @@ class MainWindow(QMainWindow):
             value.target,
             autostash=dirty and autostash.isChecked(),
         )
+
+    def _fast_forward_by_rebase(
+        self, value: RebasePreviewSnapshot, branch: str, *, dirty: bool
+    ) -> None:
+        """Rebase a branch without commits of its own: Git just moves it to the target."""
+
+        if value.head_oid == value.target.oid:
+            QMessageBox.information(
+                self,
+                "Nothing to rebase",
+                f"{branch} already points at {value.target.name}.",
+            )
+            self._status_label.setText("Already up to date")
+            return
+        stash_note = (
+            "\n\nLocal changes will be stashed and restored automatically." if dirty else ""
+        )
+        answer = QMessageBox.question(
+            self,
+            "Rebase branch",
+            f"{branch} has no commits of its own, so rebasing moves it forward to "
+            f"{value.target.name} ({value.target.oid[:8]}).{stash_note}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            self._status_label.setText("Rebase cancelled")
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Moving {branch} to {value.target.name}…")
+        self._git.request_rebase(value.repository, value.target, autostash=dirty)
 
     def _confirm_delete_branch(self, value: object, *, force: bool) -> None:
         if self._repository is None or not isinstance(value, BranchInfo):
@@ -3287,7 +3471,7 @@ class MainWindow(QMainWindow):
             file = selected_items[0].data(0, Qt.ItemDataRole.UserRole)
             if not isinstance(file, FileStatus):
                 return
-            self._diff.setPlainText("Loading amend diffвЂ¦")
+            self._diff.setPlainText("Loading amend diff…")
             self._git.request_amend_diff(
                 self._repository,
                 status.branch.oid,

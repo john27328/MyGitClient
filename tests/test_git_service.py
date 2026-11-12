@@ -2078,3 +2078,120 @@ def test_reword_commit_keeps_merge_commits_after_it(qtbot: QtBot, tmp_path: Path
     assert {"side work", "main work", "base"} <= set(subjects)
     files = sorted(path.name for path in tmp_path.glob("*.txt"))
     assert files == ["base.txt", "first.txt", "main.txt", "side.txt"]
+
+
+def _subjects(repository: Path) -> list[str]:
+    return subprocess.check_output(
+        ["git", "log", "--format=%s"], cwd=repository, text=True
+    ).splitlines()
+
+
+def test_drop_commits_removes_selected_commits_and_keeps_later_ones(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _commit_file(tmp_path, "first.txt", "first")
+    first = _summary(tmp_path, "HEAD")
+    _commit_file(tmp_path, "second.txt", "second")
+    _commit_file(tmp_path, "third.txt", "third")
+    third = _summary(tmp_path, "HEAD")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=15000):
+        service.request_drop_commits(tmp_path, (first, third), autostash=False)
+
+    assert _subjects(tmp_path) == ["second", "base"]
+    files = sorted(path.name for path in tmp_path.glob("*.txt"))
+    assert files == ["base.txt", "second.txt"]
+    assert not (tmp_path / ".git" / "mygitclient-rebase-state").exists()
+
+
+def test_drop_commits_keeps_uncommitted_changes_with_autostash(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _commit_file(tmp_path, "mistake.txt", "mistake")
+    mistake = _summary(tmp_path, "HEAD")
+    (tmp_path / "base.txt").write_text("edited\n", encoding="utf-8")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=15000):
+        service.request_drop_commits(tmp_path, (mistake,), autostash=True)
+
+    assert _subjects(tmp_path) == ["base"]
+    assert (tmp_path / "base.txt").read_text(encoding="utf-8") == "edited\n"
+
+
+def test_drop_commits_refuses_commits_from_another_branch(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _git(tmp_path, "switch", "-c", "other")
+    _commit_file(tmp_path, "other.txt", "other work")
+    other = _summary(tmp_path, "HEAD")
+    _git(tmp_path, "switch", "main")
+    _commit_file(tmp_path, "main.txt", "main work")
+    head_before = _rev(tmp_path)
+    service = GitService()
+
+    with qtbot.waitSignal(service.operation_failed, timeout=15000):
+        service.request_drop_commits(tmp_path, (other,), autostash=False)
+
+    assert _rev(tmp_path) == head_before
+    assert _rev(tmp_path, "other") == other.oid
+
+
+def test_squash_commits_folds_adjacent_commits_into_one(qtbot: QtBot, tmp_path: Path) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _commit_file(tmp_path, "first.txt", "first")
+    first = _summary(tmp_path, "HEAD")
+    _commit_file(tmp_path, "second.txt", "second")
+    second = _summary(tmp_path, "HEAD")
+    _commit_file(tmp_path, "third.txt", "third")
+    service = GitService()
+
+    with qtbot.waitSignal(service.mutation_ready, timeout=15000):
+        service.request_squash_commits(
+            tmp_path, (first, second), "first and second\n\nCombined.", autostash=False
+        )
+
+    assert _subjects(tmp_path) == ["third", "first and second", "base"]
+    body = subprocess.check_output(
+        ["git", "log", "-1", "--format=%b", "HEAD~1"], cwd=tmp_path, text=True
+    ).strip()
+    assert body == "Combined."
+    changed = subprocess.check_output(
+        ["git", "show", "--name-only", "--format=", "HEAD~1"], cwd=tmp_path, text=True
+    ).split()
+    assert sorted(changed) == ["first.txt", "second.txt"]
+
+
+def test_squash_commits_refuses_commits_that_are_not_adjacent(
+    qtbot: QtBot, tmp_path: Path
+) -> None:
+    _git(tmp_path, "init", "--initial-branch=main")
+    _configure_identity(tmp_path)
+    _commit_file(tmp_path, "base.txt", "base")
+    _commit_file(tmp_path, "first.txt", "first")
+    first = _summary(tmp_path, "HEAD")
+    _commit_file(tmp_path, "second.txt", "second")
+    _commit_file(tmp_path, "third.txt", "third")
+    third = _summary(tmp_path, "HEAD")
+    head_before = _rev(tmp_path)
+    service = GitService()
+    errors: list[str] = []
+    service.operation_failed.connect(errors.append)
+
+    with qtbot.waitSignal(service.operation_failed, timeout=15000):
+        service.request_squash_commits(tmp_path, (first, third), "joined", autostash=False)
+
+    assert _rev(tmp_path) == head_before
+    assert errors

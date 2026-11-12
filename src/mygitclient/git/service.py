@@ -29,6 +29,7 @@ from mygitclient.git.models import (
     IncomingCommitsSnapshot,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
+    RebaseRangeSnapshot,
     RebaseTodoItem,
     RefComparisonDiffSnapshot,
     RefComparisonSnapshot,
@@ -164,6 +165,7 @@ class GitService(QObject):
     repository_operation_ready = Signal(object)
     revert_preview_ready = Signal(object)
     rebase_preview_ready = Signal(object)
+    rebase_range_ready = Signal(object)
     merge_preview_ready = Signal(object)
     reflog_ready = Signal(object)
     conflict_versions_ready = Signal(object)
@@ -239,6 +241,7 @@ class GitService(QObject):
         self._rebase_preview_workflows: dict[GitRunner, _RebasePreviewWorkflow] = {}
         self._latest_rebase_preview_request: dict[Path, int] = {}
         self._rebase_requests: dict[GitRunner, tuple[Path, BranchInfo | None]] = {}
+        self._rebase_range_requests: dict[GitRunner, tuple[Path, CommitSummary]] = {}
         self._merge_preview_workflows: dict[GitRunner, _MergePreviewWorkflow] = {}
         self._latest_merge_preview_request: dict[Path, int] = {}
         self._operation_action_requests: dict[GitRunner, tuple[Path, str, str]] = {}
@@ -896,33 +899,7 @@ class GitService(QObject):
     ) -> GitRunner:
         if target.current or not items:
             raise ValueError("Interactive rebase needs a target and at least one commit")
-        actions = {"pick", "reword", "edit", "squash", "fixup", "drop"}
-        if any(item.action not in actions for item in items):
-            raise ValueError("Unsupported interactive rebase action")
-        first_kept = next((item for item in items if item.action != "drop"), None)
-        if first_kept is not None and first_kept.action in {"squash", "fixup"}:
-            raise ValueError("The first retained commit cannot be squashed or fixed up")
-        if len({item.oid for item in items}) != len(items):
-            raise ValueError("Every commit must appear exactly once")
-
-        state = resolve_git_dir(repository) / "mygitclient-rebase-state"
-        if state.exists():
-            shutil.rmtree(state)
-        state.mkdir(parents=True)
-        helper = Path(__file__).with_name("rebase_editor.py")
-        python = str(Path(sys.executable))
-        todo: list[str] = []
-        reword_index = 0
-        for item in items:
-            todo.append(f"{item.action} {item.oid} {item.subject}")
-            if item.action == "reword":
-                (state / f"message-{reword_index}.txt").write_text(
-                    item.subject.rstrip() + "\n", encoding="utf-8"
-                )
-                todo.append(f'exec "{python}" "{helper}" amend {reword_index}')
-                reword_index += 1
-        (state / "todo").write_text("\n".join(todo) + "\n", encoding="utf-8")
-        environment = _interactive_rebase_environment(state, python, helper)
+        environment = _write_interactive_todo(repository, items)
         arguments = ["rebase", "-i"]
         if autostash:
             arguments.append("--autostash")
@@ -974,6 +951,135 @@ class GitService(QObject):
             GitCommand(
                 tuple(arguments), repository, f"edit message of {commit.oid[:8]}", environment
             ),
+        )
+        return runner
+
+    def request_rebase_range(self, repository: Path, start: CommitSummary) -> GitRunner:
+        """List ``start`` and every later commit up to HEAD for a rebase from ``start``."""
+
+        base = f"{start.parent_oids[0]}..HEAD" if start.parent_oids else "HEAD"
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._rebase_range_requests[runner] = (repository, start)
+        runner.completed.connect(self._handle_rebase_range)
+        runner.failed_to_start.connect(self._handle_start_error)
+        runner.run(
+            GitCommand(
+                ("log", "--reverse", "--date=iso-strict", COMMIT_LOG_FORMAT, base),
+                repository,
+                "read commits to rebase",
+            )
+        )
+        return runner
+
+    def request_interactive_rebase_from(
+        self,
+        repository: Path,
+        start: CommitSummary,
+        items: tuple[RebaseTodoItem, ...],
+        *,
+        autostash: bool,
+    ) -> GitRunner:
+        """Replay ``items`` (``start`` up to HEAD) on top of ``start``'s parent."""
+
+        if not items:
+            raise ValueError("Interactive rebase needs at least one commit")
+        environment = _write_interactive_todo(repository, items)
+        arguments = ["rebase", "-i"]
+        if autostash:
+            arguments.append("--autostash")
+        arguments.append(start.parent_oids[0] if start.parent_oids else "--root")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._rebase_requests[runner] = (repository, None)
+        runner.completed.connect(self._handle_rebase)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(
+                tuple(arguments),
+                repository,
+                f"interactive rebase from {start.oid[:8]}",
+                environment,
+            ),
+        )
+        return runner
+
+    def request_drop_commits(
+        self, repository: Path, commits: tuple[CommitSummary, ...], *, autostash: bool
+    ) -> GitRunner:
+        """Remove ``commits`` (oldest first) from the current branch, keeping later ones."""
+
+        return self._request_rewrite_commits(
+            repository,
+            commits,
+            (("MYGITCLIENT_DROP_OIDS", " ".join(commit.oid for commit in commits)),),
+            None,
+            f"drop {len(commits)} commit(s)",
+            autostash=autostash,
+        )
+
+    def request_squash_commits(
+        self,
+        repository: Path,
+        commits: tuple[CommitSummary, ...],
+        message: str,
+        *,
+        autostash: bool,
+    ) -> GitRunner:
+        """Fold adjacent ``commits`` (oldest first) into one commit with ``message``."""
+
+        if len(commits) < 2:
+            raise ValueError("Squash needs at least two commits")
+        return self._request_rewrite_commits(
+            repository,
+            commits,
+            (("MYGITCLIENT_SQUASH_OIDS", " ".join(commit.oid for commit in commits)),),
+            message,
+            f"squash {len(commits)} commits",
+            autostash=autostash,
+        )
+
+    def _request_rewrite_commits(
+        self,
+        repository: Path,
+        commits: tuple[CommitSummary, ...],
+        selection: tuple[tuple[str, str], ...],
+        message: str | None,
+        operation: str,
+        *,
+        autostash: bool,
+    ) -> GitRunner:
+        if not commits:
+            raise ValueError("Select at least one commit")
+        if any(len(commit.parent_oids) > 1 for commit in commits):
+            raise ValueError("Merge commits cannot be dropped or squashed")
+        state = resolve_git_dir(repository) / "mygitclient-rebase-state"
+        if state.exists():
+            shutil.rmtree(state)
+        state.mkdir(parents=True)
+        if message is not None:
+            (state / "message-0.txt").write_text(message.rstrip() + "\n", encoding="utf-8")
+        helper = Path(__file__).with_name("rebase_editor.py")
+        python = str(Path(sys.executable))
+        environment = (
+            ("MYGITCLIENT_REBASE_STATE", str(state)),
+            *selection,
+            ("GIT_SEQUENCE_EDITOR", f'"{python}" "{helper}" rewrite'),
+            ("GIT_EDITOR", "true"),
+        )
+        oldest = commits[0]
+        arguments = ["rebase", "-i", "--rebase-merges"]
+        if autostash:
+            arguments.append("--autostash")
+        arguments.append(oldest.parent_oids[0] if oldest.parent_oids else "--root")
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._rebase_requests[runner] = (repository, None)
+        runner.completed.connect(self._handle_rebase)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner, GitCommand(tuple(arguments), repository, operation, environment)
         )
         return runner
 
@@ -2700,6 +2806,34 @@ class GitService(QObject):
         )
 
     @Slot(object)
+    def _handle_rebase_range(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            self.operation_failed.emit("Git returned commits from an unknown operation")
+            return
+        request = self._rebase_range_requests.pop(runner, None)
+        self._release_runner(runner)
+        if request is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected commit list")
+            return
+        repository, start = request
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            self.operation_failed.emit(result.error_text or "Could not read commits to rebase")
+            return
+        try:
+            commits = parse_commit_log(result.stdout)
+        except (ValueError, RuntimeError) as error:
+            self.operation_failed.emit(str(error))
+            return
+        if all(commit.oid != start.oid for commit in commits):
+            self.operation_failed.emit("The selected commit is not part of the current branch.")
+            return
+        self.rebase_range_ready.emit(RebaseRangeSnapshot(repository, start, commits))
+
+    @Slot(object)
     def _handle_rebase(self, result: object) -> None:
         runner = self.sender()
         if not isinstance(runner, GitRunner):
@@ -3291,6 +3425,40 @@ def _read_operation_todo(path: Path) -> tuple[str, ...]:
         parts = value.split(maxsplit=2)
         subjects.append(parts[2] if len(parts) == 3 else value)
     return tuple(subjects)
+
+
+def _write_interactive_todo(
+    repository: Path, items: tuple[RebaseTodoItem, ...]
+) -> tuple[tuple[str, str], ...]:
+    """Validate ``items``, store them as the rebase todo and return the editor environment."""
+
+    actions = {"pick", "reword", "edit", "squash", "fixup", "drop"}
+    if any(item.action not in actions for item in items):
+        raise ValueError("Unsupported interactive rebase action")
+    first_kept = next((item for item in items if item.action != "drop"), None)
+    if first_kept is not None and first_kept.action in {"squash", "fixup"}:
+        raise ValueError("The first retained commit cannot be squashed or fixed up")
+    if len({item.oid for item in items}) != len(items):
+        raise ValueError("Every commit must appear exactly once")
+
+    state = resolve_git_dir(repository) / "mygitclient-rebase-state"
+    if state.exists():
+        shutil.rmtree(state)
+    state.mkdir(parents=True)
+    helper = Path(__file__).with_name("rebase_editor.py")
+    python = str(Path(sys.executable))
+    todo: list[str] = []
+    reword_index = 0
+    for item in items:
+        todo.append(f"{item.action} {item.oid} {item.subject}")
+        if item.action == "reword":
+            (state / f"message-{reword_index}.txt").write_text(
+                item.subject.rstrip() + "\n", encoding="utf-8"
+            )
+            todo.append(f'exec "{python}" "{helper}" amend {reword_index}')
+            reword_index += 1
+    (state / "todo").write_text("\n".join(todo) + "\n", encoding="utf-8")
+    return _interactive_rebase_environment(state, python, helper)
 
 
 def _interactive_rebase_environment(
