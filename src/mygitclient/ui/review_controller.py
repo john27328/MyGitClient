@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QObject, QSettings, Qt, Signal, Slot
+from PySide6.QtCore import QDateTime, QObject, QSettings, QSignalBlocker, Qt, Signal, Slot
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QStackedWidget, QTabWidget, QWidget
 
 from mygitclient.git.models import (
@@ -67,6 +67,7 @@ class ReviewController(QObject):
         self._active: ReviewSession | None = None
         self._diff: UnifiedDiff | None = None
         self._pending_mark: str | None = None
+        self._comparison_pending = False
         panel.start_requested.connect(self.start)
         panel.delete_requested.connect(self.delete)
         panel.session_selected.connect(self.select_session)
@@ -79,20 +80,47 @@ class ReviewController(QObject):
         self._branches = ()
         self._active = None
         self._diff = None
+        self._pending_mark = None
+        self._comparison_pending = False
         self._review_boundaries.clear()
         self._panel.show_sessions(self._store.sessions(self._repository))
 
     def set_branches(self, branches: tuple[BranchInfo, ...]) -> None:
         self._branches = branches
-
-    def refresh(self) -> None:
-        if self._active is not None and self._tabs.currentIndex() == self._review_tab:
+        repository = self._repository
+        if repository is None:
+            return
+        pending = self._comparison_pending
+        self._comparison_pending = False
+        names = {branch.full_name for branch in branches}
+        removed = tuple(
+            session for session in self._store.sessions(repository) if session.branch not in names
+        )
+        for session in removed:
+            self._store.delete(session)
+            self._review_boundaries.pop(session.key, None)
+        if self._active in removed:
+            self._active, self._diff = None, None
+            self._pending_mark = None
+            self._diff_view.reset()
+        if removed:
+            # Rebuilding the list must not start another branch-validation request.
+            blocker = QSignalBlocker(self._panel)
+            self._panel.show_sessions(self._store.sessions(repository))
+            del blocker
+            self.status_changed.emit("Removed reviews of deleted branches")
+        if (pending or removed) and self._active is not None:
             self._git.request_ref_comparison(
                 self._active.repository,
                 self._active.base_oid,
                 self._active.branch,
                 merge_base=False,
             )
+
+    def refresh(self) -> None:
+        if self._active is not None and self._tabs.currentIndex() == self._review_tab:
+            self._comparison_pending = True
+            self._git.request_branches(self._active.repository)
 
     def update_selection_actions(self) -> bool:
         return self._tabs.currentIndex() == self._review_tab
@@ -187,6 +215,8 @@ class ReviewController(QObject):
         self._store.delete(value)
         if self._active == value:
             self._active, self._diff = None, None
+            self._pending_mark = None
+            self._comparison_pending = False
             self._diff_view.reset()
         if self._repository is not None:
             self._panel.show_sessions(self._store.sessions(self._repository))
@@ -201,9 +231,8 @@ class ReviewController(QObject):
             self._panel.clear_boundaries()
         else:
             self._panel.show_boundaries(boundaries, value.start_oid)
-        self._git.request_ref_comparison(
-            value.repository, value.base_oid, value.branch, merge_base=False
-        )
+        self._comparison_pending = True
+        self._git.request_branches(value.repository)
 
     @Slot(object)
     def select_file(self, value: object) -> None:
