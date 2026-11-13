@@ -143,6 +143,10 @@ def _repository(path: Path) -> Path:
         )
 
     git("init", "--initial-branch=main")
+    # Replays run through QProcess and need a committer identity as well as the
+    # explicit identity used to create the fixture's original commits.
+    git("config", "user.name", "MyGitClient Test")
+    git("config", "user.email", "test@example.invalid")
     for name in ("base", "first", "second", "third"):
         (path / f"{name}.txt").write_text(f"{name}\n", encoding="utf-8")
         git("add", f"{name}.txt")
@@ -174,7 +178,11 @@ def _close_rebase_report(monkeypatch: MonkeyPatch) -> None:
     def no_report(_box: QMessageBox) -> int:
         return int(QMessageBox.StandardButton.Close.value)
 
+    def unexpected_error(_parent: QWidget | None, title: str, message: str) -> None:
+        raise AssertionError(f"Unexpected Git error in {title}: {message}")
+
     monkeypatch.setattr(QMessageBox, "exec", no_report)
+    monkeypatch.setattr(QMessageBox, "critical", unexpected_error)
 
 
 def test_main_window_drops_commits_after_confirmation(
