@@ -148,6 +148,18 @@ class _ResetToUpstreamWorkflow:
     step: str = "fetch"
 
 
+@dataclass(slots=True)
+class _RemoteRenameWorkflow:
+    repository: Path
+    branch: BranchInfo
+    remote: str
+    old_name: str
+    new_name: str
+    token: str | None
+    step: str = "validate"
+    tracking_branches: tuple[str, ...] = ()
+
+
 class GitService(QObject):
     amend_diff_ready = Signal(object)
     amend_preview_ready = Signal(object)
@@ -196,6 +208,7 @@ class GitService(QObject):
         self._discard_batches: dict[GitRunner, _DiscardBatch] = {}
         self._publish_repository_workflows: dict[GitRunner, _PublishRepositoryWorkflow] = {}
         self._reset_to_upstream_workflows: dict[GitRunner, _ResetToUpstreamWorkflow] = {}
+        self._remote_rename_workflows: dict[GitRunner, _RemoteRenameWorkflow] = {}
         self._history_requests: dict[GitRunner, tuple[Path, int, int, int]] = {}
         self._latest_history_request: dict[Path, int] = {}
         self._review_commit_requests: dict[GitRunner, tuple[Path, str, str, int]] = {}
@@ -513,6 +526,137 @@ class GitService(QObject):
         )
         return runner
 
+    def request_rename_remote_branch(
+        self, repository: Path, branch: BranchInfo, new_name: str, *, token: str | None = None
+    ) -> GitRunner:
+        remote, separator, old_name = branch.name.partition("/")
+        if not branch.remote or not separator or not remote or not old_name:
+            raise ValueError("Remote branch must include a remote and branch name")
+        if new_name == old_name:
+            raise ValueError("The new branch name must be different")
+        workflow = _RemoteRenameWorkflow(repository, branch, remote, old_name, new_name, token)
+        return self._run_remote_rename(workflow, ("check-ref-format", f"refs/heads/{new_name}"))
+
+    def _run_remote_rename(
+        self,
+        workflow: _RemoteRenameWorkflow,
+        arguments: tuple[str, ...],
+        *,
+        allow_retry: bool = True,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._remote_rename_workflows[runner] = workflow
+        if allow_retry and workflow.step in {"inspect", "push"}:
+            self._remember_credential_retry(runner, workflow.token)
+        runner.completed.connect(self._handle_remote_rename)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner,
+            GitCommand(arguments, workflow.repository, f"rename remote branch: {workflow.step}"),
+            continuation=workflow.step != "validate",
+        )
+        return runner
+
+    @Slot(object)
+    def _handle_remote_rename(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        workflow = self._remote_rename_workflows.pop(runner, None)
+        retry_token = self._credential_retry_tokens.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected remote rename result")
+            return
+        if result.cancelled:
+            self.operation_cancelled.emit()
+            return
+        if not result.succeeded:
+            if retry_token is not None and is_credential_failure(result.error_text):
+                self._run_remote_rename(
+                    workflow,
+                    self._authenticated_retry_command(result.command, retry_token).arguments,
+                    allow_retry=False,
+                )
+                return
+            detail = result.error_text or "Invalid branch name or remote rename rejected"
+            if workflow.step in {"tracking", "configure"}:
+                detail = (
+                    "The remote branch was renamed, but local upstream update failed. " + detail
+                )
+            self.operation_failed.emit(detail)
+            return
+        if workflow.step == "validate":
+            workflow.step = "inspect"
+            self._run_remote_rename(
+                workflow,
+                (
+                    "ls-remote", "--heads", "--", workflow.remote,
+                    f"refs/heads/{workflow.old_name}", f"refs/heads/{workflow.new_name}",
+                ),
+            )
+            return
+        if workflow.step == "inspect":
+            refs = dict(
+                (ref, oid)
+                for oid, ref in (
+                    line.split("\t", 1)
+                    for line in result.stdout.decode("utf-8", errors="surrogateescape").splitlines()
+                )
+            )
+            if f"refs/heads/{workflow.new_name}" in refs:
+                self.operation_failed.emit("A remote branch with the new name already exists.")
+                return
+            if refs.get(f"refs/heads/{workflow.old_name}") != workflow.branch.oid:
+                self.operation_failed.emit(
+                    "The remote branch changed or was deleted. Fetch and retry."
+                )
+                return
+            workflow.step = "push"
+            old_ref = f"refs/heads/{workflow.old_name}"
+            new_ref = f"refs/heads/{workflow.new_name}"
+            self._run_remote_rename(
+                workflow,
+                (
+                    "push", "--progress", "--atomic",
+                    f"--force-with-lease={old_ref}:{workflow.branch.oid}",
+                    f"--force-with-lease={new_ref}:",
+                    "--", workflow.remote,
+                    f"{workflow.branch.oid}:{new_ref}", f":{old_ref}",
+                ),
+            )
+            return
+        if workflow.step == "push":
+            workflow.step = "tracking"
+            self._run_remote_rename(
+                workflow,
+                (
+                    "for-each-ref",
+                    "--format=%(refname:strip=2)%00%(upstream:remotename)%00"
+                    "%(upstream:remoteref)",
+                    "refs/heads/",
+                ),
+            )
+            return
+        if workflow.step == "tracking":
+            tracking: list[str] = []
+            for line in result.stdout.decode("utf-8", errors="surrogateescape").splitlines():
+                name, remote, ref = line.split("\0")
+                if remote == workflow.remote and ref == f"refs/heads/{workflow.old_name}":
+                    tracking.append(name)
+            workflow.tracking_branches = tuple(tracking)
+            workflow.step = "configure"
+        if workflow.tracking_branches:
+            name, *remaining = workflow.tracking_branches
+            workflow.tracking_branches = tuple(remaining)
+            self._run_remote_rename(
+                workflow,
+                ("config", f"branch.{name}.merge", f"refs/heads/{workflow.new_name}"),
+            )
+            return
+        self.mutation_ready.emit("branches:renamed")
+
     def request_delete_branch(
         self, repository: Path, branch: BranchInfo, *, force: bool = False
     ) -> GitRunner:
@@ -646,6 +790,10 @@ class GitService(QObject):
             arguments.append("--recurse-submodules=on-demand")
         if set_upstream:
             arguments.extend(("--set-upstream", "origin", branch))
+        else:
+            # A local rename preserves the upstream's old name. Git's default
+            # "simple" push refuses that valid mapping; honor the configured upstream.
+            arguments[:0] = ["-c", "push.default=upstream"]
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "push"
@@ -2208,6 +2356,7 @@ class GitService(QObject):
         self._credential_retry_tokens.pop(runner, None)
         publish = self._publish_repository_workflows.pop(runner, None)
         reset_to_upstream = self._reset_to_upstream_workflows.pop(runner, None)
+        remote_rename = self._remote_rename_workflows.pop(runner, None)
         self._operation_action_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
         self._review_commit_requests.pop(runner, None)
@@ -2231,6 +2380,12 @@ class GitService(QObject):
         self._commit_after_stage.pop(runner, None)
         if checkout is not None:
             self.operation_failed.emit(f"Could not {checkout.step} during checkout: {message}")
+            return
+        if remote_rename is not None:
+            prefix = "Could not rename remote branch"
+            if remote_rename.step in {"tracking", "configure"}:
+                prefix = "Remote branch renamed, but local upstream update failed"
+            self.operation_failed.emit(f"{prefix}: {message}")
             return
         if publish is not None:
             self.operation_failed.emit(f"Could not publish to GitHub: {message}")

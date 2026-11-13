@@ -439,6 +439,44 @@ def test_remote_branch_delete_requires_confirmation(
     window.close()
 
 
+def test_remote_branch_rename_requires_confirmation(
+    qtbot: QtBot, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    requested: list[tuple[str, str]] = []
+    answers = iter((QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Yes))
+
+    def confirm(*_args: object, **_kwargs: object) -> QMessageBox.StandardButton:
+        return next(answers)
+
+    def new_name(*_args: object, **_kwargs: object) -> tuple[str, bool]:
+        assert _kwargs["text"] == "old/topic"
+        return "new/topic", True
+
+    def record_rename(
+        _service: GitService, _repository: Path, branch: BranchInfo, name: str,
+        *, token: str | None = None,
+    ) -> None:
+        requested.append((branch.name, name))
+
+    monkeypatch.setattr(QMessageBox, "warning", confirm)
+    monkeypatch.setattr(QInputDialog, "getText", new_name)
+    monkeypatch.setattr(GitService, "request_rename_remote_branch", record_rename)
+    settings = QSettings(str(tmp_path / "rename.ini"), QSettings.Format.IniFormat)
+    window = MainWindow(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
+    window.__dict__["_repository"] = tmp_path
+    branch = BranchInfo("refs/remotes/team/old/topic", "team/old/topic", "1" * 40, True)
+    panel = window.findChild(RefsPanel)
+    assert panel is not None
+    panel.rename_requested.emit(branch)
+    assert not requested
+    assert panel.isEnabled()
+    panel.rename_requested.emit(branch)
+    assert requested == [("team/old/topic", "new/topic")]
+    assert not panel.isEnabled()
+    window.close()
+
+
 def test_recent_repository_is_displayed(qapp: QApplication, tmp_path: Path) -> None:
     repository = tmp_path / "project"
     repository.mkdir()

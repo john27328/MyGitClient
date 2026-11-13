@@ -106,6 +106,7 @@ class RefsPanel(QWidget):
         self.publish_branch_action.triggered.connect(self._publish_selected)
         self.context_menu.addSeparator()
         self.rename_action = self.context_menu.addAction("Rename…")
+        self.rename_action.setObjectName("renameBranchAction")
         self.rename_action.triggered.connect(self._rename_selected)
         self.delete_action = self.context_menu.addAction("Delete safely…")
         self.delete_action.triggered.connect(self._delete_selected)
@@ -418,7 +419,10 @@ class RefsPanel(QWidget):
             branch is not None and not branch.remote and branch.upstream is None
         )
         self.rename_action.setVisible(branch is not None)
-        self.rename_action.setEnabled(editable)
+        self.rename_action.setEnabled(branch is not None)
+        self.rename_action.setText(
+            "Rename remote branch…" if branch and branch.remote else "Rename…"
+        )
         self.delete_action.setVisible(branch is not None)
         self.delete_action.setEnabled(editable)
         self.force_delete_action.setVisible(branch is not None)
@@ -492,7 +496,7 @@ class RefsPanel(QWidget):
     @Slot()
     def _rename_selected(self) -> None:
         branch = self._selected_value()
-        if isinstance(branch, BranchInfo) and not branch.remote and not branch.current:
+        if isinstance(branch, BranchInfo):
             self.rename_requested.emit(branch)
 
     @Slot()

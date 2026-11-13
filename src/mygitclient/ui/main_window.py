@@ -1861,11 +1861,34 @@ class MainWindow(QMainWindow):
     def _rename_branch(self, value: object) -> None:
         if self._repository is None or not isinstance(value, BranchInfo):
             return
+        old_name = value.name.partition("/")[2] if value.remote else value.name
         name, accepted = QInputDialog.getText(
-            self, "Rename branch", "New branch name:", text=value.name
+            self, "Rename remote branch" if value.remote else "Rename branch",
+            "New branch name:", text=old_name
         )
         name = name.strip()
-        if not accepted or not name or name == value.name:
+        if not accepted or not name or name == old_name:
+            return
+        if value.remote:
+            remote = value.name.partition("/")[0]
+            answer = QMessageBox.warning(
+                self,
+                "Rename remote branch",
+                f"Rename '{value.name}' to '{remote}/{name}' on the remote?\n\n"
+                "This creates the new branch and deletes the old branch atomically. "
+                "Local branches tracking it will use the new upstream. Other clones "
+                "must update their tracking settings. "
+                "Server protections may reject this operation.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self._history_panel.refs_panel.setEnabled(False)
+            self._set_network_busy("Rename remote branch")
+            self._git.request_rename_remote_branch(
+                self._repository, value, name, token=self._resolve_github_token()
+            )
             return
         self._history_panel.refs_panel.setEnabled(False)
         self._git.request_rename_branch(self._repository, value, name)

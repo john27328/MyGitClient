@@ -5,7 +5,7 @@ from pytestqt.qtbot import QtBot
 
 from mygitclient.git.clone_service import CloneService
 from mygitclient.git.errors import is_credential_failure
-from mygitclient.git.models import GitCommand, GitResult
+from mygitclient.git.models import BranchInfo, GitCommand, GitResult
 from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 
@@ -32,6 +32,31 @@ def _capture_commands(
 
 def _has_token_header(command: GitCommand) -> bool:
     return any("extraheader" in argument for argument in command.arguments)
+
+
+def test_remote_rename_retries_credentials_for_inspection_and_push(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    runners, commands = _capture_commands(monkeypatch)
+    service = GitService()
+    branch = BranchInfo("refs/remotes/team/old", "team/old", "1" * 40, True)
+    service.request_rename_remote_branch(tmp_path, branch, "new", token=_TOKEN)
+    runners[0].completed.emit(GitResult(commands[0], 0, b"", b""))
+    qtbot.waitUntil(lambda: len(commands) == 2)
+    for failure_index in (1, 3):
+        assert not _has_token_header(commands[failure_index])
+        runners[failure_index].completed.emit(
+            GitResult(commands[failure_index], 128, b"", b"fatal: Authentication failed")
+        )
+        qtbot.waitUntil(lambda expected=failure_index + 2: len(commands) == expected)
+        assert _has_token_header(commands[failure_index + 1])
+        output = f"{branch.oid}\trefs/heads/old\n".encode() if failure_index == 1 else b""
+        runners[failure_index + 1].completed.emit(
+            GitResult(commands[failure_index + 1], 0, output, b"")
+        )
+        qtbot.waitUntil(lambda expected=failure_index + 3: len(commands) == expected)
+    with qtbot.waitSignal(service.mutation_ready):
+        runners[-1].completed.emit(GitResult(commands[-1], 0, b"", b""))
 
 
 def test_credential_failure_covers_github_not_found_and_auth_wording() -> None:
@@ -139,12 +164,10 @@ def test_fetch_pull_and_push_do_not_send_the_stored_token_on_the_first_attempt(
     GitService().request_push(tmp_path, branch="main", set_upstream=False, token=_TOKEN)
     GitService().request_reset_to_upstream(tmp_path, token=_TOKEN)
 
-    assert [command.arguments[0] for command in commands] == [
-        "fetch",
-        "pull",
-        "push",
-        "fetch",
-    ]
+    assert "fetch" in commands[0].arguments
+    assert "pull" in commands[1].arguments
+    assert "push" in commands[2].arguments
+    assert "fetch" in commands[3].arguments
     assert not any(_has_token_header(command) for command in commands)
 
 

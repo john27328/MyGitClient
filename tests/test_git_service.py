@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from pytest import MonkeyPatch
+from pytest import MonkeyPatch, mark
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.models import (
@@ -1808,6 +1808,91 @@ def test_fetch_and_push_with_upstream(qtbot: QtBot, tmp_path: Path) -> None:
 
     with qtbot.waitSignal(service.mutation_ready, timeout=5000):
         service.request_fetch(repository)
+
+
+def _remote_rename_repository(root: Path) -> tuple[Path, Path, BranchInfo]:
+    remote = root / "remote.git"
+    repository = root / "client"
+    _git(root, "init", "--bare", str(remote))
+    repository.mkdir()
+    _git(repository, "init", "--initial-branch=old/topic")
+    _git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "commit", "--allow-empty", "-m", "initial")
+    _git(repository, "remote", "add", "team", str(remote))
+    _git(repository, "push", "-u", "team", "old/topic")
+    oid = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+    return remote, repository, BranchInfo(
+        "refs/remotes/team/old/topic", "team/old/topic", oid, True
+    )
+
+
+def test_push_after_local_rename_preserves_upstream(qtbot: QtBot, tmp_path: Path) -> None:
+    remote, repository, _ = _remote_rename_repository(tmp_path)
+    service = GitService()
+    local = BranchInfo("refs/heads/old/topic", "old/topic", "", False, current=True)
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_rename_branch(repository, local, "new/topic")
+    _git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+         "commit", "--allow-empty", "-m", "after rename")
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_push(repository, branch="new/topic", set_upstream=False)
+    assert subprocess.check_output(
+        ["git", "rev-parse", "old/topic"], cwd=remote
+    ) == subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository)
+    assert subprocess.check_output(
+        ["git", "config", "branch.new/topic.merge"], cwd=repository, text=True
+    ).strip() == "refs/heads/old/topic"
+
+
+def test_remote_rename_updates_all_tracking_branches(qtbot: QtBot, tmp_path: Path) -> None:
+    remote, repository, branch = _remote_rename_repository(tmp_path)
+    _git(repository, "branch", "--track", "another", "team/old/topic")
+    _git(repository, "branch", "-m", "local/topic")
+    service = GitService()
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_rename_remote_branch(repository, branch, "new/topic")
+    refs = subprocess.check_output(["git", "show-ref"], cwd=remote, text=True)
+    assert refs.strip() == f"{branch.oid} refs/heads/new/topic"
+    for name in ("local/topic", "another"):
+        assert subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", f"{name}@{{upstream}}"],
+            cwd=repository, text=True,
+        ).strip() == "team/new/topic"
+    with qtbot.waitSignal(service.mutation_ready, timeout=5000):
+        service.request_push(repository, branch="local/topic", set_upstream=False)
+
+
+@mark.parametrize("problem", ["exists", "changed", "deleted", "invalid", "protected", "nonatomic"])
+def test_remote_rename_rejection_preserves_refs(
+    qtbot: QtBot, tmp_path: Path, problem: str
+) -> None:
+    remote, repository, branch = _remote_rename_repository(tmp_path)
+    new_name = "new/topic"
+    if problem == "exists":
+        _git(remote, "branch", new_name, "old/topic")
+    elif problem == "changed":
+        _git(repository, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+             "commit", "--allow-empty", "-m", "concurrent change")
+        _git(repository, "push", "team", "old/topic")
+    elif problem == "deleted":
+        _git(remote, "branch", "-D", "old/topic")
+    elif problem == "invalid":
+        new_name = "bad:name"
+    elif problem == "protected":
+        _git(remote, "config", "receive.denyDeletes", "true")
+    elif problem == "nonatomic":
+        _git(remote, "config", "receive.advertiseAtomic", "false")
+    before = subprocess.check_output(["git", "for-each-ref"], cwd=remote)
+    service = GitService()
+    mutations: list[str] = []
+    service.mutation_ready.connect(mutations.append)
+    with qtbot.waitSignal(service.operation_failed, timeout=5000):
+        service.request_rename_remote_branch(repository, branch, new_name)
+    assert subprocess.check_output(["git", "for-each-ref"], cwd=remote) == before
+    assert subprocess.check_output(
+        ["git", "config", "branch.old/topic.merge"], cwd=repository, text=True
+    ).strip() == "refs/heads/old/topic"
+    assert not mutations
 
 
 def test_publish_repository_adds_origin_and_pushes_current_branch(
