@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from pytestqt.qtbot import QtBot
 
 from mygitclient.workspace import (
@@ -55,3 +56,18 @@ def test_shutdown_drains_the_worker_thread(qtbot: QtBot, tmp_path: Path) -> None
     service.shutdown()
 
     qtbot.waitUntil(lambda: not service.is_running, timeout=1000)
+
+
+def test_repeated_cancel_and_restart_releases_workers(qtbot: QtBot, tmp_path: Path) -> None:
+    (tmp_path / ".git").mkdir()
+    service = WorkspaceDiscoveryService()
+    received: list[object] = []
+    service.linked_repositories_ready.connect(received.append)
+
+    for _attempt in range(20):
+        service.request_linked_repositories(tmp_path)
+        service.cancel_all()
+        qtbot.waitUntil(lambda: not service.is_running, timeout=5000)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    assert received == []

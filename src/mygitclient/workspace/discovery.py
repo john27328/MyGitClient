@@ -28,11 +28,14 @@ class _DiscoveryWorker(QObject):
     failed = Signal(object)
     finished = Signal()
 
-    def __init__(self, request_id: int, repository: Path, cancelled: Event) -> None:
+    def __init__(
+        self, request_id: int, repository: Path, cancelled: Event, owner_thread: QThread
+    ) -> None:
         super().__init__()
         self._request_id = request_id
         self._repository = repository
         self._cancelled = cancelled
+        self._owner_thread = owner_thread
 
     @Slot()
     def run(self) -> None:
@@ -55,6 +58,9 @@ class _DiscoveryWorker(QObject):
                     )
                 )
         finally:
+            # Delete Python-backed QObjects on the owning service's thread, after
+            # run() has returned and the background thread has finished.
+            self.moveToThread(self._owner_thread)
             self.finished.emit()
 
 
@@ -78,13 +84,12 @@ class WorkspaceDiscoveryService(QObject):
         self._latest_request = request_id
         cancelled = Event()
         thread = QThread(self)
-        worker = _DiscoveryWorker(request_id, repository, cancelled)
+        worker = _DiscoveryWorker(request_id, repository, cancelled, self.thread())
         worker.moveToThread(thread)
         self._requests[thread] = (worker, cancelled)
         thread.started.connect(worker.run)
         worker.completed.connect(self._handle_completed)
         worker.failed.connect(self._handle_failed)
-        worker.finished.connect(worker.deleteLater)
         worker.finished.connect(thread.quit)
         thread.finished.connect(self._release)
         thread.start()
@@ -119,5 +124,8 @@ class WorkspaceDiscoveryService(QObject):
         thread = self.sender()
         if not isinstance(thread, QThread):
             return
-        self._requests.pop(thread, None)
+        request = self._requests.pop(thread, None)
+        if request is not None:
+            worker, _cancelled = request
+            worker.deleteLater()
         thread.deleteLater()
