@@ -754,8 +754,8 @@ class AppShell(QMainWindow):
         QMessageBox.about(
             self,
             "About MyGitClient",
-            f"MyGitClient {__version__}\n\nA focused desktop Git client.\n\n"
-            f'<a href="{__repository_url__}">GitHub</a>',
+            f"<p>MyGitClient {__version__}</p><p>A focused desktop Git client.</p>"
+            f'<p><a href="{__repository_url__}">GitHub</a></p>',
         )
 
     def _refresh_home(self) -> None:

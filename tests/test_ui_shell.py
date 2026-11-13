@@ -3,8 +3,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QSettings, Qt
+from PySide6.QtCore import QDateTime, QPoint, QSettings, Qt, QTimer
 from PySide6.QtGui import QAction
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
     QTreeWidget,
     QWidget,
 )
-from pytest import MonkeyPatch
+from pytest import MonkeyPatch, mark
 from pytestqt.qtbot import QtBot
 
 from mygitclient import __repository_url__
@@ -38,6 +39,7 @@ from mygitclient.git.runner import GitRunner
 from mygitclient.git.service import GitService
 from mygitclient.github import GitHubProfile, GitHubTokenStore
 from mygitclient.theme import Theme
+from mygitclient.ui.app_shell import AppShell
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.main_window import MainWindow, push_requires_rewrite, sync_action_labels
 from mygitclient.ui.refs_panel import RefsPanel
@@ -188,25 +190,49 @@ def test_main_window_is_created(qapp: QApplication) -> None:
     window.close()
 
 
+@mark.parametrize("window_type", [MainWindow, AppShell])
 def test_about_dialog_links_to_project_github(
-    qapp: QApplication, monkeypatch: MonkeyPatch, tmp_path: Path
+    qapp: QApplication,
+    qtbot: QtBot,
+    tmp_path: Path,
+    window_type: type[MainWindow] | type[AppShell],
 ) -> None:
     settings = QSettings(str(tmp_path / "about.ini"), QSettings.Format.IniFormat)
-    window = _TestMainWindow(settings, Theme.SYSTEM)
-    displayed: list[tuple[str, str]] = []
+    window = window_type(settings, Theme.SYSTEM)
+    qtbot.addWidget(window)
+    activated: list[str] = []
 
-    def show_about(_parent: QWidget, title: str, text: str) -> None:
-        displayed.append((title, text))
+    def click_link() -> None:
+        dialog = window.findChild(QMessageBox)
+        assert dialog is not None
+        try:
+            assert dialog.windowTitle() == "About MyGitClient"
+            label = dialog.findChild(QLabel, "qt_msgbox_label")
+            assert label is not None
+            assert label.openExternalLinks()
+            # Capture the clicked link instead of launching the system browser.
+            label.setOpenExternalLinks(False)
+            label.linkActivated.connect(activated.append)
+            QTest.mouseClick(
+                label,
+                Qt.MouseButton.LeftButton,
+                pos=QPoint(
+                    label.fontMetrics().horizontalAdvance("GitHub") // 2,
+                    label.height() - label.fontMetrics().height() // 2,
+                ),
+            )
+        finally:
+            dialog.accept()
 
-    monkeypatch.setattr(QMessageBox, "about", staticmethod(show_about))
-    action = window.findChild(QAction, "aboutAction")
+    action = next(
+        (action for action in window.findChildren(QAction) if action.text() == "About MyGitClient"),
+        None,
+    )
     assert action is not None
+    QTimer.singleShot(0, click_link)
     action.trigger()
 
-    assert len(displayed) == 1
-    title, text = displayed[0]
-    assert title == "About MyGitClient"
-    assert f'<a href="{__repository_url__}">GitHub</a>' in text
+    assert activated == [__repository_url__]
 
 
 def test_start_review_asks_for_source_and_target_branch(
