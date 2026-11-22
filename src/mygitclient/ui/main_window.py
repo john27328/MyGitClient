@@ -189,6 +189,7 @@ class MainWindow(QMainWindow):
         self._clear_change_selection_after_mutation = False
         self._queue_elapsed = QElapsedTimer()
         self._known_queue_operations: dict[int, QueuedOperation] = {}
+        self._queue_output_operation_id: int | None = None
         self._operation_output_dialogs: dict[int, OperationOutputDialog] = {}
         self._queue_duration_timer = QTimer(self)
         self._queue_duration_timer.setInterval(1000)
@@ -676,12 +677,21 @@ class MainWindow(QMainWindow):
         self._new_branch_action.setToolTip("Create a branch from the current HEAD and switch to it")
         self._new_branch_action.triggered.connect(self._create_branch)
         toolbar.addAction(self._new_branch_action)
-        self._cancel_action = QAction(load_icon("cancel.svg"), "Cancel", self)
-        self._cancel_action.setObjectName("cancelOperationsAction")
+        self._queue_action = QAction(load_icon("queue.svg"), "Queue", self)
+        self._queue_action.setObjectName("queueOperationsAction")
+        self._queue_action.setToolTip(
+            "Show operation log. Use the arrow to cancel or remove queued operations."
+        )
+        self._queue_action.triggered.connect(self._show_current_queue_output)
         self._operation_queue_menu = QMenu(self)
-        self._cancel_action.setMenu(self._operation_queue_menu)
-        self._cancel_action.setEnabled(False)
-        toolbar.addAction(self._cancel_action)
+        self._queue_action.setEnabled(False)
+        self._queue_button = QToolButton()
+        self._queue_button.setObjectName("queueButton")
+        self._queue_button.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        self._queue_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._queue_button.setDefaultAction(self._queue_action)
+        self._queue_button.setMenu(self._operation_queue_menu)
+        toolbar.addWidget(self._queue_button)
         self._publish_github_action = QAction("Publish to GitHub…", self)
         self._publish_github_action.setObjectName("publishGitHubAction")
         self._publish_github_action.triggered.connect(self._publish_to_github_requested)
@@ -2861,7 +2871,9 @@ class MainWindow(QMainWindow):
             dialog = self._operation_output_dialogs.get(operation.operation_id)
             if dialog is not None:
                 dialog.update_output(operation.output_preview, operation.output)
-        self._cancel_action.setEnabled(bool(operations))
+        if operations:
+            self._queue_output_operation_id = operations[0].operation_id
+        self._queue_action.setEnabled(self._queue_output_operation_id is not None)
         if not operations and self._refresh_all_after_queue:
             self._refresh_all_after_queue = False
             for repository in self._open_repositories:
@@ -2873,11 +2885,11 @@ class MainWindow(QMainWindow):
     def _update_queue_duration(self) -> None:
         operation = self._active_queue_operation
         if operation is None or not self._queue_elapsed.isValid():
-            self._cancel_action.setText("Queue")
+            self._queue_action.setText("Queue")
             return
         duration = format_operation_duration(self._queue_elapsed.elapsed())
         total = self._queued_operation_count + 1
-        self._cancel_action.setText(f"Queue {total} · {duration}")
+        self._queue_action.setText(f"Queue {total} · {duration}")
         self._status_label.setText(
             f"{operation.operation.title()} · {duration} · {self._queued_operation_count} queued"
         )
@@ -2892,6 +2904,11 @@ class MainWindow(QMainWindow):
             self._git.cancel_operation(operation_id)
 
     @Slot()
+    def _show_current_queue_output(self) -> None:
+        if self._queue_output_operation_id is not None:
+            self._open_queue_output(self._queue_output_operation_id)
+
+    @Slot()
     def _show_queue_output(self) -> None:
         action = self.sender()
         if not isinstance(action, QAction):
@@ -2899,6 +2916,9 @@ class MainWindow(QMainWindow):
         operation_id = action.data()
         if not isinstance(operation_id, int):
             return
+        self._open_queue_output(operation_id)
+
+    def _open_queue_output(self, operation_id: int) -> None:
         operation = self._known_queue_operations.get(operation_id)
         if operation is None:
             return
