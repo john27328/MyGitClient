@@ -70,8 +70,7 @@ On macOS or Linux, activate the environment with `source .venv/bin/activate`.
 
 ## Development
 
-Active development happens on `develop`; `master` contains release-ready code. The roadmap
-is kept as a Kanban board in the maintainer's notes vault, outside this repository. See
+Active development happens on `develop`; `master` contains release-ready code. See
 [AGENTS.md](AGENTS.md) for architecture and contribution conventions.
 
 ```powershell
