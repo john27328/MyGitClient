@@ -196,6 +196,7 @@ class GitService(QObject):
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._runners: set[GitRunner] = set()
+        self._pending_reads: dict[GitCommand, GitRunner] = {}
         self._request_ids = count(1)
         self._status_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_status_request: dict[Path, int] = {}
@@ -267,6 +268,20 @@ class GitService(QObject):
         self._operation_queue.changed.connect(self.queue_changed)
 
     def request_branches(self, repository: Path) -> GitRunner:
+        command = GitCommand(
+            (
+                "for-each-ref",
+                "--sort=refname",
+                "--format=%(refname)%00%(refname:short)%00%(objectname)%00"
+                "%(upstream:short)%00%(upstream:track)%00%(HEAD)%1e",
+                "refs/heads",
+                "refs/remotes",
+            ),
+            repository,
+            "read branches",
+        )
+        if pending := self._pending_reads.get(command):
+            return pending
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
@@ -274,20 +289,8 @@ class GitService(QObject):
         self._branch_requests[runner] = (repository, request_id)
         runner.completed.connect(self._handle_branches)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
-            GitCommand(
-                (
-                    "for-each-ref",
-                    "--sort=refname",
-                    "--format=%(refname)%00%(refname:short)%00%(objectname)%00"
-                    "%(upstream:short)%00%(upstream:track)%00%(HEAD)%1e",
-                    "refs/heads",
-                    "refs/remotes",
-                ),
-                repository,
-                "read branches",
-            )
-        )
+        self._pending_reads[command] = runner
+        runner.run(command)
         return runner
 
     def request_tags(self, repository: Path) -> GitRunner:
@@ -1494,6 +1497,19 @@ class GitService(QObject):
     def request_ref_comparison(
         self, repository: Path, base_ref: str, compare_ref: str, *, merge_base: bool = True
     ) -> GitRunner:
+        command = GitCommand(
+            (
+                "diff", "--name-status", "-z", "--find-renames",
+                f"{base_ref}{'...' if merge_base else '..'}{compare_ref}",
+            ),
+            repository,
+            "compare refs",
+        )
+        if pending := self._pending_reads.get(command):
+            self._latest_comparison_request[(repository, base_ref, compare_ref)] = (
+                self._comparison_requests[pending][-1]
+            )
+            return pending
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
@@ -1506,19 +1522,8 @@ class GitService(QObject):
         )
         runner.completed.connect(self._handle_ref_comparison)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
-            GitCommand(
-                (
-                    "diff",
-                    "--name-status",
-                    "-z",
-                    "--find-renames",
-                    f"{base_ref}{'...' if merge_base else '..'}{compare_ref}",
-                ),
-                repository,
-                "compare refs",
-            )
-        )
+        self._pending_reads[command] = runner
+        runner.run(command)
         return runner
 
     def request_ref_comparison_diff(
@@ -1568,6 +1573,16 @@ class GitService(QObject):
         return runner
 
     def request_status(self, repository: Path) -> GitRunner:
+        command = GitCommand(
+            arguments=(
+                "status", "--porcelain=v2", "--branch", "--untracked-files=all", "-z",
+            ),
+            working_directory=repository,
+            operation="read repository status",
+            environment=(("GIT_OPTIONAL_LOCKS", "0"),),
+        )
+        if pending := self._pending_reads.get(command):
+            return pending
         self.repository_operation_ready.emit(
             RepositoryOperationSnapshot(
                 repository,
@@ -1581,20 +1596,8 @@ class GitService(QObject):
         self._status_requests[runner] = (repository, request_id)
         runner.completed.connect(self._handle_status)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
-            GitCommand(
-                arguments=(
-                    "status",
-                    "--porcelain=v2",
-                    "--branch",
-                    "--untracked-files=all",
-                    "-z",
-                ),
-                working_directory=repository,
-                operation="read repository status",
-                environment=(("GIT_OPTIONAL_LOCKS", "0"),),
-            )
-        )
+        self._pending_reads[command] = runner
+        runner.run(command)
         return runner
 
     def request_repository_operation(self, repository: Path) -> GitRunner:
@@ -1671,6 +1674,12 @@ class GitService(QObject):
         if not untracked:
             arguments.extend(("--", file.path))
 
+        command = GitCommand(tuple(arguments), repository, "read file diff")
+        if pending := self._pending_reads.get(command):
+            self._latest_diff_request[(repository, file.path, staged)] = (
+                self._diff_requests[pending][-1]
+            )
+            return pending
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         request_id = next(self._request_ids)
@@ -1685,13 +1694,8 @@ class GitService(QObject):
         )
         runner.completed.connect(self._handle_diff)
         runner.failed_to_start.connect(self._handle_start_error)
-        runner.run(
-            GitCommand(
-                arguments=tuple(arguments),
-                working_directory=repository,
-                operation="read file diff",
-            )
-        )
+        self._pending_reads[command] = runner
+        runner.run(command)
         return runner
 
     def request_stage(self, repository: Path, file: FileStatus, *, staged: bool) -> GitRunner:
@@ -2229,9 +2233,14 @@ class GitService(QObject):
         for runner in tuple(self._runners):
             runner.shutdown()
         self._runners.clear()
+        self._pending_reads.clear()
 
     def _release_runner(self, runner: GitRunner) -> None:
         self._runners.discard(runner)
+        self._pending_reads = {
+            command: pending for command, pending in self._pending_reads.items()
+            if pending is not runner
+        }
         runner.deleteLater()
 
     def _remember_credential_retry(self, runner: GitRunner, token: str | None) -> None:

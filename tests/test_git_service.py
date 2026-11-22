@@ -20,6 +20,7 @@ from mygitclient.git.models import (
     DiffSnapshot,
     FileStatus,
     GitCommand,
+    GitResult,
     IncomingCommitsSnapshot,
     MergePreviewSnapshot,
     RebasePreviewSnapshot,
@@ -83,6 +84,89 @@ def test_completed_runner_is_released(qtbot: QtBot, tmp_path: Path) -> None:
         service.request_status(tmp_path)
 
     qtbot.waitUntil(lambda: not service.findChildren(GitRunner), timeout=5000)
+
+
+@mark.parametrize("operation", ["status", "branches", "comparison", "diff"])
+@mark.parametrize("outcome", ["success", "failure", "cancelled", "start-error"])
+def test_background_reads_do_not_accumulate_while_a_command_is_pending(
+    qtbot: QtBot, monkeypatch: MonkeyPatch, tmp_path: Path, operation: str, outcome: str
+) -> None:
+    commands: list[GitCommand] = []
+
+    def capture_run(_runner: GitRunner, command: GitCommand) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(GitRunner, "run", capture_run)
+    service = GitService()
+
+    def request() -> GitRunner:
+        if operation == "status":
+            return service.request_status(tmp_path)
+        if operation == "branches":
+            return service.request_branches(tmp_path)
+        if operation == "comparison":
+            return service.request_ref_comparison(tmp_path, "main", "topic")
+        return service.request_diff(tmp_path, FileStatus("tracked.txt", ".", "M"), staged=False)
+
+    runner = request()
+    # Simulate many polling intervals while Git has not returned yet.
+    for _ in range(100):
+        assert request() is runner
+    assert len(commands) == 1
+    assert service.findChildren(GitRunner) == [runner]
+
+    if outcome == "start-error":
+        runner.failed_to_start.emit("Git could not start")
+    else:
+        runner.completed.emit(
+            GitResult(
+                commands[0], 1 if outcome == "failure" else 0, b"", b"",
+                cancelled=outcome == "cancelled",
+            )
+        )
+    qtbot.waitUntil(lambda: not service.findChildren(GitRunner), timeout=5000)
+    replacement = request()
+    assert replacement is not runner
+    assert len(commands) == 2
+    service.shutdown()
+
+
+@mark.parametrize("operation", ["comparison", "diff"])
+def test_reused_read_respects_the_latest_requested_options(
+    monkeypatch: MonkeyPatch, tmp_path: Path, operation: str
+) -> None:
+    commands: list[GitCommand] = []
+
+    def capture_run(_runner: GitRunner, command: GitCommand) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(GitRunner, "run", capture_run)
+    service = GitService()
+    snapshots: list[object] = []
+    service.comparison_ready.connect(snapshots.append)
+    service.diff_ready.connect(snapshots.append)
+
+    def request(option: bool, repository: Path = tmp_path) -> GitRunner:
+        if operation == "comparison":
+            return service.request_ref_comparison(repository, "main", "topic", merge_base=option)
+        return service.request_diff(
+            repository, FileStatus("tracked.txt", ".", "M"),
+            staged=False, ignore_whitespace=option,
+        )
+
+    first = request(False)
+    second = request(True)
+    other_repository = request(False, tmp_path / "other")
+    assert first is not second
+    assert other_repository is not first
+    assert len(commands) == 3
+    assert request(False) is first
+    # An obsolete result must not replace the options the user switched back to.
+    second.completed.emit(GitResult(commands[1], 0, b"", b""))
+    assert snapshots == []
+    first.completed.emit(GitResult(commands[0], 0, b"", b""))
+    assert len(snapshots) == 1
+    service.shutdown()
 
 
 def test_history_uses_a_thousand_commits_by_default(
