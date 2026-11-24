@@ -355,9 +355,11 @@ class DiffView(QWidget):
             self.gutter, self.side_old_gutter, self.side_new_gutter,
         ):
             FileRevealMenu(
-                widget, reveal=self._reveal_file,
-                has_file=lambda: self.current_diff is not None and bool(self.current_diff.path),
+                widget, reveal=self._reveal_file, has_file=self._has_file_to_reveal,
             )
+
+    def _has_file_to_reveal(self) -> bool:
+        return self.current_diff is not None and bool(self.current_diff.path)
 
     @Slot()
     def _reveal_file(self) -> None:

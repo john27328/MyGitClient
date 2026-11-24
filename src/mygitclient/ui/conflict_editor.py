@@ -167,8 +167,11 @@ class ConflictEditor(QWidget):
             self.binary_current, self.binary_incoming,
         ):
             FileRevealMenu(
-                widget, reveal=self._reveal_file, has_file=lambda: self._path is not None
+                widget, reveal=self._reveal_file, has_file=self._has_file_to_reveal,
             )
+
+    def _has_file_to_reveal(self) -> bool:
+        return self._path is not None
 
     @Slot()
     def _reveal_file(self) -> None:

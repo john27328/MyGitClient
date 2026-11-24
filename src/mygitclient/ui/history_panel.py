@@ -48,7 +48,6 @@ from mygitclient.git.models import (
     UnifiedDiff,
 )
 from mygitclient.ui.commit_graph import GRAPH_ROLE, CommitGraphDelegate, CommitGraphRow
-from mygitclient.ui.file_reveal_menu import FileRevealMenu
 from mygitclient.ui.inline_diff import InlineDiffWidget
 from mygitclient.ui.refs_panel import RefsPanel
 
@@ -456,10 +455,8 @@ class HistoryPanel(QWidget):
         child = QTreeWidgetItem(item)
         child.setFlags(Qt.ItemFlag.ItemIsEnabled)
         child.setFirstColumnSpanned(True)
-        widget = InlineDiffWidget(self._settings)
-        FileRevealMenu(
-            widget, reveal=lambda: self.file_reveal_requested.emit(change), has_file=lambda: True
-        )
+        widget = InlineDiffWidget(self._settings, change=change)
+        widget.file_reveal_requested.connect(self.file_reveal_requested)
         widget.set_placeholder(f"Loading diff for {change.path}…")
         self.files.setItemWidget(child, 0, widget)
         self._size_inline_row(item, widget)

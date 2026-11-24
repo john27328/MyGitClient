@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from weakref import ref
 
 from PySide6.QtCore import QPoint, QProcess, QSettings, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -16,9 +17,31 @@ from mygitclient.git.service import GitService
 from mygitclient.theme import Theme
 from mygitclient.ui.conflict_editor import ConflictEditor
 from mygitclient.ui.diff_view import DiffView
+from mygitclient.ui.file_reveal_menu import FileRevealMenu
 from mygitclient.ui.history_panel import HistoryPanel
 from mygitclient.ui.inline_diff import InlineDiffWidget
 from mygitclient.ui.main_window import MainWindow
+
+
+def test_file_menu_does_not_keep_its_widget_or_controller_alive(qtbot: QtBot) -> None:
+    class Controller:
+        def reveal(self) -> None:
+            pass
+
+        def has_file(self) -> bool:
+            return True
+
+    widget = QPlainTextEdit()
+    qtbot.addWidget(widget)
+    controller = Controller()
+    menu = FileRevealMenu(widget, reveal=controller.reveal, has_file=controller.has_file)
+    assert menu.parent() is widget
+    controller_ref = ref(controller)
+    del controller
+    assert controller_ref() is None
+    widget_ref = ref(widget)
+    del widget
+    assert widget_ref() is None
 
 
 def _choose_reveal(widget: QWidget, *, enabled: bool = True) -> None:

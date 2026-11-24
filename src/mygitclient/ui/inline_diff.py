@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from contextlib import suppress
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, Signal, Slot
 from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics
 from PySide6.QtWidgets import QPlainTextEdit, QWidget
 
-from mygitclient.git.models import DiffLineKind, UnifiedDiff
+from mygitclient.git.models import CommitFileChange, DiffLineKind, UnifiedDiff
 from mygitclient.ui.diff_highlighter import DiffHighlighter
+from mygitclient.ui.file_reveal_menu import FileRevealMenu
 
 _INLINE_DIFF_STYLE = (
     "QPlainTextEdit { border: 0; border-left: 2px solid palette(midlight); "
@@ -27,10 +28,13 @@ class InlineDiffWidget(QPlainTextEdit):
     itself inside a tree.
     """
 
+    file_reveal_requested = Signal(object)
+
     def __init__(
         self,
         settings: QSettings | None = None,
         parent: QWidget | None = None,
+        *, change: CommitFileChange | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("inlineDiffPanel")
@@ -46,6 +50,16 @@ class InlineDiffWidget(QPlainTextEdit):
         self.setFont(_diff_font(settings))
         self._highlighter = DiffHighlighter(self)
         self._diff: UnifiedDiff | None = None
+        self._change = change
+        FileRevealMenu(self, reveal=self._reveal_file, has_file=self._has_file_to_reveal)
+
+    def _has_file_to_reveal(self) -> bool:
+        return self._change is not None
+
+    @Slot()
+    def _reveal_file(self) -> None:
+        if self._change is not None:
+            self.file_reveal_requested.emit(self._change)
 
     @property
     def diff(self) -> UnifiedDiff | None:
