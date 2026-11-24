@@ -28,6 +28,7 @@ from mygitclient.git.conflicts import (
     parse_conflict_blocks,
     resolve_conflict_block,
 )
+from mygitclient.ui.file_reveal_menu import FileRevealMenu
 
 
 class ConflictEditor(QWidget):
@@ -36,6 +37,7 @@ class ConflictEditor(QWidget):
     save_requested = Signal(object, str)
     mergetool_requested = Signal()
     binary_choice_requested = Signal(str)
+    file_reveal_requested = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -160,6 +162,18 @@ class ConflictEditor(QWidget):
         self.result_edit.textChanged.connect(self._refresh)
         self._set_compare_mode(False)
         self.clear()
+        for widget in (
+            self.file_label, self.result_edit, self.current_edit, self.incoming_edit,
+            self.binary_current, self.binary_incoming,
+        ):
+            FileRevealMenu(
+                widget, reveal=self._reveal_file, has_file=lambda: self._path is not None
+            )
+
+    @Slot()
+    def _reveal_file(self) -> None:
+        if self._path is not None:
+            self.file_reveal_requested.emit(self._path)
 
     @staticmethod
     def _make_compare_edit(name: str) -> QPlainTextEdit:

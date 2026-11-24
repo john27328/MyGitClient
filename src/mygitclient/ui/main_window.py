@@ -105,6 +105,7 @@ from mygitclient.ui.commit_text import generated_commit_text
 from mygitclient.ui.conflict_editor import ConflictEditor
 from mygitclient.ui.diff_study_panel import DiffStudyPanel
 from mygitclient.ui.diff_view import DiffView
+from mygitclient.ui.file_reveal_menu import nearest_existing_path
 from mygitclient.ui.history_panel import HistoryPanel, is_commit_chain
 from mygitclient.ui.home_panel import HomePanel
 from mygitclient.ui.interactive_rebase import InteractiveRebaseDialog
@@ -113,6 +114,7 @@ from mygitclient.ui.operation_output import OperationOutputDialog
 from mygitclient.ui.repositories_panel import RepositoriesPanel
 from mygitclient.ui.review_controller import ReviewController
 from mygitclient.ui.review_panel import ReviewPanel
+from mygitclient.ui.stash_name_dialog import StashNameDialog
 from mygitclient.workspace import (
     LinkedRepositoriesSnapshot,
     LinkedRepository,
@@ -314,6 +316,7 @@ class MainWindow(QMainWindow):
         refs_panel.stash_apply_requested.connect(self._apply_stash)
         refs_panel.stash_pop_requested.connect(self._pop_stash)
         refs_panel.stash_drop_requested.connect(self._drop_stash)
+        refs_panel.stash_rename_requested.connect(self._rename_stash)
         refs_panel.stash_view_requested.connect(self._view_stash)
         refs_panel.repository_requested.connect(self._open_linked_repository)
 
@@ -385,10 +388,12 @@ class MainWindow(QMainWindow):
         self._diff_context_lines = self._read_diff_context_lines()
         for view in (self._diff_view, self._review_diff_view, self._study_diff_view):
             view.set_context_lines(self._diff_context_lines)
+            view.file_reveal_requested.connect(self._reveal_relative_file)
         self._conflict_editor = ConflictEditor()
         self._conflict_editor.save_requested.connect(self._save_conflict_result)
         self._conflict_editor.mergetool_requested.connect(self._launch_mergetool)
         self._conflict_editor.binary_choice_requested.connect(self._use_selected_conflict_side)
+        self._conflict_editor.file_reveal_requested.connect(self._reveal_file_path)
         self._diff_container = QStackedWidget()
         self._diff_container.setObjectName("diffContainer")
         self._diff_container.addWidget(self._diff_view)
@@ -1472,21 +1477,12 @@ class MainWindow(QMainWindow):
         if not isinstance(value, CommitFileChange):
             return
         path = self._history_file_path(value)
-        if path is None:
-            return
-        target = path if path.exists() else path.parent
-        if not target.exists():
-            return
-        folder = target.parent if target.is_file() else target
-        if sys.platform == "win32":
-            arguments = (
-                ["/select,", str(path)] if path.exists() and path.is_file() else [str(folder)]
-            )
-            started, _process_id = QProcess.startDetached("explorer.exe", arguments, str(folder))
-        else:
-            started = QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
-        if not started:
-            QMessageBox.warning(self, "Show in File Manager", f"Could not show:\n{path}")
+        if path is not None:
+            self._reveal_file_path(path)
+
+    @Slot(str)
+    def _reveal_relative_file(self, path: str) -> None:
+        self._reveal_history_file(CommitFileChange("M", path))
 
     @Slot(object, object, bool)
     def _restore_history_file(self, commit_value: object, file_value: object, before: bool) -> None:
@@ -1642,6 +1638,18 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _pop_stash(self, value: object) -> None:
         self._run_stash_action(value, action="pop", confirm=True)
+
+    @Slot(object)
+    def _rename_stash(self, value: object) -> None:
+        repository = self._repository
+        if repository is None or not isinstance(value, StashInfo):
+            return
+        dialog = StashNameDialog(self, current_name=value.subject)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.stash_name == value.subject:
+            return
+        self._history_panel.refs_panel.setEnabled(False)
+        self._status_label.setText(f"Renaming {value.ref}…")
+        self._git.request_rename_stash(repository, value, dialog.stash_name)
 
     @Slot(object)
     def _drop_stash(self, value: object) -> None:
@@ -3557,9 +3565,7 @@ class MainWindow(QMainWindow):
         self._open_file_with_action.setEnabled(
             path is not None and path.exists() and sys.platform == "win32"
         )
-        self._reveal_file_action.setEnabled(
-            path is not None and (path.exists() or path.parent.exists())
-        )
+        self._reveal_file_action.setEnabled(path is not None)
         conflict_selected = file is not None and file.unmerged
         self._use_ours_action.setVisible(conflict_selected)
         self._use_theirs_action.setVisible(conflict_selected)
@@ -3605,10 +3611,16 @@ class MainWindow(QMainWindow):
     @Slot()
     def _reveal_selected_file(self) -> None:
         path = self._selected_file_path(self._selected_file())
-        if path is None:
+        if path is not None:
+            self._reveal_file_path(path)
+
+    @Slot(object)
+    def _reveal_file_path(self, value: object) -> None:
+        if not isinstance(value, Path):
             return
-        existing_target = path if path.exists() else path.parent
-        if not existing_target.exists():
+        path = value
+        existing_target = nearest_existing_path(path)
+        if existing_target is None:
             return
         folder = existing_target.parent if existing_target.is_file() else existing_target
         if sys.platform == "win32":
@@ -3808,10 +3820,13 @@ class MainWindow(QMainWindow):
         repository = self._repository
         if repository is None or not files or any(file.unmerged for file in files):
             return
+        dialog = StashNameDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
         self._changes_container.setEnabled(False)
         self._status_label.setText(f"Stashing {len(files)} selected file(s)…")
         self._clear_change_selection_after_mutation = True
-        self._git.request_stash_files(repository, files)
+        self._git.request_stash_files(repository, files, message=dialog.stash_name)
 
     @Slot()
     def _discard_checked_changes(self) -> None:

@@ -3,12 +3,15 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QMenu, QToolBar
+from pytest import MonkeyPatch
 from pytestqt.qtbot import QtBot
 
 from mygitclient.git.service import GitService
 from mygitclient.github import GitHubProfile, GitHubTokenStore, SignInResult
+from mygitclient.github.credential_flow import GitHubCredentialFlow
 from mygitclient.theme import Theme
 from mygitclient.ui.app_shell import AppShell, RepositorySessionTab
+from mygitclient.ui.github_sign_in_dialog import GitHubSignInDialog
 
 
 class _MemoryTokenBackend:
@@ -49,6 +52,9 @@ class _TestAppShell(AppShell):
     def save_github_token(self, login: str, token: str) -> None:
         self._github_tokens.save(login, token)
 
+    def reconnect_github(self, profile: GitHubProfile) -> None:
+        self._connect_github(profile)
+
 
 def _make_repository(path: Path) -> None:
     path.mkdir()
@@ -58,6 +64,101 @@ def _make_repository(path: Path) -> None:
         check=True,
         capture_output=True,
     )
+
+
+def test_connect_github_opens_browser_flow_and_adds_account_automatically(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    settings = QSettings(str(tmp_path / "browser-login.ini"), QSettings.Format.IniFormat)
+    shell = _TestAppShell(settings, Theme.SYSTEM)
+    qtbot.addWidget(shell)
+    shell.use_memory_github_tokens()
+    flow = shell.findChild(GitHubCredentialFlow)
+    assert flow is not None
+    started: list[str] = []
+
+    def begin(login_hint: str = "") -> None:
+        started.append(login_hint)
+        flow.status_changed.emit("Confirm access in your browser")
+
+    monkeypatch.setattr(flow, "start", begin)
+    shell.home.add_github_button.click()
+    assert started == [""]
+    dialog = shell.findChild(GitHubSignInDialog)
+    assert dialog is not None and dialog.isVisible()
+    assert dialog.advanced.isHidden()
+    assert not dialog.progress.isHidden()
+    assert not dialog.browser_button.isEnabled()
+    flow.completed.emit(SignInResult("octocat", "test-browser-token"))
+    assert shell.has_github_token("octocat")
+    assert [profile.login for profile in shell.github_profiles] == ["octocat"]
+    assert not dialog.isVisible()
+    assert not settings.contains("github/oauthClientId")
+    shell.close()
+
+
+def test_closing_github_sign_in_cancels_the_pending_flow(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    shell = _TestAppShell(
+        QSettings(str(tmp_path / "cancel-login.ini"), QSettings.Format.IniFormat), Theme.SYSTEM
+    )
+    qtbot.addWidget(shell)
+    shell.use_memory_github_tokens()
+    flow = shell.findChild(GitHubCredentialFlow)
+    assert flow is not None
+
+    def begin(_login_hint: str = "") -> None:
+        flow.status_changed.emit("Waiting for GitHub")
+
+    monkeypatch.setattr(flow, "start", begin)
+    shell.home.add_github_button.click()
+    dialog = shell.findChild(GitHubSignInDialog)
+    assert dialog is not None
+    cancelled: list[bool] = []
+    monkeypatch.setattr(flow, "cancel", lambda: cancelled.append(True))
+    dialog.reject()
+    assert cancelled
+    flow.completed.emit(SignInResult("late-user", "late-token"))
+    assert shell.github_profiles == ()
+    assert not shell.has_github_token("late-user")
+    shell.close()
+
+
+def test_browser_reconnect_preserves_account_identity(
+    qtbot: QtBot, tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    shell = _TestAppShell(
+        QSettings(str(tmp_path / "reconnect.ini"), QSettings.Format.IniFormat), Theme.SYSTEM
+    )
+    qtbot.addWidget(shell)
+    shell.use_memory_github_tokens()
+    profile = GitHubProfile("Personal", "octocat")
+    shell.save_github_profile(profile)
+    shell.save_github_token("octocat", "old-token")
+    flow = shell.findChild(GitHubCredentialFlow)
+    assert flow is not None
+    started: list[str] = []
+
+    def begin(login_hint: str = "") -> None:
+        started.append(login_hint)
+        flow.status_changed.emit("Confirm access in your browser")
+
+    monkeypatch.setattr(flow, "start", begin)
+    shell.reconnect_github(profile)
+    assert started == ["octocat"]
+    flow.completed.emit(SignInResult("someone-else", "wrong-account-token"))
+    assert shell.github_profiles == (profile,)
+    assert not shell.has_github_token("someone-else")
+    assert shell.clone_token("https://github.com/octocat/repository.git") == "old-token"
+    dialog = shell.findChild(GitHubSignInDialog)
+    assert dialog is not None
+    assert "expects 'octocat'" in dialog.status.text()
+    dialog.browser_button.click()
+    flow.completed.emit(SignInResult("OctoCat", "new-token"))
+    assert shell.github_profiles == (profile,)
+    assert shell.clone_token("https://github.com/octocat/repository.git") == "new-token"
+    shell.close()
 
 
 def test_repositories_open_in_isolated_tabs(qtbot: QtBot, tmp_path: Path) -> None:

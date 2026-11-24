@@ -50,6 +50,7 @@ class RefsPanel(QWidget):
     stash_apply_requested = Signal(object)
     stash_pop_requested = Signal(object)
     stash_drop_requested = Signal(object)
+    stash_rename_requested = Signal(object)
     stash_view_requested = Signal(object)
     repository_requested = Signal(object)
 
@@ -139,6 +140,9 @@ class RefsPanel(QWidget):
         self.context_menu.addSeparator()
         self.view_stash_action = self.context_menu.addAction("View stash contents")
         self.view_stash_action.triggered.connect(self._view_stash_selected)
+        self.rename_stash_action = self.context_menu.addAction("Rename stash…")
+        self.rename_stash_action.setObjectName("renameStashAction")
+        self.rename_stash_action.triggered.connect(self._rename_stash_selected)
         self.apply_stash_action = self.context_menu.addAction("Apply stash")
         self.apply_stash_action.triggered.connect(self._apply_stash_selected)
         self.pop_stash_action = self.context_menu.addAction("Pop stash")
@@ -443,6 +447,7 @@ class RefsPanel(QWidget):
         self.pop_stash_action.setVisible(stash is not None)
         self.drop_stash_action.setVisible(stash is not None)
         self.view_stash_action.setVisible(stash is not None)
+        self.rename_stash_action.setVisible(stash is not None)
         self.open_repository_action.setVisible(linked is not None)
         if value is not None or root_label in {"Branches", "Tags"}:
             self.context_menu.exec(self.tree.viewport().mapToGlobal(position))
@@ -565,6 +570,12 @@ class RefsPanel(QWidget):
         tag = self._selected_value()
         if isinstance(tag, TagInfo):
             self.push_tag_requested.emit(tag)
+
+    @Slot()
+    def _rename_stash_selected(self) -> None:
+        stash = self._selected_value()
+        if isinstance(stash, StashInfo):
+            self.stash_rename_requested.emit(stash)
 
     @Slot()
     def _apply_stash_selected(self) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 from dataclasses import dataclass
@@ -60,10 +61,26 @@ from mygitclient.git.parsers import (
     parse_unified_diff,
 )
 from mygitclient.git.runner import GitRunner
+from mygitclient.git.stashes import (
+    DEFAULT_STASH_MESSAGE,
+    renamed_stash_commit,
+    validate_stash_message,
+)
 
 HISTORY_PAGE_SIZE = 1000
 COMMIT_LOG_FORMAT = "--pretty=format:%x1e%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%b"
 """Record layout that :func:`~mygitclient.git.parsers.parse_commit_log` reads."""
+
+
+@dataclass(slots=True)
+class _StashRenameWorkflow:
+    repository: Path
+    stash: StashInfo
+    message: str
+    old_ref: str
+    step: str = "verify"
+    new_oid: str = ""
+    stored: bool = False
 
 
 @dataclass(slots=True)
@@ -197,6 +214,7 @@ class GitService(QObject):
         super().__init__(parent)
         self._runners: set[GitRunner] = set()
         self._pending_reads: dict[GitCommand, GitRunner] = {}
+        self._stash_rename_workflows: dict[GitRunner, _StashRenameWorkflow] = {}
         self._request_ids = count(1)
         self._status_requests: dict[GitRunner, tuple[Path, int]] = {}
         self._latest_status_request: dict[Path, int] = {}
@@ -376,6 +394,97 @@ class GitService(QObject):
             ),
         )
         return runner
+
+    def request_rename_stash(self, repository: Path, stash: StashInfo, message: str) -> GitRunner:
+        message = validate_stash_message(message)
+        match = re.fullmatch(r"stash@\{(\d+)\}", stash.ref)
+        if match is None:
+            raise ValueError("Select a stash from the stash list.")
+        workflow = _StashRenameWorkflow(
+            repository, stash, message, f"stash@{{{int(match[1]) + 1}}}"
+        )
+        return self._run_stash_rename(
+            workflow, ("rev-parse", "--verify", "--end-of-options", stash.ref)
+        )
+
+    def _run_stash_rename(
+        self, workflow: _StashRenameWorkflow, arguments: tuple[str, ...],
+        input_data: bytes | None = None,
+    ) -> GitRunner:
+        runner = GitRunner(parent=self)
+        self._runners.add(runner)
+        self._stash_rename_workflows[runner] = workflow
+        runner.completed.connect(self._handle_stash_rename)
+        runner.failed_to_start.connect(self._handle_start_error)
+        self._operation_queue.enqueue(
+            runner, GitCommand(arguments, workflow.repository, "rename stash"), input_data,
+            continuation=workflow.step != "verify",
+        )
+        return runner
+
+    @Slot(object)
+    def _handle_stash_rename(self, result: object) -> None:
+        runner = self.sender()
+        if not isinstance(runner, GitRunner):
+            return
+        workflow = self._stash_rename_workflows.pop(runner, None)
+        self._release_runner(runner)
+        if workflow is None or not isinstance(result, GitResult):
+            self.operation_failed.emit("Git returned an unexpected stash rename result.")
+            return
+        if result.cancelled or not result.succeeded:
+            detail = result.error_text or "Stash rename was cancelled or could not finish."
+            self._stash_rename_failed(workflow, detail)
+            return
+        if workflow.step == "verify":
+            if result.stdout.strip().decode("ascii", errors="replace") != workflow.stash.oid:
+                self._stash_rename_failed(workflow, "The stash list changed. Try again.")
+                return
+            workflow.step = "read"
+            self._run_stash_rename(workflow, ("cat-file", "commit", workflow.stash.oid))
+        elif workflow.step == "read":
+            try:
+                content = renamed_stash_commit(result.stdout, workflow.message)
+            except ValueError as error:
+                self.operation_failed.emit(str(error))
+                return
+            workflow.step = "hash"
+            self._run_stash_rename(
+                workflow, ("hash-object", "-t", "commit", "-w", "--stdin"), content
+            )
+        elif workflow.step == "hash":
+            workflow.new_oid = result.stdout.strip().decode("ascii", errors="replace")
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", workflow.new_oid):
+                self.operation_failed.emit("Git returned an invalid renamed stash identifier.")
+                return
+            if workflow.new_oid == workflow.stash.oid:
+                self.mutation_ready.emit("stashes:changed")
+                return
+            workflow.step = "store"
+            self._run_stash_rename(
+                workflow, ("stash", "store", "-m", workflow.message, workflow.new_oid)
+            )
+        elif workflow.step == "store":
+            workflow.stored = True
+            workflow.step = "verify-copy"
+            self._run_stash_rename(
+                workflow, ("rev-parse", "--revs-only", "refs/stash", workflow.old_ref)
+            )
+        elif workflow.step == "verify-copy":
+            expected = [workflow.new_oid.encode("ascii"), workflow.stash.oid.encode("ascii")]
+            if result.stdout.splitlines() != expected:
+                self._stash_rename_failed(workflow, "The stash list changed during rename.")
+                return
+            workflow.step = "drop-original"
+            self._run_stash_rename(workflow, ("stash", "drop", workflow.old_ref))
+        else:
+            self.mutation_ready.emit("stashes:changed")
+
+    def _stash_rename_failed(self, workflow: _StashRenameWorkflow, detail: str) -> None:
+        if workflow.stored or workflow.step == "store":
+            detail += " Your stashed changes are kept. The list may contain both names."
+        self.request_stashes(workflow.repository)
+        self.operation_failed.emit(detail)
 
     def request_create_tag(
         self, repository: Path, name: str, target: str, message: str = ""
@@ -2120,7 +2229,11 @@ class GitService(QObject):
         )
         return runner
 
-    def request_stash_files(self, repository: Path, files: tuple[FileStatus, ...]) -> GitRunner:
+    def request_stash_files(
+        self, repository: Path, files: tuple[FileStatus, ...], *,
+        message: str = DEFAULT_STASH_MESSAGE,
+    ) -> GitRunner:
+        message = validate_stash_message(message)
         runner = GitRunner(parent=self)
         self._runners.add(runner)
         self._mutation_requests[runner] = "stash"
@@ -2134,7 +2247,7 @@ class GitService(QObject):
                     "push",
                     "-u",
                     "-m",
-                    "MyGitClient selected files",
+                    message,
                     "--",
                     *(file.path for file in files),
                 ),
@@ -2234,6 +2347,7 @@ class GitService(QObject):
             runner.shutdown()
         self._runners.clear()
         self._pending_reads.clear()
+        self._stash_rename_workflows.clear()
 
     def _release_runner(self, runner: GitRunner) -> None:
         self._runners.discard(runner)
@@ -2366,6 +2480,7 @@ class GitService(QObject):
         publish = self._publish_repository_workflows.pop(runner, None)
         reset_to_upstream = self._reset_to_upstream_workflows.pop(runner, None)
         remote_rename = self._remote_rename_workflows.pop(runner, None)
+        stash_rename = self._stash_rename_workflows.pop(runner, None)
         self._operation_action_requests.pop(runner, None)
         self._history_requests.pop(runner, None)
         self._review_commit_requests.pop(runner, None)
@@ -2387,6 +2502,9 @@ class GitService(QObject):
         self._reflog_requests.pop(runner, None)
         self._conflict_versions_workflows.pop(runner, None)
         self._commit_after_stage.pop(runner, None)
+        if stash_rename is not None:
+            self._stash_rename_failed(stash_rename, f"Could not rename stash: {message}")
+            return
         if checkout is not None:
             self.operation_failed.emit(f"Could not {checkout.step} during checkout: {message}")
             return

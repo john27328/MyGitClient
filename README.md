@@ -68,6 +68,16 @@ mygitclient
 
 On macOS or Linux, activate the environment with `source .venv/bin/activate`.
 
+## Connect a GitHub account
+
+Click **Connect GitHub account…**, confirm access in your browser, and return to MyGitClient.
+The account is added automatically and its access token is saved in the operating system's
+credential store.
+
+Browser sign-in uses [Git Credential Manager](https://github.com/git-ecosystem/git-credential-manager),
+which is included with Git for Windows. If it is missing, the sign-in dialog offers installation
+instructions. Existing custom OAuth apps remain available under **Advanced sign-in settings**.
+
 ## Development
 
 Active development happens on `develop`; `master` contains release-ready code. See

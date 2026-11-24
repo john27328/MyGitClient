@@ -51,6 +51,7 @@ from mygitclient.github import (
     is_github_https_url,
     stored_token,
 )
+from mygitclient.github.credential_flow import GitHubCredentialFlow
 from mygitclient.resources import load_icon
 from mygitclient.theme import Theme
 from mygitclient.ui.github_profile_dialog import GitHubProfileDialog
@@ -98,6 +99,10 @@ class AppShell(QMainWindow):
         self._github_bindings = GitHubRepositoryBindingStore(settings)
         self._github_tokens = GitHubTokenStore()
         self._github_browser_flow = GitHubBrowserFlow(self)
+        self._github_credential_flow = GitHubCredentialFlow(self)
+        self._github_credential_flow.completed.connect(self._github_sign_in_completed)
+        self._github_credential_flow.failed.connect(self._github_sign_in_failed)
+        self._github_credential_flow.status_changed.connect(self._github_credential_status)
         self._github_sign_in_dialog: GitHubSignInDialog | None = None
         self._github_sign_in_profile: GitHubProfile | None = None
         self._github_sign_in_add_new = False
@@ -406,13 +411,17 @@ class AppShell(QMainWindow):
             profile.login if profile is not None else None, client_id, self, client_secret
         )
         dialog.cancelled.connect(self._github_browser_flow.cancel)
+        dialog.cancelled.connect(self._github_credential_flow.cancel)
+        dialog.credential_start_requested.connect(self._start_github_credential_flow)
         dialog.browser_start_requested.connect(self._start_github_browser_flow)
         dialog.finished.connect(self._github_sign_in_dialog_finished)
         self._github_sign_in_dialog = dialog
         dialog.show()
+        self._start_github_credential_flow()
 
     @Slot(str, str)
     def _start_github_browser_flow(self, client_id: str, client_secret: str) -> None:
+        self._github_credential_flow.cancel()
         clean_client_id = client_id.strip()
         clean_client_secret = client_secret.strip()
         if not clean_client_id or not clean_client_secret:
@@ -423,10 +432,26 @@ class AppShell(QMainWindow):
             self._github_tokens.save_oauth_client_secret(clean_client_id, clean_client_secret)
         self._github_browser_flow.start(clean_client_id, clean_client_secret)
 
+    @Slot()
+    def _start_github_credential_flow(self) -> None:
+        if self._github_credential_flow.is_running or self._github_sign_in_dialog is None:
+            return
+        self._github_browser_flow.cancel()
+        profile = self._github_sign_in_profile
+        self._github_credential_flow.start(profile.login if profile is not None else "")
+
+    @Slot(str)
+    def _github_credential_status(self, message: str) -> None:
+        if self._github_sign_in_dialog is not None:
+            self._github_sign_in_dialog.show_pending(message)
+
     @Slot(str)
     def _github_browser_authorization_ready(self, url: str) -> None:
-        if self._github_sign_in_dialog is not None:
-            self._github_sign_in_dialog.show_browser_pending(url)
+        if (
+            self._github_sign_in_dialog is not None
+            and not self._github_sign_in_dialog.show_browser_pending(url)
+        ):
+            self._github_browser_flow.cancel()
 
     @Slot(object)
     def _github_sign_in_completed(self, value: object) -> None:
@@ -456,6 +481,8 @@ class AppShell(QMainWindow):
         self._github_sign_in_add_new = False
         self._refresh_home()
         self.statusBar().showMessage(f"Connected GitHub account {profile.login}.", 5000)
+        self.raise_()
+        self.activateWindow()
 
     @Slot()
     def _renew_stale_github_tokens(self) -> None:
@@ -514,6 +541,7 @@ class AppShell(QMainWindow):
     @Slot(int)
     def _github_sign_in_dialog_finished(self, _result: int) -> None:
         self._github_browser_flow.cancel()
+        self._github_credential_flow.cancel()
         self._github_sign_in_dialog = None
         self._github_sign_in_profile = None
         self._github_sign_in_add_new = False
@@ -944,6 +972,8 @@ class AppShell(QMainWindow):
             super().closeEvent(event)
             return
         self._closing = True
+        self._github_credential_flow.shutdown()
+        self._github_browser_flow.cancel()
         repositories = list(self._sessions)
         for session in tuple(self._sessions.values()):
             session.shutdown()

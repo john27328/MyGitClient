@@ -38,6 +38,7 @@ from mygitclient.ui.diff_gutter import DiffGutter
 from mygitclient.ui.diff_highlighter import DiffHighlighter
 from mygitclient.ui.diff_overview import DiffOverview
 from mygitclient.ui.diff_selection import DiffSelection, LineFingerprint
+from mygitclient.ui.file_reveal_menu import FileRevealMenu
 
 SelectionKey = tuple[Path, str, bool]
 
@@ -84,6 +85,7 @@ class DiffView(QWidget):
     stash_requested = Signal()
     unstage_requested = Signal()
     discard_requested = Signal()
+    file_reveal_requested = Signal(str)
 
     def __init__(self, settings: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -348,6 +350,19 @@ class DiffView(QWidget):
         self.selected_lines_button.clicked.connect(self._request_selected_lines)
         self.hunk_button.clicked.connect(self._request_selected_hunk)
         self._update_gutter_visibility(False)
+        for widget in (
+            self.file_header, self.diff, self.side_old, self.side_new,
+            self.gutter, self.side_old_gutter, self.side_new_gutter,
+        ):
+            FileRevealMenu(
+                widget, reveal=self._reveal_file,
+                has_file=lambda: self.current_diff is not None and bool(self.current_diff.path),
+            )
+
+    @Slot()
+    def _reveal_file(self) -> None:
+        if self.current_diff is not None and self.current_diff.path:
+            self.file_reveal_requested.emit(self.current_diff.path)
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
